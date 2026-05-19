@@ -422,17 +422,30 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
                     pcm
                 };
                 tracing::info!("loaded audio with {} samples", pcm.len());
-                // Trim it to 10s max.
-                let pcm = if pcm.len() > cfg.mimi.sample_rate * 10 {
-                    tracing::info!("trimming audio to 10 seconds");
-                    pcm[..cfg.mimi.sample_rate * 10].to_vec()
+                let sr = cfg.mimi.sample_rate as f32;
+                let min_len = (sr * cfg.audio_prompt_min_duration).round() as usize;
+                let max_len = (sr * cfg.audio_prompt_max_duration).round() as usize;
+                let pcm = if pcm.len() > max_len {
+                    tracing::info!(
+                        max_duration = cfg.audio_prompt_max_duration,
+                        "trimming audio to max duration"
+                    );
+                    pcm[..max_len].to_vec()
                 } else {
                     pcm
                 };
+                if pcm.len() < min_len {
+                    anyhow::bail!(
+                        "audio prompt is shorter than min duration ({}s, {} samples; got {})",
+                        cfg.audio_prompt_min_duration,
+                        min_len,
+                        pcm.len()
+                    );
+                }
                 let pcm_tensor = Tensor::from_vec(pcm, (1, 1, ()), &dev)?.to::<Q::T>()?;
                 let emb = mimi_enc.encode_audio(&pcm_tensor)?;
                 tracing::info!(?emb, "encoded audio to latent");
-                let null_emb = if cfg_state.is_some() {
+                let null_emb = if cfg_state.is_some() && !cfg.cfg_null_audio_empty {
                     let null_pcm_tensor = pcm_tensor.zeros_like()?;
                     Some(mimi_enc.encode_audio(&null_pcm_tensor)?)
                 } else {

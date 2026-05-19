@@ -32,6 +32,14 @@ pub struct ConditionerConfig {
     pub inner: ConditionerInnerConfig,
 }
 
+fn default_audio_prompt_min_duration() -> f32 {
+    10.0
+}
+
+fn default_audio_prompt_max_duration() -> f32 {
+    10.0
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TTSConfig {
     pub flow_lm: FlowLMConfig,
@@ -41,6 +49,22 @@ pub struct TTSConfig {
     pub eos_threshold: f32,
     pub fuser: FuserConfig,
     pub conditioners: Vec<ConditionerConfig>,
+    /// Minimum allowed duration in seconds for an audio prompt passed to
+    /// `get_state_for_audio`. If zero, an empty audio prompt is allowed, in
+    /// which case the conditioned state skips the `prompt_audio` call entirely.
+    #[serde(default = "default_audio_prompt_min_duration")]
+    pub audio_prompt_min_duration: f32,
+    /// Maximum allowed duration in seconds for an audio prompt. Frontends that
+    /// trim long audio (e.g. the `pocket_tts` example) should trim to this
+    /// value rather than a hardcoded 10s.
+    #[serde(default = "default_audio_prompt_max_duration")]
+    pub audio_prompt_max_duration: f32,
+    /// If true, the CFG null state is built without any audio prompting (the
+    /// `prompt_audio` step is skipped on the null state). If false, the null
+    /// state is prompted with the encoding of a zero waveform matching the
+    /// real audio prompt's length, which preserves the historical behavior.
+    #[serde(default)]
+    pub cfg_null_audio_empty: bool,
 }
 
 impl TTSConfig {
@@ -92,6 +116,9 @@ impl TTSConfig {
                 prepend: vec![],
                 cross: vec![],
             },
+            audio_prompt_min_duration: 10.0,
+            audio_prompt_max_duration: 10.0,
+            cfg_null_audio_empty: false,
         }
     }
 }

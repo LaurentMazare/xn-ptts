@@ -56,6 +56,9 @@ struct ModelB<B: xn::Backend> {
     inner: Arc<TTSModel<Unquantized<f32, B>>>,
     mimi_enc: MimiEnc<Unquantized<f32, B>>,
     voices: std::collections::HashMap<String, Tensor<f32, B>>,
+    audio_prompt_min_duration: f32,
+    audio_prompt_max_duration: f32,
+    cfg_null_audio_empty: bool,
 }
 
 impl<B: xn::Backend> ModelB<B> {
@@ -65,24 +68,36 @@ impl<B: xn::Backend> ModelB<B> {
         cfg_coef: Option<f32>,
         max_seq_len: usize,
     ) -> xn::Result<ModelStateB<B>> {
-        let expected_len = self.inner.sample_rate() * 10;
-        if audio_prompt.len() != expected_len {
+        let sample_rate = self.inner.sample_rate();
+        let min_len = (sample_rate as f32 * self.audio_prompt_min_duration).round() as usize;
+        let max_len = (sample_rate as f32 * self.audio_prompt_max_duration).round() as usize;
+        if audio_prompt.len() < min_len || audio_prompt.len() > max_len {
             xn::bail!(
-                "audio_prompt must have exactly {expected_len} samples (10s at {}Hz), got {}",
-                self.inner.sample_rate(),
+                "audio_prompt must have between {min_len} and {max_len} samples ({}s-{}s at {sample_rate}Hz), got {}",
+                self.audio_prompt_min_duration,
+                self.audio_prompt_max_duration,
                 audio_prompt.len()
             );
         }
         let dev = self.inner.device();
-        let pcm = xn::Tensor::from_vec(audio_prompt.to_vec(), (1, 1, ()), dev)?;
-        let voice_emb = self.mimi_enc.encode_audio(&pcm)?;
         let mut state = self.inner.init_flow_lm_state(1, max_seq_len)?;
-        self.inner.prompt_audio(&mut state, &voice_emb)?;
+        let pcm = if audio_prompt.is_empty() {
+            None
+        } else {
+            let pcm = xn::Tensor::from_vec(audio_prompt.to_vec(), (1, 1, ()), dev)?;
+            let voice_emb = self.mimi_enc.encode_audio(&pcm)?;
+            self.inner.prompt_audio(&mut state, &voice_emb)?;
+            Some(pcm)
+        };
         let cfg_state = if let Some(cfg_coef) = cfg_coef {
-            let null_pcm = pcm.zeros_like()?;
-            let null_emb = self.mimi_enc.encode_audio(&null_pcm)?;
             let mut null_state = self.inner.init_flow_lm_state(1, max_seq_len)?;
-            self.inner.prompt_audio(&mut null_state, &null_emb)?;
+            if !self.cfg_null_audio_empty
+                && let Some(pcm) = pcm.as_ref()
+            {
+                let null_pcm = pcm.zeros_like()?;
+                let null_emb = self.mimi_enc.encode_audio(&null_pcm)?;
+                self.inner.prompt_audio(&mut null_state, &null_emb)?;
+            }
             Some((cfg_coef, null_state))
         } else {
             None
@@ -556,7 +571,14 @@ fn load_model_<B: xn::Backend>(
             || v.starts_with("mimi.quantizer")
     })?;
 
-    Ok(ModelB { inner: Arc::new(model), mimi_enc, voices })
+    Ok(ModelB {
+        inner: Arc::new(model),
+        mimi_enc,
+        voices,
+        audio_prompt_min_duration: cfg.audio_prompt_min_duration,
+        audio_prompt_max_duration: cfg.audio_prompt_max_duration,
+        cfg_null_audio_empty: cfg.cfg_null_audio_empty,
+    })
 }
 
 #[pyfunction]
