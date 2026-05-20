@@ -1615,6 +1615,7 @@ dependencies = [
  "rand",
  "rand_distr",
  "rubato",
+ "safetensors",
  "sentencepiece",
  "serde",
  "serde_json",
