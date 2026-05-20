@@ -41,3 +41,6 @@ required-features = ["sp"]
 
 [[example]]
 name = "quantize"
+
+[[example]]
+name = "create_voice"

@@ -318,7 +318,17 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
             tracing::info!(?config, "using local config");
             let config: ptts::tts_model::TTSConfig =
                 serde_json::from_str(&std::fs::read_to_string(config)?)?;
-            let voice = args.voice.map(Voice::Audio);
+            let voice = match args.voice {
+                None => None,
+                Some(voice) if voice.ends_with(".safetensors") => {
+                    let voice_path = std::path::PathBuf::from(voice);
+                    if !voice_path.exists() {
+                        anyhow::bail!("voice embedding file '{}' not found", voice_path.display());
+                    }
+                    Some(Voice::Safetensors(voice_path))
+                }
+                Some(voice) => Some(Voice::Audio(voice)),
+            };
             (model_path, tokenizer_path, voice, config)
         }
         None => {
