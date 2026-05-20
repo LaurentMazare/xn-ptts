@@ -26,9 +26,16 @@ struct Args {
 }
 
 fn is_excluded(name: &str, no_mimi_encoder: bool) -> bool {
-    (name.starts_with("mimi.quantizer.") && !name.starts_with("mimi.quantizer.output_proj"))
-        || (no_mimi_encoder && name.starts_with("mimi.encoder")
-            || name == "mimi.downsample.conv.conv.weight")
+    #[allow(clippy::collapsible_if)]
+    if no_mimi_encoder {
+        if name.starts_with("mimi.encoder")
+            || name == "mimi.downsample.conv.conv.weight"
+            || name == "flow_lm.condition_provider.conditioners.speaker_wavs.output_proj.weight"
+        {
+            return true;
+        }
+    }
+    name.starts_with("mimi.quantizer.") && !name.starts_with("mimi.quantizer.output_proj")
 }
 
 const QUANT_SUFFIXES: &[&str] =

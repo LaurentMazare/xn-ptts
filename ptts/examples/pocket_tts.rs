@@ -357,7 +357,6 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
     };
     let vb = vb.root();
     let model: TTSModel<Q> = TTSModel::load(&vb, Box::new(tokenizer), &cfg)?;
-    let mimi_enc: MimiEnc<Q> = MimiEnc::load(&vb, &cfg)?;
     vb.check_all_used_with_ignore(|v| {
         v == "flow_lm.condition_provider.conditioners.speaker_wavs.learnt_padding"
             || v.starts_with("mimi.quantizer")
@@ -430,6 +429,7 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
                     pcm
                 };
                 let pcm_tensor = Tensor::from_vec(pcm, (1, 1, ()), &dev)?.to::<Q::T>()?;
+                let mimi_enc: MimiEnc<Q> = MimiEnc::load(&vb, &cfg)?;
                 let emb = mimi_enc.encode_audio(&pcm_tensor)?;
                 tracing::info!(?emb, "encoded audio to latent");
                 let null_emb = if cfg_state.is_some() {
