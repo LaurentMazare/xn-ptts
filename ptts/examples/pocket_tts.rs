@@ -360,6 +360,9 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
     vb.check_all_used_with_ignore(|v| {
         v == "flow_lm.condition_provider.conditioners.speaker_wavs.learnt_padding"
             || v.starts_with("mimi.quantizer")
+            || v.starts_with("mimi.encoder")
+            || v == "flow_lm.speaker_proj_weight"
+            || v == "mimi.downsample.conv.conv.weight"
     })?;
     tracing::info!("model loaded successfully!");
 
