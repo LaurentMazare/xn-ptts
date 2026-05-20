@@ -63,8 +63,11 @@ fn run(args: Args) -> Result<()> {
     use std::str::FromStr;
 
     let dev = xn::CpuDevice;
+    tracing::info!("loading config from {}", args.config);
     let cfg: ptts::tts_model::TTSConfig =
         serde_json::from_str(&std::fs::read_to_string(&args.config)?)?;
+    let model_ext = cfg.model_ext();
+    tracing::info!(?model_ext, "model extension");
     tracing::info!("loading voice from audio file {}", args.input);
 
     let (pcm, sample_rate) = audio_helpers::pcm_decode(&args.input)?;
@@ -104,6 +107,10 @@ fn run(args: Args) -> Result<()> {
     let emb = mimi_enc.encode_audio(&pcm_tensor)?;
     tracing::info!(?emb, "encoded audio to latent");
     let tensors = std::collections::HashMap::from([("emb".to_string(), xn::TypedTensor::F32(emb))]);
-    xn::safetensors::save(&tensors, &args.output)?;
+    let data_info = std::collections::HashMap::from([(
+        "model_ext".to_string(),
+        model_ext.unwrap_or("unknown".to_string()),
+    )]);
+    xn::safetensors::save_with_data_info(&tensors, Some(data_info), &args.output)?;
     Ok(())
 }
