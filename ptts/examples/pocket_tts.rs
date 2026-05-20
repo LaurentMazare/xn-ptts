@@ -102,6 +102,12 @@ fn download_files(voice: &str) -> Result<(std::path::PathBuf, std::path::PathBuf
             .with_context(|| format!("voice embedding '{voice}' not found"))?;
         tracing::info!(?voice_path, "voice embedding downloaded");
         Voice::Safetensors(voice_path)
+    } else if voice.ends_with(".safetensors") {
+        let voice_path = std::path::PathBuf::from(voice);
+        if !voice_path.exists() {
+            anyhow::bail!("voice embedding file '{}' not found", voice_path.display());
+        }
+        Voice::Safetensors(voice_path)
     } else {
         Voice::Audio(voice.to_string())
     };
