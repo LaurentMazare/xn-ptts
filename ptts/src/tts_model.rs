@@ -106,10 +106,7 @@ impl TTSConfig {
     }
 
     pub fn model_ext(&self) -> Option<String> {
-        match self.model_id.as_ref() {
-            Some(id) => Some(format!("{}@{}", id.sig, id.epoch)),
-            None => None,
-        }
+        self.model_id.as_ref().map(|id| format!("{}@{}", id.sig, id.epoch))
     }
 }
 
