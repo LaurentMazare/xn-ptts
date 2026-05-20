@@ -363,7 +363,8 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
         xn::with_f16c()
     );
 
-    tracing::info!(?model_path, "loading model");
+    let model_ext = cfg.model_ext();
+    tracing::info!(?model_path, ?model_ext, "loading model");
     let vb = if model_path.extension().and_then(|v| v.to_str()) == Some("gguf") {
         let reader = std::fs::File::open(&model_path)?;
         let reader = std::io::BufReader::new(reader);

@@ -33,6 +33,14 @@ pub struct ConditionerConfig {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ModelId {
+    pub sig: String,
+    pub epoch: usize,
+    pub mimi_sig: String,
+    pub mimi_epoch: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TTSConfig {
     pub flow_lm: FlowLMConfig,
     pub mimi: MimiConfig,
@@ -41,6 +49,7 @@ pub struct TTSConfig {
     pub eos_threshold: f32,
     pub fuser: FuserConfig,
     pub conditioners: Vec<ConditionerConfig>,
+    pub model_id: Option<ModelId>,
 }
 
 impl TTSConfig {
@@ -92,6 +101,14 @@ impl TTSConfig {
                 prepend: vec![],
                 cross: vec![],
             },
+            model_id: None,
+        }
+    }
+
+    pub fn model_ext(&self) -> Option<String> {
+        match self.model_id.as_ref() {
+            Some(id) => Some(format!("{}@{}", id.sig, id.epoch)),
+            None => None,
         }
     }
 }
