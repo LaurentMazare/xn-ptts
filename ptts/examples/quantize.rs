@@ -27,7 +27,8 @@ struct Args {
 
 fn is_excluded(name: &str, no_mimi_encoder: bool) -> bool {
     (name.starts_with("mimi.quantizer.") && !name.starts_with("mimi.quantizer.output_proj"))
-        || (no_mimi_encoder && name.starts_with("mimi.encoder"))
+        || (no_mimi_encoder && name.starts_with("mimi.encoder")
+            || name == "mimi.downsample.conv.conv.weight")
 }
 
 const QUANT_SUFFIXES: &[&str] =
