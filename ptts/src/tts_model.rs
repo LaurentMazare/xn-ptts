@@ -41,6 +41,14 @@ fn default_audio_prompt_max_duration() -> f32 {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ModelId {
+    pub sig: String,
+    pub epoch: usize,
+    pub mimi_sig: String,
+    pub mimi_epoch: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TTSConfig {
     pub flow_lm: FlowLMConfig,
     pub mimi: MimiConfig,
@@ -49,6 +57,7 @@ pub struct TTSConfig {
     pub eos_threshold: f32,
     pub fuser: FuserConfig,
     pub conditioners: Vec<ConditionerConfig>,
+    pub model_id: Option<ModelId>,
     /// Minimum allowed duration in seconds for an audio prompt passed to
     /// `get_state_for_audio`. If zero, an empty audio prompt is allowed, in
     /// which case the conditioned state skips the `prompt_audio` call entirely.
@@ -116,10 +125,15 @@ impl TTSConfig {
                 prepend: vec![],
                 cross: vec![],
             },
+            model_id: None,
             audio_prompt_min_duration: 10.0,
             audio_prompt_max_duration: 10.0,
             cfg_null_audio_empty: false,
         }
+    }
+
+    pub fn model_ext(&self) -> Option<String> {
+        self.model_id.as_ref().map(|id| format!("{}@{}", id.sig, id.epoch))
     }
 }
 

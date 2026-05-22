@@ -1605,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "ptts"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "clap",
@@ -1615,6 +1615,7 @@ dependencies = [
  "rand",
  "rand_distr",
  "rubato",
+ "safetensors",
  "sentencepiece",
  "serde",
  "serde_json",
@@ -1627,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "ptts-pyo3"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "hf-hub",
  "numpy",
@@ -1642,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "ptts-wasm"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "getrandom 0.3.4",
  "js-sys",
@@ -1655,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "ptts-ws-server"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "axum",
@@ -3219,9 +3220,9 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xn"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ede98b6d288862c6d33f76ea5aaefff177aa4024973d1e17f60b4bc4cd35f12"
+checksum = "eea71cec0a9d2b2e963c646e6489d6bdf7896d6d1ae46652d3c78af196b800b5"
 dependencies = [
  "bindgen_cuda",
  "byteorder",

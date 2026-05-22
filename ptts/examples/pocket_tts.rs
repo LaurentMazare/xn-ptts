@@ -102,6 +102,12 @@ fn download_files(voice: &str) -> Result<(std::path::PathBuf, std::path::PathBuf
             .with_context(|| format!("voice embedding '{voice}' not found"))?;
         tracing::info!(?voice_path, "voice embedding downloaded");
         Voice::Safetensors(voice_path)
+    } else if voice.ends_with(".safetensors") {
+        let voice_path = std::path::PathBuf::from(voice);
+        if !voice_path.exists() {
+            anyhow::bail!("voice embedding file '{}' not found", voice_path.display());
+        }
+        Voice::Safetensors(voice_path)
     } else {
         Voice::Audio(voice.to_string())
     };
@@ -312,7 +318,17 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
             tracing::info!(?config, "using local config");
             let config: ptts::tts_model::TTSConfig =
                 serde_json::from_str(&std::fs::read_to_string(config)?)?;
-            let voice = args.voice.map(Voice::Audio);
+            let voice = match args.voice {
+                None => None,
+                Some(voice) if voice.ends_with(".safetensors") => {
+                    let voice_path = std::path::PathBuf::from(voice);
+                    if !voice_path.exists() {
+                        anyhow::bail!("voice embedding file '{}' not found", voice_path.display());
+                    }
+                    Some(Voice::Safetensors(voice_path))
+                }
+                Some(voice) => Some(Voice::Audio(voice)),
+            };
             (model_path, tokenizer_path, voice, config)
         }
         None => {
@@ -347,7 +363,8 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
         xn::with_f16c()
     );
 
-    tracing::info!(?model_path, "loading model");
+    let model_ext = cfg.model_ext();
+    tracing::info!(?model_path, ?model_ext, "loading model");
     let vb = if model_path.extension().and_then(|v| v.to_str()) == Some("gguf") {
         let reader = std::fs::File::open(&model_path)?;
         let reader = std::io::BufReader::new(reader);
@@ -357,10 +374,12 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
     };
     let vb = vb.root();
     let model: TTSModel<Q> = TTSModel::load(&vb, Box::new(tokenizer), &cfg)?;
-    let mimi_enc: MimiEnc<Q> = MimiEnc::load(&vb, &cfg)?;
     vb.check_all_used_with_ignore(|v| {
         v == "flow_lm.condition_provider.conditioners.speaker_wavs.learnt_padding"
             || v.starts_with("mimi.quantizer")
+            || v.starts_with("mimi.encoder")
+            || v == "flow_lm.speaker_proj_weight"
+            || v == "mimi.downsample.conv.conv.weight"
     })?;
     tracing::info!("model loaded successfully!");
 
@@ -410,6 +429,23 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
                 if cfg_state.is_some() {
                     anyhow::bail!("cfg is not supported with pre-computed voice embeddings");
                 }
+                if let Some(model_ext) = cfg.model_ext() {
+                    let file_content = std::fs::read(&voice_path)?;
+                    let (_, metadata) = safetensors::SafeTensors::read_metadata(&file_content)?;
+                    if let Some(metadata) = metadata.metadata() {
+                        if let Some(voice_model_ext) = metadata.get("model_ext") {
+                            tracing::info!(
+                                ?voice_model_ext,
+                                "voice embedding model_ext from metadata"
+                            );
+                            if voice_model_ext.as_str() != model_ext {
+                                anyhow::bail!(
+                                    "voice embedding model_ext '{voice_model_ext}' does not match config model_ext '{model_ext}'"
+                                );
+                            }
+                        }
+                    }
+                }
                 (voice_emb.to::<Q::T>()?, None)
             }
             Voice::Audio(path) => {
@@ -443,6 +479,7 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
                     );
                 }
                 let pcm_tensor = Tensor::from_vec(pcm, (1, 1, ()), &dev)?.to::<Q::T>()?;
+                let mimi_enc: MimiEnc<Q> = MimiEnc::load(&vb, &cfg)?;
                 let emb = mimi_enc.encode_audio(&pcm_tensor)?;
                 tracing::info!(?emb, "encoded audio to latent");
                 let null_emb = if cfg_state.is_some() && !cfg.cfg_null_audio_empty {
