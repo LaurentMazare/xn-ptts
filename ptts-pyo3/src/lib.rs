@@ -456,13 +456,13 @@ impl ModelState {
 struct SpTokenizer(sentencepiece::SentencePieceProcessor);
 
 impl ptts::Tokenizer for SpTokenizer {
-    fn encode(&self, text: &str) -> Vec<u32> {
-        let pieces = self.0.encode(text).unwrap_or_default();
-        pieces.iter().map(|p| p.id).collect()
+    fn encode(&self, text: &str) -> xn::Result<Vec<u32>> {
+        let pieces = self.0.encode(text).map_err(xn::Error::wrap)?;
+        Ok(pieces.iter().map(|p| p.id).collect())
     }
 
-    fn decode(&self, tokens: &[u32]) -> String {
-        self.0.decode_piece_ids(tokens).unwrap_or_default()
+    fn decode(&self, tokens: &[u32]) -> xn::Result<String> {
+        self.0.decode_piece_ids(tokens).map_err(xn::Error::wrap)
     }
 }
 

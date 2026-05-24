@@ -49,7 +49,7 @@ impl<T: WithDTypeF, B: Backend> LUTConditioner<T, B> {
     /// Tokenize text and return token ids.
     pub fn tokenize(&self, text: &str) -> Result<Vec<u32>> {
         match self.tokenizer.as_ref() {
-            Some(tokenizer) => Ok(tokenizer.encode(text)),
+            Some(tokenizer) => Ok(tokenizer.encode(text)?),
             None => xn::bail!("No tokenizer available for LUTConditioner"),
         }
     }

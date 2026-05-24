@@ -35,12 +35,12 @@ impl PresetTokenizer {
 }
 
 impl ptts::Tokenizer for PresetTokenizer {
-    fn encode(&self, _text: &str) -> Vec<u32> {
-        self.tokens.lock().unwrap().clone()
+    fn encode(&self, _text: &str) -> xn::Result<Vec<u32>> {
+        Ok(self.tokens.lock().unwrap().clone())
     }
 
-    fn decode(&self, _tokens: &[u32]) -> String {
-        String::new()
+    fn decode(&self, _tokens: &[u32]) -> xn::Result<String> {
+        Ok(String::new())
     }
 }
 
@@ -48,11 +48,11 @@ impl ptts::Tokenizer for PresetTokenizer {
 struct SharedTokenizer(std::sync::Arc<PresetTokenizer>);
 
 impl ptts::Tokenizer for SharedTokenizer {
-    fn encode(&self, text: &str) -> Vec<u32> {
+    fn encode(&self, text: &str) -> xn::Result<Vec<u32>> {
         self.0.encode(text)
     }
 
-    fn decode(&self, tokens: &[u32]) -> String {
+    fn decode(&self, tokens: &[u32]) -> xn::Result<String> {
         self.0.decode(tokens)
     }
 }

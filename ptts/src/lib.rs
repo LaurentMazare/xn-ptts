@@ -13,6 +13,6 @@ pub mod tts_model;
 pub mod wav;
 
 pub trait Tokenizer {
-    fn encode(&self, text: &str) -> Vec<u32>;
-    fn decode(&self, tokens: &[u32]) -> String;
+    fn encode(&self, text: &str) -> xn::Result<Vec<u32>>;
+    fn decode(&self, tokens: &[u32]) -> xn::Result<String>;
 }
