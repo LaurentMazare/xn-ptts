@@ -453,16 +453,40 @@ impl ModelState {
     }
 }
 
-struct SpTokenizer(sentencepiece::SentencePieceProcessor);
+pub enum Tok {
+    Sp(std::sync::Arc<sentencepiece::SentencePieceProcessor>),
+    Hf(Box<tokenizers::Tokenizer>),
+}
 
-impl ptts::Tokenizer for SpTokenizer {
+impl From<sentencepiece::SentencePieceProcessor> for Tok {
+    fn from(sp: sentencepiece::SentencePieceProcessor) -> Self {
+        Tok::Sp(std::sync::Arc::new(sp))
+    }
+}
+
+impl From<tokenizers::Tokenizer> for Tok {
+    fn from(tok: tokenizers::Tokenizer) -> Self {
+        Tok::Hf(Box::new(tok))
+    }
+}
+
+impl ptts::Tokenizer for Tok {
     fn encode(&self, text: &str) -> xn::Result<Vec<u32>> {
-        let pieces = self.0.encode(text).map_err(xn::Error::wrap)?;
-        Ok(pieces.iter().map(|p| p.id).collect())
+        let tokens = match self {
+            Tok::Sp(sp) => {
+                sp.encode(text).map_err(xn::Error::wrap)?.into_iter().map(|v| v.id).collect()
+            }
+            Tok::Hf(tok) => tok.encode(text, false).map_err(xn::Error::wrap)?.get_ids().to_vec(),
+        };
+        Ok(tokens)
     }
 
-    fn decode(&self, tokens: &[u32]) -> xn::Result<String> {
-        self.0.decode_piece_ids(tokens).map_err(xn::Error::wrap)
+    fn decode(&self, ids: &[u32]) -> xn::Result<String> {
+        let decoded = match self {
+            Tok::Sp(sp) => sp.decode_piece_ids(ids).map_err(xn::Error::wrap)?,
+            Tok::Hf(tok) => tok.decode(ids, true).map_err(xn::Error::wrap)?,
+        };
+        Ok(decoded)
     }
 }
 
@@ -552,9 +576,15 @@ fn load_model_<B: xn::Backend>(
     };
 
     let tokenizer_path = tokenizer_path.to_str().context("invalid tokenizer path")?;
-    let sp = sentencepiece::SentencePieceProcessor::open(tokenizer_path)
-        .map_err(|e| xn::Error::msg(e).with_path(tokenizer_path))?;
-    let tokenizer = SpTokenizer(sp);
+    let tokenizer = if tokenizer_path.ends_with(".model") {
+        let sp = sentencepiece::SentencePieceProcessor::open(tokenizer_path)
+            .map_err(|e| xn::Error::msg(e).with_path(tokenizer_path))?;
+        Tok::Sp(sp.into())
+    } else {
+        let tok = tokenizers::Tokenizer::from_file(tokenizer_path)
+            .map_err(|e| xn::Error::msg(e).with_path(tokenizer_path))?;
+        Tok::Hf(Box::new(tok))
+    };
 
     let vb = VB::load_with_key_map(&[&model_path], dev, remap_key)
         .map_err(|e| e.with_path(&model_path))?
