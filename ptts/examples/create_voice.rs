@@ -64,35 +64,49 @@ fn run(args: Args) -> Result<()> {
 
     let dev = xn::CpuDevice;
     tracing::info!("loading config from {}", args.config);
-    let cfg: ptts::tts_model::TTSConfig =
-        serde_json::from_str(&std::fs::read_to_string(&args.config)?)?;
+    let (cfg, model_path) = if args.config.ends_with("json") {
+        let cfg: ptts::tts_model::TTSConfig =
+            serde_json::from_str(&std::fs::read_to_string(&args.config)?)?;
+        let config = std::fs::canonicalize(args.config)?;
+        let parent = config.parent().context("config path has no parent")?;
+        let model_path = match args.weights.as_ref() {
+            None => parent.join("model.safetensors"),
+            Some(p) => std::path::PathBuf::from_str(p)?,
+        };
+        (cfg, model_path)
+    } else {
+        let api = hf_hub::api::sync::Api::new()?;
+        let repo = api.model(args.config);
+        let cfg = repo.get("config.json")?;
+        let cfg: ptts::tts_model::TTSConfig = serde_json::from_str(&std::fs::read_to_string(cfg)?)?;
+        let model_path = match args.weights.as_ref() {
+            None => repo.get("model.safetensors")?,
+            Some(p) => std::path::PathBuf::from_str(p)?,
+        };
+        (cfg, model_path)
+    };
     let model_ext = cfg.model_ext();
+    let mimi_sample_rate = cfg.mimi.sample_rate;
     tracing::info!(?model_ext, "model extension");
     tracing::info!("loading voice from audio file {}", args.input);
 
     let (pcm, sample_rate) = audio_helpers::pcm_decode(&args.input)?;
     let sample_rate = sample_rate as usize;
-    let pcm = if sample_rate != cfg.mimi.sample_rate {
-        audio_helpers::resample(&pcm, sample_rate, cfg.mimi.sample_rate)?
+    let pcm = if sample_rate != mimi_sample_rate {
+        audio_helpers::resample(&pcm, sample_rate, mimi_sample_rate)?
     } else {
         pcm
     };
     tracing::info!("loaded audio with {} samples", pcm.len());
     // Trim it to 10s max.
-    let pcm = if pcm.len() > cfg.mimi.sample_rate * 10 {
+    let pcm = if pcm.len() > mimi_sample_rate * 10 {
         tracing::info!("trimming audio to 10 seconds");
-        pcm[..cfg.mimi.sample_rate * 10].to_vec()
+        pcm[..mimi_sample_rate * 10].to_vec()
     } else {
         pcm
     };
     let pcm_tensor = Tensor::from_vec(pcm, (1, 1, ()), &dev)?.to::<f32>()?;
 
-    let config = std::fs::canonicalize(args.config)?;
-    let parent = config.parent().context("config path has no parent")?;
-    let model_path = match args.weights.as_ref() {
-        None => parent.join("model.safetensors"),
-        Some(p) => std::path::PathBuf::from_str(p)?,
-    };
     tracing::info!(?model_path, "loading model");
     let vb = if model_path.extension().and_then(|v| v.to_str()) == Some("gguf") {
         let reader = std::fs::File::open(&model_path)?;
