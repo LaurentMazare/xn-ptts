@@ -19,6 +19,7 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     addr: String,
 
+    #[arg(long)]
     config: Option<std::path::PathBuf>,
 
     #[arg(long, default_value_t = 0.4)]
