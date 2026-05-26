@@ -111,6 +111,7 @@ fn load_voice_embedding<B: xn::Backend>(
 pub struct AppStateB<Q: BackendQ> {
     pub model: Arc<TTSModel<Q>>,
     pub voices: HashMap<String, Tensor<Q::T, Q::B>>,
+    pub default_voice: String,
     pub max_seq_len: usize,
     pub temperature: f32,
     pub seed_base: u64,
@@ -194,7 +195,7 @@ impl<Q: BackendQ> LoadedModel<Q> {
         };
         let tokenizer_path = parent_dir.join("tokenizer.model");
         let mut voices: HashMap<String, Tensor<Q::T, Q::B>> = HashMap::new();
-        for voice in parent_dir.join("embeddings").read_dir()? {
+        for voice in parent_dir.join("voices").read_dir()? {
             let voice = match voice {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -265,10 +266,14 @@ pub fn load_ptts<Q: BackendQ>(
 
     let sample_rate = model.sample_rate() as u32;
     let frame_size = (sample_rate as f64 / m.cfg.mimi.frame_rate).round() as u32;
+    let mut voice_vec: Vec<_> = m.voices.keys().collect();
+    voice_vec.sort();
 
+    let default_voice = voice_vec[0].clone();
     Ok(AppStateB {
         model: Arc::new(model),
         voices: m.voices,
+        default_voice,
         max_seq_len,
         temperature,
         seed_base,
