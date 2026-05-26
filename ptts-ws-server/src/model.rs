@@ -183,7 +183,15 @@ impl<Q: BackendQ> LoadedModel<Q> {
         let mut cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config)?)
             .with_context(|| "failed to read config from file {config:?}")?;
         cfg.temp = temperature;
-        let model_path = parent_dir.join("model.safetensors");
+        let model_path = if parent_dir.join("model.safetensors").is_file() {
+            parent_dir.join("model.safetensors")
+        } else if parent_dir.join("model.q8.gguf").is_file() {
+            parent_dir.join("model.q8.gguf")
+        } else {
+            anyhow::bail!(
+                "model file not found in directory {parent_dir:?}; expected model.safetensors or model.gguf"
+            );
+        };
         let tokenizer_path = parent_dir.join("tokenizer.model");
         let mut voices: HashMap<String, Tensor<Q::T, Q::B>> = HashMap::new();
         for voice in parent_dir.join("embeddings").read_dir()? {
