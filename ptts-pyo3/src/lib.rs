@@ -59,6 +59,7 @@ struct ModelB<B: xn::Backend> {
     audio_prompt_min_duration: f32,
     audio_prompt_max_duration: f32,
     cfg_null_audio_empty: bool,
+    speaker_sample_rate: usize,
 }
 
 impl<B: xn::Backend> ModelB<B> {
@@ -68,7 +69,7 @@ impl<B: xn::Backend> ModelB<B> {
         cfg_coef: Option<f32>,
         max_seq_len: usize,
     ) -> xn::Result<ModelStateB<B>> {
-        let sample_rate = self.inner.sample_rate();
+        let sample_rate = self.speaker_sample_rate;
         let min_len = (sample_rate as f32 * self.audio_prompt_min_duration).round() as usize;
         let max_len = (sample_rate as f32 * self.audio_prompt_max_duration).round() as usize;
         if audio_prompt.len() < min_len || audio_prompt.len() > max_len {
@@ -578,6 +579,7 @@ fn load_model_<B: xn::Backend>(
         audio_prompt_min_duration: cfg.audio_prompt_min_duration,
         audio_prompt_max_duration: cfg.audio_prompt_max_duration,
         cfg_null_audio_empty: cfg.cfg_null_audio_empty,
+        speaker_sample_rate: cfg.speaker_mimi_cfg().sample_rate,
     })
 }
 

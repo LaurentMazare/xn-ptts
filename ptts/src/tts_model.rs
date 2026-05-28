@@ -48,6 +48,16 @@ pub struct ModelId {
     pub mimi_epoch: usize,
 }
 
+/// Optional separate Mimi codec used only for speaker (voice-prompt) encoding.
+/// When set, `MimiEnc` loads its encoder weights from `prefix` and uses
+/// `mimi` as the codec config, instead of the main `TTSConfig.mimi`.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SpeakerMimiConfig {
+    /// Weight-name prefix for the speaker mimi (e.g. `"speaker_mimi"`).
+    pub prefix: String,
+    pub mimi: MimiConfig,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TTSConfig {
     pub flow_lm: FlowLMConfig,
@@ -74,6 +84,10 @@ pub struct TTSConfig {
     /// real audio prompt's length, which preserves the historical behavior.
     #[serde(default)]
     pub cfg_null_audio_empty: bool,
+    /// Optional, when set the speaker encoder loads from this prefix using
+    /// this dedicated `MimiConfig` rather than the main `mimi` codec.
+    #[serde(default)]
+    pub speaker_mimi: Option<SpeakerMimiConfig>,
 }
 
 impl TTSConfig {
@@ -129,11 +143,29 @@ impl TTSConfig {
             audio_prompt_min_duration: 10.0,
             audio_prompt_max_duration: 10.0,
             cfg_null_audio_empty: false,
+            speaker_mimi: None,
         }
     }
 
     pub fn model_ext(&self) -> Option<String> {
         self.model_id.as_ref().map(|id| format!("{}@{}", id.sig, id.epoch))
+    }
+
+    /// Returns the `MimiConfig` used to encode the voice prompt — the
+    /// dedicated `speaker_mimi.mimi` if set, otherwise the main `mimi`.
+    pub fn speaker_mimi_cfg(&self) -> &MimiConfig {
+        match self.speaker_mimi.as_ref() {
+            Some(s) => &s.mimi,
+            None => &self.mimi,
+        }
+    }
+
+    /// Returns the weight-name prefix used to load the speaker encoder.
+    pub fn speaker_mimi_prefix(&self) -> &str {
+        match self.speaker_mimi.as_ref() {
+            Some(s) => s.prefix.as_str(),
+            None => "mimi",
+        }
     }
 }
 
@@ -344,10 +376,11 @@ pub struct MimiEnc<Q: BackendQ> {
 
 impl<Q: BackendQ> MimiEnc<Q> {
     pub fn load(vb: &Path<Q::B>, cfg: &TTSConfig) -> Result<Self> {
-        let mimi = MimiEncoder::load(&vb.pp("mimi"), &cfg.mimi)?;
+        let mimi_cfg = cfg.speaker_mimi_cfg();
+        let mimi = MimiEncoder::load(&vb.pp(cfg.speaker_mimi_prefix()), mimi_cfg)?;
         let speaker_proj = if vb.contains("flow_lm.speaker_proj_weight") {
             let weights = vb
-                .tensor("flow_lm.speaker_proj_weight", (cfg.flow_lm.d_model, cfg.mimi.dimension))?;
+                .tensor("flow_lm.speaker_proj_weight", (cfg.flow_lm.d_model, mimi_cfg.dimension))?;
             Some(Linear::new(weights))
         } else {
             None

@@ -70,18 +70,19 @@ fn run(args: Args) -> Result<()> {
     tracing::info!(?model_ext, "model extension");
     tracing::info!("loading voice from audio file {}", args.input);
 
+    let speaker_sr = cfg.speaker_mimi_cfg().sample_rate;
     let (pcm, sample_rate) = audio_helpers::pcm_decode(&args.input)?;
     let sample_rate = sample_rate as usize;
-    let pcm = if sample_rate != cfg.mimi.sample_rate {
-        audio_helpers::resample(&pcm, sample_rate, cfg.mimi.sample_rate)?
+    let pcm = if sample_rate != speaker_sr {
+        audio_helpers::resample(&pcm, sample_rate, speaker_sr)?
     } else {
         pcm
     };
     tracing::info!("loaded audio with {} samples", pcm.len());
     // Trim it to 10s max.
-    let pcm = if pcm.len() > cfg.mimi.sample_rate * 10 {
+    let pcm = if pcm.len() > speaker_sr * 10 {
         tracing::info!("trimming audio to 10 seconds");
-        pcm[..cfg.mimi.sample_rate * 10].to_vec()
+        pcm[..speaker_sr * 10].to_vec()
     } else {
         pcm
     };
