@@ -11,6 +11,7 @@ license.workspace = true
 
 [dependencies]
 xn = { workspace = true }
+ebur128 = { workspace = true }
 rand = { workspace = true, features = ["std_rng"] }
 rand_distr = { workspace = true }
 serde = { workspace = true }

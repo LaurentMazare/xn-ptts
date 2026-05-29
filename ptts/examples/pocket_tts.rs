@@ -449,7 +449,8 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
             }
             Voice::Audio(path) => {
                 tracing::info!("loading voice from audio file {}", path);
-                let (pcm, sample_rate) = audio_helpers::pcm_decode(&path)?;
+                let (mut pcm, sample_rate) = audio_helpers::pcm_decode(&path)?;
+                ptts::utils::normalize_loudness(&mut pcm, sample_rate)?;
                 let sample_rate = sample_rate as usize;
                 let pcm = if sample_rate != cfg.mimi.sample_rate {
                     audio_helpers::resample(&pcm, sample_rate, cfg.mimi.sample_rate)?

@@ -90,7 +90,8 @@ fn run(args: Args) -> Result<()> {
     tracing::info!(?model_ext, "model extension");
     tracing::info!("loading voice from audio file {}", args.input);
 
-    let (pcm, sample_rate) = audio_helpers::pcm_decode(&args.input)?;
+    let (mut pcm, sample_rate) = audio_helpers::pcm_decode(&args.input)?;
+    ptts::utils::normalize_loudness(&mut pcm, sample_rate)?;
     let sample_rate = sample_rate as usize;
     let pcm = if sample_rate != mimi_sample_rate {
         audio_helpers::resample(&pcm, sample_rate, mimi_sample_rate)?
