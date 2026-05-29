@@ -12,13 +12,12 @@ use xn::nn::VB;
 struct SpTokenizer(sentencepiece::SentencePieceProcessor);
 
 impl ptts::Tokenizer for SpTokenizer {
-    fn encode(&self, text: &str) -> Vec<u32> {
-        let pieces = self.0.encode(text).unwrap_or_default();
-        pieces.iter().map(|p| p.id).collect()
+    fn encode(&self, text: &str) -> xn::Result<Vec<u32>> {
+        Ok(self.0.encode(text).map_err(xn::Error::wrap)?.into_iter().map(|v| v.id).collect())
     }
 
-    fn decode(&self, tokens: &[u32]) -> String {
-        self.0.decode_piece_ids(tokens).unwrap_or_default()
+    fn decode(&self, tokens: &[u32]) -> xn::Result<String> {
+        self.0.decode_piece_ids(tokens).map_err(xn::Error::wrap)
     }
 }
 
@@ -348,7 +347,7 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
     let tokenizer_path = tokenizer_path.to_str().context("invalid tokenizer path")?;
     let sp = sentencepiece::SentencePieceProcessor::open(tokenizer_path)?;
     let tokenizer = SpTokenizer(sp);
-    let chunks = split_into_best_sentences(&tokenizer, &args.text, None);
+    let chunks = split_into_best_sentences(&tokenizer, &args.text, None)?;
 
     let mut rng = match args.rng_values {
         Some(path) => Rng::from_file(&path)?,

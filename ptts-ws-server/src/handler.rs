@@ -201,8 +201,9 @@ async fn handle_setup<Q: xn::BackendQ>(
         .as_deref()
         .filter(|s| !s.is_empty())
         .or(voice.as_deref().filter(|s| !s.is_empty()))
-        .unwrap_or("alba");
-    let voice_name = if voice_name == "default" { "alba" } else { voice_name }.to_string();
+        .unwrap_or(&app.default_voice);
+    let voice_name =
+        if voice_name == "default" { &app.default_voice } else { voice_name }.to_string();
     let voice_emb_t = match app.voices.get(&voice_name) {
         Some(v) => v,
         None => {

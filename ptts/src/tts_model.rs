@@ -413,15 +413,15 @@ pub fn split_into_best_sentences(
     tokenizer: &dyn crate::Tokenizer,
     text: &str,
     max_tokens: Option<usize>,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     let max_tokens = max_tokens.unwrap_or(MAX_TOKENS_PER_CHUNK);
     let (prepared, _) = prepare_text_prompt(text);
     let prepared = prepared.trim().to_string();
-    let tokens = tokenizer.encode(&prepared);
+    let tokens = tokenizer.encode(&prepared)?;
 
     // Get end-of-sentence token ids by tokenizing ".!...?" and skipping the first token
     // (the first token includes the leading space marker from sentencepiece).
-    let eos_marker_tokens = tokenizer.encode(".!...?");
+    let eos_marker_tokens = tokenizer.encode(".!...?")?;
     let eos_tokens =
         if eos_marker_tokens.len() > 1 { &eos_marker_tokens[1..] } else { &eos_marker_tokens[..] };
 
@@ -445,7 +445,7 @@ pub fn split_into_best_sentences(
     let mut sentences = Vec::new();
     for window in sentence_boundaries.windows(2) {
         let (start, end) = (window[0], window[1]);
-        let text = tokenizer.decode(&tokens[start..end]);
+        let text = tokenizer.decode(&tokens[start..end])?;
         sentences.push((end - start, text));
     }
 
@@ -476,7 +476,7 @@ pub fn split_into_best_sentences(
         chunks.push(current_chunk.trim().to_string());
     }
 
-    chunks
+    Ok(chunks)
 }
 
 /// Prepare text for generation: capitalize, add punctuation, pad short text.
