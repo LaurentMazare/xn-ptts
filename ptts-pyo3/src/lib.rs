@@ -3,7 +3,7 @@ use ptts::tts_model::{MimiEnc, TTSConfig, TTSModel, TTSState};
 use pyo3::prelude::*;
 use std::sync::Arc;
 use xn::nn::VB;
-use xn::{Tensor, Unquantized, error::Context};
+use xn::{BackendQ, Tensor, Unquantized, error::Context};
 
 struct StdRng {
     inner: rand::rngs::StdRng,
@@ -49,25 +49,25 @@ macro_rules! py_bail {
     };
 }
 
-const VOICES: &[&str] =
+const POCKET_TTS_VOICES: &[&str] =
     &["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 
-struct ModelB<B: xn::Backend> {
-    inner: Arc<TTSModel<Unquantized<f32, B>>>,
-    mimi_enc: MimiEnc<Unquantized<f32, B>>,
-    voices: std::collections::HashMap<String, Tensor<f32, B>>,
+struct ModelB<Q: BackendQ> {
+    inner: Arc<TTSModel<Q>>,
+    mimi_enc: MimiEnc<Q>,
+    voices: std::collections::HashMap<String, Tensor<Q::T, Q::B>>,
     audio_prompt_min_duration: f32,
     audio_prompt_max_duration: f32,
     cfg_null_audio_empty: bool,
 }
 
-impl<B: xn::Backend> ModelB<B> {
+impl<Q: BackendQ> ModelB<Q> {
     fn get_state_for_audio(
         &self,
         audio_prompt: &[f32],
         cfg_coef: Option<f32>,
         max_seq_len: usize,
-    ) -> xn::Result<ModelStateB<B>> {
+    ) -> xn::Result<ModelStateB<Q>> {
         let sample_rate = self.inner.sample_rate();
         let min_len = (sample_rate as f32 * self.audio_prompt_min_duration).round() as usize;
         let max_len = (sample_rate as f32 * self.audio_prompt_max_duration).round() as usize;
@@ -84,7 +84,7 @@ impl<B: xn::Backend> ModelB<B> {
         let pcm = if audio_prompt.is_empty() {
             None
         } else {
-            let pcm = xn::Tensor::from_vec(audio_prompt.to_vec(), (1, 1, ()), dev)?;
+            let pcm = xn::Tensor::from_vec(audio_prompt.to_vec(), (1, 1, ()), dev)?.to::<Q::T>()?;
             let voice_emb = self.mimi_enc.encode_audio(&pcm)?;
             self.inner.prompt_audio(&mut state, &voice_emb)?;
             Some(pcm)
@@ -105,7 +105,7 @@ impl<B: xn::Backend> ModelB<B> {
         Ok(ModelStateB { model: Arc::clone(&self.inner), state, cfg_state })
     }
 
-    fn get_state_for_voice(&self, voice: &str, max_seq_len: usize) -> xn::Result<ModelStateB<B>> {
+    fn get_state_for_voice(&self, voice: &str, max_seq_len: usize) -> xn::Result<ModelStateB<Q>> {
         let voice_emb = match self.voices.get(voice) {
             Some(emb) => emb,
             None => {
@@ -128,11 +128,68 @@ impl<B: xn::Backend> ModelB<B> {
 }
 
 // Poor man's type erasure, that's especially painful with pyo3 where
-// the [pyclass] attribute is on a struct to get a proper object.
+// the [pyclass] attribute is on a struct to get a proper object. The CPU
+// backend supports unquantized f32 as well as the GGML quantized weight
+// formats applied to the flow_lm transformer linear weights; the optional
+// CUDA backend stays unquantized.
 enum ModelV {
-    Cpu(ModelB<xn::CpuDevice>),
+    Cpu(ModelB<Unquantized<f32, xn::CpuDevice>>),
+    Q80(ModelB<xn::quantized::Q80F32>),
+    Q81(ModelB<xn::quantized::Q81F32>),
+    Q8k(ModelB<xn::quantized::Q8kF32>),
+    Q6k(ModelB<xn::quantized::Q6kF32>),
+    Q50(ModelB<xn::quantized::Q50F32>),
+    Q51(ModelB<xn::quantized::Q51F32>),
+    Q5k(ModelB<xn::quantized::Q5kF32>),
+    Q40(ModelB<xn::quantized::Q40F32>),
+    Q41(ModelB<xn::quantized::Q41F32>),
+    Q4k(ModelB<xn::quantized::Q4kF32>),
     #[cfg(feature = "cuda")]
-    Cuda(ModelB<xn::CudaDevice>),
+    Cuda(ModelB<Unquantized<f32, xn::CudaDevice>>),
+}
+
+/// Dispatch over a `&ModelV`, binding the inner `ModelB<Q>` to the supplied
+/// identifier and evaluating `$body` for the matching backend.
+macro_rules! on_model {
+    ($e:expr, |$m:ident| $body:expr) => {
+        match $e {
+            ModelV::Cpu($m) => $body,
+            ModelV::Q80($m) => $body,
+            ModelV::Q81($m) => $body,
+            ModelV::Q8k($m) => $body,
+            ModelV::Q6k($m) => $body,
+            ModelV::Q50($m) => $body,
+            ModelV::Q51($m) => $body,
+            ModelV::Q5k($m) => $body,
+            ModelV::Q40($m) => $body,
+            ModelV::Q41($m) => $body,
+            ModelV::Q4k($m) => $body,
+            #[cfg(feature = "cuda")]
+            ModelV::Cuda($m) => $body,
+        }
+    };
+}
+
+/// Like [`on_model`] but wraps `$body` in the `ModelStateV` variant matching
+/// the backend, so methods that build a new state stay backend-correct.
+macro_rules! on_model_to_state {
+    ($e:expr, |$m:ident| $body:expr) => {
+        match $e {
+            ModelV::Cpu($m) => ModelStateV::Cpu($body),
+            ModelV::Q80($m) => ModelStateV::Q80($body),
+            ModelV::Q81($m) => ModelStateV::Q81($body),
+            ModelV::Q8k($m) => ModelStateV::Q8k($body),
+            ModelV::Q6k($m) => ModelStateV::Q6k($body),
+            ModelV::Q50($m) => ModelStateV::Q50($body),
+            ModelV::Q51($m) => ModelStateV::Q51($body),
+            ModelV::Q5k($m) => ModelStateV::Q5k($body),
+            ModelV::Q40($m) => ModelStateV::Q40($body),
+            ModelV::Q41($m) => ModelStateV::Q41($body),
+            ModelV::Q4k($m) => ModelStateV::Q4k($body),
+            #[cfg(feature = "cuda")]
+            ModelV::Cuda($m) => ModelStateV::Cuda($body),
+        }
+    };
 }
 
 #[pyclass]
@@ -148,55 +205,92 @@ impl Model {
         max_seq_len: usize,
     ) -> PyResult<ModelState> {
         let audio_prompt = audio_prompt.as_slice()?;
-        let inner = match &self.0 {
-            ModelV::Cpu(m) => {
-                ModelStateV::Cpu(m.get_state_for_audio(audio_prompt, cfg_coef, max_seq_len).w()?)
-            }
-            #[cfg(feature = "cuda")]
-            ModelV::Cuda(m) => {
-                ModelStateV::Cuda(m.get_state_for_audio(audio_prompt, cfg_coef, max_seq_len).w()?)
-            }
-        };
+        let inner = on_model_to_state!(&self.0, |m| m
+            .get_state_for_audio(audio_prompt, cfg_coef, max_seq_len)
+            .w()?);
         Ok(ModelState(inner))
     }
 
     #[pyo3(signature = (voice, max_seq_len=2048))]
     fn get_state_for_voice(&self, voice: &str, max_seq_len: usize) -> PyResult<ModelState> {
-        let inner = match &self.0 {
-            ModelV::Cpu(m) => ModelStateV::Cpu(m.get_state_for_voice(voice, max_seq_len).w()?),
-            #[cfg(feature = "cuda")]
-            ModelV::Cuda(m) => ModelStateV::Cuda(m.get_state_for_voice(voice, max_seq_len).w()?),
-        };
+        let inner =
+            on_model_to_state!(&self.0, |m| m.get_state_for_voice(voice, max_seq_len).w()?);
         Ok(ModelState(inner))
     }
 
     fn voices(&self) -> Vec<String> {
-        match &self.0 {
-            ModelV::Cpu(m) => m.voices(),
-            #[cfg(feature = "cuda")]
-            ModelV::Cuda(m) => m.voices(),
-        }
+        on_model!(&self.0, |m| m.voices())
     }
 
     fn sample_rate(&self) -> usize {
-        match &self.0 {
-            ModelV::Cpu(m) => m.sample_rate(),
-            #[cfg(feature = "cuda")]
-            ModelV::Cuda(m) => m.sample_rate(),
-        }
+        on_model!(&self.0, |m| m.sample_rate())
     }
 }
 
-struct ModelStateB<B: xn::Backend> {
-    model: Arc<TTSModel<Unquantized<f32, B>>>,
-    state: TTSState<Unquantized<f32, B>>,
-    cfg_state: Option<(f32, TTSState<Unquantized<f32, B>>)>,
+struct ModelStateB<Q: BackendQ> {
+    model: Arc<TTSModel<Q>>,
+    state: TTSState<Q>,
+    cfg_state: Option<(f32, TTSState<Q>)>,
 }
 
 enum ModelStateV {
-    Cpu(ModelStateB<xn::CpuDevice>),
+    Cpu(ModelStateB<Unquantized<f32, xn::CpuDevice>>),
+    Q80(ModelStateB<xn::quantized::Q80F32>),
+    Q81(ModelStateB<xn::quantized::Q81F32>),
+    Q8k(ModelStateB<xn::quantized::Q8kF32>),
+    Q6k(ModelStateB<xn::quantized::Q6kF32>),
+    Q50(ModelStateB<xn::quantized::Q50F32>),
+    Q51(ModelStateB<xn::quantized::Q51F32>),
+    Q5k(ModelStateB<xn::quantized::Q5kF32>),
+    Q40(ModelStateB<xn::quantized::Q40F32>),
+    Q41(ModelStateB<xn::quantized::Q41F32>),
+    Q4k(ModelStateB<xn::quantized::Q4kF32>),
     #[cfg(feature = "cuda")]
-    Cuda(ModelStateB<xn::CudaDevice>),
+    Cuda(ModelStateB<Unquantized<f32, xn::CudaDevice>>),
+}
+
+/// Dispatch over a `&ModelStateV`, binding the inner `ModelStateB<Q>` to the
+/// supplied identifier and evaluating `$body`.
+macro_rules! on_state {
+    ($e:expr, |$s:ident| $body:expr) => {
+        match $e {
+            ModelStateV::Cpu($s) => $body,
+            ModelStateV::Q80($s) => $body,
+            ModelStateV::Q81($s) => $body,
+            ModelStateV::Q8k($s) => $body,
+            ModelStateV::Q6k($s) => $body,
+            ModelStateV::Q50($s) => $body,
+            ModelStateV::Q51($s) => $body,
+            ModelStateV::Q5k($s) => $body,
+            ModelStateV::Q40($s) => $body,
+            ModelStateV::Q41($s) => $body,
+            ModelStateV::Q4k($s) => $body,
+            #[cfg(feature = "cuda")]
+            ModelStateV::Cuda($s) => $body,
+        }
+    };
+}
+
+/// Like [`on_state`] but wraps `$body` back in the matching `ModelStateV`
+/// variant (used by `clone`).
+macro_rules! on_state_to_state {
+    ($e:expr, |$s:ident| $body:expr) => {
+        match $e {
+            ModelStateV::Cpu($s) => ModelStateV::Cpu($body),
+            ModelStateV::Q80($s) => ModelStateV::Q80($body),
+            ModelStateV::Q81($s) => ModelStateV::Q81($body),
+            ModelStateV::Q8k($s) => ModelStateV::Q8k($body),
+            ModelStateV::Q6k($s) => ModelStateV::Q6k($body),
+            ModelStateV::Q50($s) => ModelStateV::Q50($body),
+            ModelStateV::Q51($s) => ModelStateV::Q51($body),
+            ModelStateV::Q5k($s) => ModelStateV::Q5k($body),
+            ModelStateV::Q40($s) => ModelStateV::Q40($body),
+            ModelStateV::Q41($s) => ModelStateV::Q41($body),
+            ModelStateV::Q4k($s) => ModelStateV::Q4k($body),
+            #[cfg(feature = "cuda")]
+            ModelStateV::Cuda($s) => ModelStateV::Cuda($body),
+        }
+    };
 }
 
 #[pyclass]
@@ -211,10 +305,10 @@ fn check_py_interrupt() -> xn::Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_generate<B: xn::Backend>(
-    model: Arc<TTSModel<Unquantized<f32, B>>>,
-    mut state: TTSState<Unquantized<f32, B>>,
-    mut cfg_state: Option<(f32, TTSState<Unquantized<f32, B>>)>,
+fn run_generate<Q: BackendQ>(
+    model: Arc<TTSModel<Q>>,
+    mut state: TTSState<Q>,
+    mut cfg_state: Option<(f32, TTSState<Q>)>,
     tokens: Vec<u32>,
     temperature: f32,
     seed: u64,
@@ -234,12 +328,13 @@ fn run_generate<B: xn::Backend>(
 
     let ldim = model.flow_lm.ldim;
     let nan_data = vec![f32::NAN; ldim];
-    let mut prev_latent = Tensor::from_vec(nan_data, (1, 1, ldim), device)?;
+    let mut prev_latent: Tensor<Q::T, Q::B> =
+        Tensor::from_vec(nan_data, (1, 1, ldim), device)?.to::<Q::T>()?;
 
-    let (latent_tx, latent_rx) = std::sync::mpsc::channel();
+    let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Tensor<Q::T, Q::B>>();
 
     let decode_model = Arc::clone(&model);
-    let decode_handle = std::thread::spawn(move || -> Result<Tensor<f32, B>, xn::Error> {
+    let decode_handle = std::thread::spawn(move || -> Result<Tensor<f32, Q::B>, xn::Error> {
         let mut audio_chunks = Vec::new();
         while let Ok(latent) = latent_rx.recv() {
             let audio_chunk = decode_model.decode_latent(&latent, &mut mimi_state)?;
@@ -288,7 +383,7 @@ fn run_generate<B: xn::Backend>(
     Ok(pcm)
 }
 
-impl<B: xn::Backend> ModelStateB<B> {
+impl<Q: BackendQ> ModelStateB<Q> {
     fn clone(&self) -> Self {
         Self {
             model: Arc::clone(&self.model),
@@ -385,19 +480,11 @@ impl<B: xn::Backend> ModelStateB<B> {
 #[pymethods]
 impl ModelState {
     fn clone(&self) -> Self {
-        match &self.0 {
-            ModelStateV::Cpu(s) => ModelState(ModelStateV::Cpu(s.clone())),
-            #[cfg(feature = "cuda")]
-            ModelStateV::Cuda(s) => ModelState(ModelStateV::Cuda(s.clone())),
-        }
+        ModelState(on_state_to_state!(&self.0, |s| s.clone()))
     }
 
     fn tokenize(&self, text: &str) -> PyResult<Vec<u32>> {
-        match &self.0 {
-            ModelStateV::Cpu(s) => s.tokenize(text),
-            #[cfg(feature = "cuda")]
-            ModelStateV::Cuda(s) => s.tokenize(text),
-        }
+        on_state!(&self.0, |s| s.tokenize(text))
     }
 
     #[pyo3(signature = (text, temperature=0.7, seed=4242424242424242, pad_to=None, check_py_interrupts_every=5))]
@@ -410,15 +497,14 @@ impl ModelState {
         pad_to: Option<usize>,
         check_py_interrupts_every: Option<usize>,
     ) -> PyResult<Bound<'py, PyArray1<f32>>> {
-        match &self.0 {
-            ModelStateV::Cpu(s) => {
-                s.generate_audio(py, text, temperature, seed, pad_to, check_py_interrupts_every)
-            }
-            #[cfg(feature = "cuda")]
-            ModelStateV::Cuda(s) => {
-                s.generate_audio(py, text, temperature, seed, pad_to, check_py_interrupts_every)
-            }
-        }
+        on_state!(&self.0, |s| s.generate_audio(
+            py,
+            text,
+            temperature,
+            seed,
+            pad_to,
+            check_py_interrupts_every
+        ))
     }
 
     #[pyo3(signature = (tokens, temperature=0.7, seed=4242424242424242, frames_after_eos=1, check_py_interrupts_every=5))]
@@ -431,25 +517,14 @@ impl ModelState {
         frames_after_eos: usize,
         check_py_interrupts_every: Option<usize>,
     ) -> PyResult<Bound<'py, PyArray1<f32>>> {
-        match &self.0 {
-            ModelStateV::Cpu(s) => s.generate_audio_for_tokens(
-                py,
-                tokens,
-                temperature,
-                seed,
-                frames_after_eos,
-                check_py_interrupts_every,
-            ),
-            #[cfg(feature = "cuda")]
-            ModelStateV::Cuda(s) => s.generate_audio_for_tokens(
-                py,
-                tokens,
-                temperature,
-                seed,
-                frames_after_eos,
-                check_py_interrupts_every,
-            ),
-        }
+        on_state!(&self.0, |s| s.generate_audio_for_tokens(
+            py,
+            tokens,
+            temperature,
+            seed,
+            frames_after_eos,
+            check_py_interrupts_every
+        ))
     }
 }
 
@@ -530,19 +605,25 @@ fn load_voice_embedding<B: xn::Backend>(
     }
 }
 
-fn load_model_<B: xn::Backend>(
+fn load_model_<Q: BackendQ>(
     temperature: f32,
     repo_id: String,
     model_file: String,
     config: Option<String>,
     eos_threshold: Option<f32>,
-    dev: B,
-) -> xn::Result<ModelB<B>> {
+    dev: Q::B,
+) -> xn::Result<ModelB<Q>> {
     let (model_path, tokenizer_path, cfg, voices) = match config {
         Some(config_path) => {
             let config_path = std::fs::canonicalize(&config_path).map_err(xn::Error::msg)?;
             let parent = config_path.parent().context("config path has no parent")?;
-            let model_path = parent.join("model.safetensors");
+            // Prefer an unquantized safetensors checkpoint, falling back to a
+            // pre-quantized GGUF if that's what sits next to the config.
+            let model_path = if parent.join("model.safetensors").is_file() {
+                parent.join("model.safetensors")
+            } else {
+                parent.join("model.q8.gguf")
+            };
             let tokenizer_path = parent.join("tokenizer.model");
             let config_str = std::fs::read_to_string(&config_path)
                 .map_err(|e| xn::Error::msg(e).with_path(&config_path))?;
@@ -561,10 +642,11 @@ fn load_model_<B: xn::Backend>(
             let tokenizer_path = repo.get("tokenizer.model").map_err(xn::Error::msg)?;
 
             let mut voices = std::collections::HashMap::new();
-            for &voice in VOICES {
+            for &voice in POCKET_TTS_VOICES {
                 let voice_file = format!("embeddings/{voice}.safetensors");
                 if let Ok(voice_path) = repo.get(&voice_file)
                     && let Ok(voice_emb) = load_voice_embedding(&voice_path, &dev)
+                    && let Ok(voice_emb) = voice_emb.to::<Q::T>()
                 {
                     voices.insert(voice.to_string(), voice_emb);
                 }
@@ -586,16 +668,25 @@ fn load_model_<B: xn::Backend>(
         Tok::Hf(Box::new(tok))
     };
 
-    let vb = VB::load_with_key_map(&[&model_path], dev, remap_key)
-        .map_err(|e| e.with_path(&model_path))?
-        .root();
-    let model = TTSModel::load(&vb, Box::new(tokenizer), &cfg)?;
+    // GGUF checkpoints carry weights already quantized; safetensors are
+    // (re)quantized into `Q` on load.
+    let vb = if model_path.extension().and_then(|v| v.to_str()) == Some("gguf") {
+        let reader = std::fs::File::open(&model_path)
+            .map_err(|e| xn::Error::msg(e).with_path(&model_path))?;
+        let reader = std::io::BufReader::new(reader);
+        VB::load_gguf_with_key_map(reader, dev, remap_key).map_err(|e| e.with_path(&model_path))?
+    } else {
+        VB::load_with_key_map(&[&model_path], dev, remap_key)
+            .map_err(|e| e.with_path(&model_path))?
+    }
+    .root();
+    let model = TTSModel::<Q>::load(&vb, Box::new(tokenizer), &cfg)?;
     let model = if let Some(eos_threshold) = eos_threshold {
         model.with_eos_threshold(eos_threshold)
     } else {
         model
     };
-    let mimi_enc = MimiEnc::load(&vb, &cfg)?;
+    let mimi_enc = MimiEnc::<Q>::load(&vb, &cfg)?;
     vb.check_all_used_with_ignore(|v| {
         v == "flow_lm.condition_provider.conditioners.speaker_wavs.learnt_padding"
             || v.starts_with("mimi.quantizer")
@@ -612,7 +703,8 @@ fn load_model_<B: xn::Backend>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (temperature=0.7, repo_id="kyutai/pocket-tts", model_file="tts_b6369a24.safetensors", config=None, eos_threshold=None, device=None))]
+#[pyo3(signature = (temperature=0.7, repo_id="kyutai/pocket-tts", model_file="tts_b6369a24.safetensors", config=None, eos_threshold=None, device=None, quant=None))]
+#[allow(clippy::too_many_arguments)]
 fn load_model(
     py: Python<'_>,
     temperature: f32,
@@ -621,29 +713,63 @@ fn load_model(
     config: Option<&str>,
     eos_threshold: Option<f32>,
     device: Option<&str>,
+    quant: Option<&str>,
 ) -> PyResult<Model> {
     let repo_id = repo_id.to_string();
     let model_file = model_file.to_string();
     let config = config.map(|s| s.to_string());
-    py.detach(move || match device {
-        None | Some("cpu") => {
-            let model = load_model_(
-                temperature,
-                repo_id,
-                model_file,
-                config,
-                eos_threshold,
-                xn::CpuDevice,
-            )?;
-            Ok(Model(ModelV::Cpu(model)))
+    let quant = quant.map(|s| s.to_string());
+    py.detach(move || {
+        // `quant` selects a GGML weight format for the flow_lm transformer
+        // linear weights; it is only supported on the CPU backend.
+        macro_rules! load_cpu {
+            ($variant:ident, $q:ty) => {{
+                let model = load_model_::<$q>(
+                    temperature,
+                    repo_id,
+                    model_file,
+                    config,
+                    eos_threshold,
+                    xn::CpuDevice,
+                )?;
+                Ok(Model(ModelV::$variant(model)))
+            }};
         }
-        #[cfg(feature = "cuda")]
-        Some("cuda") => {
-            let dev = xn::CudaDevice::new(0)?;
-            let model = load_model_(temperature, repo_id, model_file, config, eos_threshold, dev)?;
-            Ok(Model(ModelV::Cuda(model)))
+        match device {
+            None | Some("cpu") => match quant.as_deref() {
+                None => load_cpu!(Cpu, Unquantized<f32, xn::CpuDevice>),
+                Some("q8" | "q8_0") => load_cpu!(Q80, xn::quantized::Q80F32),
+                Some("q8_1") => load_cpu!(Q81, xn::quantized::Q81F32),
+                Some("q8k") => load_cpu!(Q8k, xn::quantized::Q8kF32),
+                Some("q6k") => load_cpu!(Q6k, xn::quantized::Q6kF32),
+                Some("q5" | "q5_0") => load_cpu!(Q50, xn::quantized::Q50F32),
+                Some("q5_1") => load_cpu!(Q51, xn::quantized::Q51F32),
+                Some("q5k") => load_cpu!(Q5k, xn::quantized::Q5kF32),
+                Some("q4" | "q4_0") => load_cpu!(Q40, xn::quantized::Q40F32),
+                Some("q4_1") => load_cpu!(Q41, xn::quantized::Q41F32),
+                Some("q4k") => load_cpu!(Q4k, xn::quantized::Q4kF32),
+                Some(other) => Err(xn::Error::msg(format!("unsupported quant '{other}'"))),
+            },
+            #[cfg(feature = "cuda")]
+            Some("cuda") => {
+                if quant.is_some() {
+                    return Err(xn::Error::msg(
+                        "quant cannot be combined with cuda; quantization is CPU-only",
+                    ));
+                }
+                let dev = xn::CudaDevice::new(0)?;
+                let model = load_model_::<Unquantized<f32, xn::CudaDevice>>(
+                    temperature,
+                    repo_id,
+                    model_file,
+                    config,
+                    eos_threshold,
+                    dev,
+                )?;
+                Ok(Model(ModelV::Cuda(model)))
+            }
+            Some(d) => Err(xn::Error::msg(format!("unknown device '{d}'"))),
         }
-        Some(d) => Err(xn::Error::msg(format!("unknown device '{d}'"))),
     })
     .w()
 }
