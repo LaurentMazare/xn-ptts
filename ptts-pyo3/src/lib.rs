@@ -748,7 +748,7 @@ fn load_model(
                 Some("q4" | "q4_0") => load_cpu!(Q40, xn::quantized::Q40F32),
                 Some("q4_1") => load_cpu!(Q41, xn::quantized::Q41F32),
                 Some("q4k") => load_cpu!(Q4k, xn::quantized::Q4kF32),
-                Some(other) => Err(xn::Error::msg(format!("unsupported quant '{other}'"))),
+                Some(other) => xn::bail!("unsupported quant '{other}'"),
             },
             #[cfg(feature = "cuda")]
             Some("cuda") => {
@@ -768,7 +768,7 @@ fn load_model(
                 )?;
                 Ok(Model(ModelV::Cuda(model)))
             }
-            Some(d) => Err(xn::Error::msg(format!("unknown device '{d}'"))),
+            Some(d) => xn::bail!("unknown device '{d}'"),
         }
     })
     .w()
