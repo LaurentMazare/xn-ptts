@@ -487,7 +487,7 @@ impl ModelState {
         on_state!(&self.0, |s| s.tokenize(text))
     }
 
-    #[pyo3(signature = (text, temperature=0.7, seed=4242424242424242, pad_to=None, check_py_interrupts_every=5))]
+    #[pyo3(signature = (text, temperature=0.5, seed=4242424242424242, pad_to=None, check_py_interrupts_every=5))]
     fn generate_audio<'py>(
         &self,
         py: Python<'py>,
@@ -507,7 +507,7 @@ impl ModelState {
         ))
     }
 
-    #[pyo3(signature = (tokens, temperature=0.7, seed=4242424242424242, frames_after_eos=1, check_py_interrupts_every=5))]
+    #[pyo3(signature = (tokens, temperature=0.5, seed=4242424242424242, frames_after_eos=1, check_py_interrupts_every=5))]
     fn generate_audio_for_tokens<'py>(
         &self,
         py: Python<'py>,
