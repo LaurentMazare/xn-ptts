@@ -8,8 +8,8 @@ use xn::{BackendQ, Tensor};
 pub const VOICES: &[&str] =
     &["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 
-pub const REPO_ID: &str = "kyutai/pocket-tts";
-pub const MODEL_FILE: &str = "tts_b6369a24.safetensors";
+pub const DEFAULT_REPO_ID: &str = "kyutai/pocket-tts";
+pub const DEFAULT_MODEL_FILE: &str = "tts_b6369a24.safetensors";
 
 pub struct StdRng {
     inner: rand::rngs::StdRng,
@@ -144,12 +144,49 @@ struct LoadedModel<Q: BackendQ> {
 }
 
 impl<Q: BackendQ> LoadedModel<Q> {
-    fn load_from_hf(temperature: f32, dev: &Q::B) -> Result<Self> {
+    fn load_from_hf(repo_id: &str, temperature: f32, dev: &Q::B) -> Result<Self> {
         use hf_hub::{Repo, RepoType, api::sync::Api};
-        tracing::info!(repo_id = %REPO_ID, "downloading model artifacts");
+        tracing::info!("downloading model artifacts");
         let api = Api::new()?;
-        let repo = api.repo(Repo::new(REPO_ID.to_string(), RepoType::Model));
-        let model_path = repo.get(MODEL_FILE).map_err(anyhow::Error::from)?;
+        let repo = api.repo(Repo::new(repo_id.to_string(), RepoType::Model));
+        let config_path = repo.get("config.json").map_err(anyhow::Error::from)?;
+        let mut cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config_path)?)
+            .with_context(|| "failed to read config from file {config:?}")?;
+        cfg.temp = temperature;
+
+        let model_path = repo.get("model.q8.gguf").map_err(anyhow::Error::from)?;
+        tracing::info!(?model_path, "model weights ready");
+        let tokenizer_path = repo.get("tokenizer.model").map_err(anyhow::Error::from)?;
+
+        let mut voices: HashMap<String, Tensor<Q::T, Q::B>> = HashMap::new();
+        for &voice in VOICES {
+            let voice_file = format!("embeddings/{voice}.safetensors");
+            match repo.get(&voice_file) {
+                Ok(voice_path) => match load_voice_embedding(&voice_path, dev) {
+                    Ok(emb) => match emb.to::<Q::T>() {
+                        Ok(emb) => {
+                            voices.insert(voice.to_string(), emb);
+                        }
+                        Err(e) => {
+                            tracing::warn!(?voice, error = %e, "failed to convert voice embedding")
+                        }
+                    },
+                    Err(e) => tracing::warn!(?voice, error = %e, "failed to load voice embedding"),
+                },
+                Err(e) => tracing::warn!(?voice, error = %e, "failed to download voice embedding"),
+            }
+        }
+        tracing::info!(num_voices = voices.len(), "voice embeddings loaded");
+
+        Ok(Self { cfg, voices, tokenizer_path, model_path })
+    }
+
+    fn load_pocket_from_hf(temperature: f32, dev: &Q::B) -> Result<Self> {
+        use hf_hub::{Repo, RepoType, api::sync::Api};
+        tracing::info!("downloading model artifacts");
+        let api = Api::new()?;
+        let repo = api.repo(Repo::new(DEFAULT_REPO_ID.to_string(), RepoType::Model));
+        let model_path = repo.get(DEFAULT_MODEL_FILE).map_err(anyhow::Error::from)?;
         tracing::info!(?model_path, "model weights ready");
         let tokenizer_path = repo.get("tokenizer.model").map_err(anyhow::Error::from)?;
 
@@ -231,8 +268,14 @@ pub fn load_ptts<Q: BackendQ>(
     dev: Q::B,
 ) -> Result<AppStateB<Q>> {
     let m = match config {
-        Some(config) => LoadedModel::<Q>::load_from_path(config, temperature, &dev)?,
-        None => LoadedModel::<Q>::load_from_hf(temperature, &dev)?,
+        Some(config) if config.is_file() || config.extension().is_some_and(|v| v == "json") => {
+            LoadedModel::<Q>::load_from_path(config, temperature, &dev)?
+        }
+        Some(repo_id) => {
+            let repo_id = repo_id.to_str().context("invalid repo ID path")?;
+            LoadedModel::<Q>::load_from_hf(repo_id, temperature, &dev)?
+        }
+        None => LoadedModel::<Q>::load_pocket_from_hf(temperature, &dev)?,
     };
     let tokenizer_path = m.tokenizer_path.to_str().context("invalid tokenizer path")?;
     let tokenizer = if tokenizer_path.ends_with(".model") {
