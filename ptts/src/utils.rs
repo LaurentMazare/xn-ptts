@@ -28,8 +28,8 @@ pub fn normalize_loudness(pcm: &mut [f32], sample_rate: u32) -> Result<()> {
     if rms < LOUDNESS_ENERGY_FLOOR {
         return Ok(());
     }
-    let mut meter = ebur128::EbuR128::new(1, sample_rate, ebur128::Mode::I)
-        .map_err(xn::Error::wrap)?;
+    let mut meter =
+        ebur128::EbuR128::new(1, sample_rate, ebur128::Mode::I).map_err(xn::Error::wrap)?;
     meter.add_frames_f32(pcm).map_err(xn::Error::wrap)?;
     let input_loudness_db = match meter.loudness_global() {
         Ok(l) if l.is_finite() => l,
