@@ -171,3 +171,7 @@ jobs:
         with:
           packages-dir: dist/
           skip-existing: true
+          # PEP 740 attestations are signed via Sigstore's Rekor log, which is
+          # flaky ("Response ended prematurely") and blocks publishing. Build
+          # provenance is already attested by the attest-build-provenance step.
+          attestations: false
