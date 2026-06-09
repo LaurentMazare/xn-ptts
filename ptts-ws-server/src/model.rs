@@ -251,14 +251,62 @@ impl<Q: BackendQ> LoadedModel<Q> {
     }
 }
 
+/// Load every `*.safetensors` file in `dir` as a voice embedding, keyed by file
+/// stem. Errors (unreadable directory, bad file, conversion failure) are logged
+/// and skipped rather than propagated.
+fn load_voices_from_dir<Q: BackendQ>(
+    dir: &std::path::Path,
+    dev: &Q::B,
+    voices: &mut HashMap<String, Tensor<Q::T, Q::B>>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(?dir, error = %e, "failed to read voice directory");
+            return;
+        }
+    };
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                tracing::warn!(?dir, error = %e, "failed to read voice directory entry");
+                continue;
+            }
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("safetensors") {
+            continue;
+        }
+        let voice_name = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(name) => name.to_string(),
+            None => {
+                tracing::warn!(?path, "invalid voice file name");
+                continue;
+            }
+        };
+        match load_voice_embedding(&path, dev) {
+            Ok(emb) => match emb.to::<Q::T>() {
+                Ok(emb) => {
+                    voices.insert(voice_name, emb);
+                }
+                Err(e) => {
+                    tracing::warn!(?voice_name, error = %e, "failed to convert voice embedding")
+                }
+            },
+            Err(e) => tracing::warn!(?voice_name, error = %e, "failed to load voice embedding"),
+        }
+    }
+}
+
 pub fn load_ptts<Q: BackendQ>(
     config: Option<&std::path::PathBuf>,
+    voice_dir: Option<&std::path::PathBuf>,
     temperature: f32,
     seed_base: u64,
     max_seq_len: usize,
     dev: Q::B,
 ) -> Result<AppStateB<Q>> {
-    let m = match config {
+    let mut m = match config {
         Some(config) if config.is_file() || config.extension().is_some_and(|v| v == "json") => {
             LoadedModel::<Q>::load_from_path(config, temperature, &dev)?
         }
@@ -268,6 +316,10 @@ pub fn load_ptts<Q: BackendQ>(
         }
         None => LoadedModel::<Q>::load_pocket_from_hf(temperature, &dev)?,
     };
+    if let Some(voice_dir) = voice_dir {
+        load_voices_from_dir::<Q>(voice_dir, &dev, &mut m.voices);
+        tracing::info!(num_voices = m.voices.len(), "voice embeddings loaded (incl. voice-dir)");
+    }
     let tokenizer_path = m.tokenizer_path.to_str().context("invalid tokenizer path")?;
     let tokenizer = if tokenizer_path.ends_with(".model") {
         tracing::info!("loading SentencePiece tokenizer");

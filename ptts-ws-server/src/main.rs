@@ -22,6 +22,12 @@ struct Args {
     #[arg(long)]
     config: Option<std::path::PathBuf>,
 
+    /// Optional directory of additional voice safetensors to load. Each
+    /// `*.safetensors` file is loaded as a voice keyed by its file stem; load
+    /// errors are logged and skipped rather than fatal.
+    #[arg(long)]
+    voice_dir: Option<std::path::PathBuf>,
+
     #[arg(long, default_value_t = 0.4)]
     temperature: f32,
 
@@ -85,6 +91,7 @@ fn build_app_state(args: &Args) -> Result<model::AppState> {
         }
         let s = model::load_ptts::<xn::Unquantized<half::bf16, _>>(
             args.config.as_ref(),
+            args.voice_dir.as_ref(),
             args.temperature,
             args.seed,
             args.max_seq_len,
@@ -110,11 +117,13 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
     let seed = args.seed;
     let mlen = args.max_seq_len;
     let config = args.config.as_ref();
+    let voice_dir = args.voice_dir.as_ref();
     let state = match args.quant.as_deref() {
         None => {
             tracing::info!("using cpu backend (unquantized f32)");
             AppState::Cpu(Arc::new(model::load_ptts::<xn::Unquantized<f32, _>>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
@@ -125,6 +134,7 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
             tracing::info!("using cpu q8_0 backend");
             AppState::Q80(Arc::new(model::load_ptts::<xn::quantized::Q80F32>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
@@ -135,6 +145,7 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
             tracing::info!("using cpu q8_1 backend");
             AppState::Q81(Arc::new(model::load_ptts::<xn::quantized::Q81F32>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
@@ -145,6 +156,7 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
             tracing::info!("using cpu q8k backend");
             AppState::Q8k(Arc::new(model::load_ptts::<xn::quantized::Q8kF32>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
@@ -155,6 +167,7 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
             tracing::info!("using cpu q6k backend");
             AppState::Q6k(Arc::new(model::load_ptts::<xn::quantized::Q6kF32>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
@@ -165,6 +178,7 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
             tracing::info!("using cpu q5_0 backend");
             AppState::Q50(Arc::new(model::load_ptts::<xn::quantized::Q50F32>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
@@ -175,6 +189,7 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
             tracing::info!("using cpu q5_1 backend");
             AppState::Q51(Arc::new(model::load_ptts::<xn::quantized::Q51F32>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
@@ -185,6 +200,7 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
             tracing::info!("using cpu q5k backend");
             AppState::Q5k(Arc::new(model::load_ptts::<xn::quantized::Q5kF32>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
@@ -195,6 +211,7 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
             tracing::info!("using cpu q4_0 backend");
             AppState::Q40(Arc::new(model::load_ptts::<xn::quantized::Q40F32>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
@@ -205,6 +222,7 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
             tracing::info!("using cpu q4_1 backend");
             AppState::Q41(Arc::new(model::load_ptts::<xn::quantized::Q41F32>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
@@ -215,6 +233,7 @@ fn build_cpu_state(args: &Args) -> Result<model::AppState> {
             tracing::info!("using cpu q4k backend");
             AppState::Q4k(Arc::new(model::load_ptts::<xn::quantized::Q4kF32>(
                 config,
+                voice_dir,
                 temp,
                 seed,
                 mlen,
