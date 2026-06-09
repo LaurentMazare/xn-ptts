@@ -54,7 +54,7 @@ const POCKET_TTS_VOICES: &[&str] =
 
 struct ModelB<Q: BackendQ> {
     inner: Arc<TTSModel<Q>>,
-    mimi_enc: MimiEnc<Q>,
+    mimi_enc: Option<MimiEnc<Q>>,
     voices: std::collections::HashMap<String, Tensor<Q::T, Q::B>>,
     audio_prompt_min_duration: f32,
     audio_prompt_max_duration: f32,
@@ -69,6 +69,10 @@ impl<Q: BackendQ> ModelB<Q> {
         max_seq_len: usize,
     ) -> xn::Result<ModelStateB<Q>> {
         let sample_rate = self.inner.sample_rate();
+        let mimi_enc = match self.mimi_enc.as_ref() {
+            Some(enc) => enc,
+            None => xn::bail!("model does not support audio prompts"),
+        };
         let min_len = (sample_rate as f32 * self.audio_prompt_min_duration).round() as usize;
         let max_len = (sample_rate as f32 * self.audio_prompt_max_duration).round() as usize;
         if audio_prompt.len() < min_len || audio_prompt.len() > max_len {
@@ -85,7 +89,7 @@ impl<Q: BackendQ> ModelB<Q> {
             None
         } else {
             let pcm = xn::Tensor::from_vec(audio_prompt.to_vec(), (1, 1, ()), dev)?.to::<Q::T>()?;
-            let voice_emb = self.mimi_enc.encode_audio(&pcm)?;
+            let voice_emb = mimi_enc.encode_audio(&pcm)?;
             self.inner.prompt_audio(&mut state, &voice_emb)?;
             Some(pcm)
         };
@@ -95,7 +99,7 @@ impl<Q: BackendQ> ModelB<Q> {
                 && let Some(pcm) = pcm.as_ref()
             {
                 let null_pcm = pcm.zeros_like()?;
-                let null_emb = self.mimi_enc.encode_audio(&null_pcm)?;
+                let null_emb = mimi_enc.encode_audio(&null_pcm)?;
                 self.inner.prompt_audio(&mut null_state, &null_emb)?;
             }
             Some((cfg_coef, null_state))
@@ -120,6 +124,15 @@ impl<Q: BackendQ> ModelB<Q> {
 
     fn voices(&self) -> Vec<String> {
         self.voices.keys().cloned().collect()
+    }
+
+    /// Load the voice embedding stored at `voice_path` and register it under
+    /// `name`, overwriting any existing voice with the same name.
+    fn add_voice(&mut self, name: &str, voice_path: &std::path::Path) -> xn::Result<()> {
+        let dev = self.inner.device().clone();
+        let voice_emb = load_voice_embedding(voice_path, &dev)?.to::<Q::T>()?;
+        self.voices.insert(name.to_string(), voice_emb);
+        Ok(())
     }
 
     fn sample_rate(&self) -> usize {
@@ -220,6 +233,13 @@ impl Model {
 
     fn voices(&self) -> Vec<String> {
         on_model!(&self.0, |m| m.voices())
+    }
+
+    /// Load the voice embedding at `path` (a precomputed voice safetensors) and
+    /// register it under `name` so it can be used with `get_state_for_voice`.
+    fn add_voice(&mut self, name: &str, path: &str) -> PyResult<()> {
+        let path = std::path::Path::new(path);
+        on_model!(&mut self.0, |m| m.add_voice(name, path).w())
     }
 
     fn sample_rate(&self) -> usize {
@@ -686,7 +706,11 @@ fn load_model_<Q: BackendQ>(
     } else {
         model
     };
-    let mimi_enc = MimiEnc::<Q>::load(&vb, &cfg)?;
+    let mimi_enc = if vb.contains("mimi.encoder.model.0.conv.weight") {
+        Some(MimiEnc::<Q>::load(&vb, &cfg)?)
+    } else {
+        None
+    };
     vb.check_all_used_with_ignore(|v| {
         v == "flow_lm.condition_provider.conditioners.speaker_wavs.learnt_padding"
             || v.starts_with("mimi.quantizer")
@@ -703,7 +727,7 @@ fn load_model_<Q: BackendQ>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (temperature=0.7, repo_id="kyutai/pocket-tts", model_file="tts_b6369a24.safetensors", config=None, eos_threshold=None, device=None, quant=None))]
+#[pyo3(signature = (temperature=0.5, repo_id="kyutai/pocket-tts", model_file="tts_b6369a24.safetensors", config=None, eos_threshold=None, device=None, quant=None))]
 #[allow(clippy::too_many_arguments)]
 fn load_model(
     py: Python<'_>,
