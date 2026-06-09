@@ -634,7 +634,10 @@ fn load_model_<Q: BackendQ>(
     dev: Q::B,
 ) -> xn::Result<ModelB<Q>> {
     let (model_path, tokenizer_path, cfg, voices) = match config {
-        Some(config_path) => {
+        // A local config path: load the weights sitting next to it.
+        Some(config_path)
+            if std::path::Path::new(&config_path).is_file() || config_path.ends_with(".json") =>
+        {
             let config_path = std::fs::canonicalize(&config_path).map_err(xn::Error::msg)?;
             let parent = config_path.parent().context("config path has no parent")?;
             // Prefer an unquantized safetensors checkpoint, falling back to a
@@ -649,6 +652,26 @@ fn load_model_<Q: BackendQ>(
                 .map_err(|e| xn::Error::msg(e).with_path(&config_path))?;
             let cfg: TTSConfig = serde_json::from_str(&config_str)
                 .map_err(|e| xn::Error::msg(e).with_path(&config_path))?;
+            (model_path, tokenizer_path, cfg, std::collections::HashMap::new())
+        }
+        // A HuggingFace repo id: download `config.json`, the quantized
+        // `model.q8.gguf`, the tokenizer and the `default-voice` embedding.
+        Some(repo_id) => {
+            use hf_hub::{Repo, RepoType, api::sync::Api};
+
+            let api = Api::new().map_err(xn::Error::msg)?;
+            let repo = api.repo(Repo::new(repo_id, RepoType::Model));
+
+            let config_path = repo.get("config.json").map_err(xn::Error::msg)?;
+            let config_str = std::fs::read_to_string(&config_path)
+                .map_err(|e| xn::Error::msg(e).with_path(&config_path))?;
+            let mut cfg: TTSConfig = serde_json::from_str(&config_str)
+                .map_err(|e| xn::Error::msg(e).with_path(&config_path))?;
+            cfg.temp = temperature;
+
+            let model_path = repo.get("model.q8.gguf").map_err(xn::Error::msg)?;
+            let tokenizer_path = repo.get("tokenizer.model").map_err(xn::Error::msg)?;
+
             (model_path, tokenizer_path, cfg, std::collections::HashMap::new())
         }
         None => {
