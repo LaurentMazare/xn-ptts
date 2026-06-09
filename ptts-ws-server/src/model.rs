@@ -300,10 +300,10 @@ pub fn load_ptts<Q: BackendQ>(
 
     let sample_rate = model.sample_rate() as u32;
     let frame_size = (sample_rate as f64 / m.cfg.mimi.frame_rate).round() as u32;
-    let mut voice_vec: Vec<_> = m.voices.keys().collect();
-    voice_vec.sort();
-
-    let default_voice = voice_vec[0].clone();
+    let default_voice = match m.voices.keys().min() {
+        Some(name) => name.clone(),
+        None => anyhow::bail!("no voice embeddings found in model"),
+    };
     Ok(AppStateB {
         model: Arc::new(model),
         voices: m.voices,
