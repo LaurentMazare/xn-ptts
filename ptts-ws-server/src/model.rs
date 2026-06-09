@@ -159,23 +159,14 @@ impl<Q: BackendQ> LoadedModel<Q> {
         let tokenizer_path = repo.get("tokenizer.model").map_err(anyhow::Error::from)?;
 
         let mut voices: HashMap<String, Tensor<Q::T, Q::B>> = HashMap::new();
-        for &voice in VOICES {
-            let voice_file = format!("embeddings/{voice}.safetensors");
-            match repo.get(&voice_file) {
-                Ok(voice_path) => match load_voice_embedding(&voice_path, dev) {
-                    Ok(emb) => match emb.to::<Q::T>() {
-                        Ok(emb) => {
-                            voices.insert(voice.to_string(), emb);
-                        }
-                        Err(e) => {
-                            tracing::warn!(?voice, error = %e, "failed to convert voice embedding")
-                        }
-                    },
-                    Err(e) => tracing::warn!(?voice, error = %e, "failed to load voice embedding"),
-                },
-                Err(e) => tracing::warn!(?voice, error = %e, "failed to download voice embedding"),
-            }
-        }
+        let default_voice = load_voice_embedding(
+            &repo.get("default-voice.safetensors").map_err(anyhow::Error::from)?,
+            dev,
+        )
+        .with_context(|| "failed to load default voice embedding")?
+        .to::<Q::T>()
+        .with_context(|| "failed to convert default voice embedding")?;
+        voices.insert("default".to_string(), default_voice);
         tracing::info!(num_voices = voices.len(), "voice embeddings loaded");
 
         Ok(Self { cfg, voices, tokenizer_path, model_path })
