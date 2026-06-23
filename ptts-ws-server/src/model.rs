@@ -145,27 +145,22 @@ struct LoadedModel<Q: BackendQ> {
 
 impl<Q: BackendQ> LoadedModel<Q> {
     fn load_from_hf(repo_id: &str, temperature: f32, dev: &Q::B) -> Result<Self> {
-        use hf_hub::{Repo, RepoType, api::sync::Api};
         tracing::info!("downloading model artifacts");
-        let api = Api::new()?;
-        let repo = api.repo(Repo::new(repo_id.to_string(), RepoType::Model));
-        let config_path = repo.get("config.json").map_err(anyhow::Error::from)?;
+        let repo = crate::utils::HfRepo::model(repo_id)?;
+        let config_path = repo.get("config.json")?;
         let mut cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config_path)?)
             .with_context(|| "failed to read config from file {config:?}")?;
         cfg.temp = temperature;
 
-        let model_path = repo.get("model.q8.gguf").map_err(anyhow::Error::from)?;
+        let model_path = repo.get("model.q8.gguf")?;
         tracing::info!(?model_path, "model weights ready");
-        let tokenizer_path = repo.get("tokenizer.model").map_err(anyhow::Error::from)?;
+        let tokenizer_path = repo.get("tokenizer.model")?;
 
         let mut voices: HashMap<String, Tensor<Q::T, Q::B>> = HashMap::new();
-        let default_voice = load_voice_embedding(
-            &repo.get("default-voice.safetensors").map_err(anyhow::Error::from)?,
-            dev,
-        )
-        .with_context(|| "failed to load default voice embedding")?
-        .to::<Q::T>()
-        .with_context(|| "failed to convert default voice embedding")?;
+        let default_voice = load_voice_embedding(&repo.get("default-voice.safetensors")?, dev)
+            .with_context(|| "failed to load default voice embedding")?
+            .to::<Q::T>()
+            .with_context(|| "failed to convert default voice embedding")?;
         voices.insert("default".to_string(), default_voice);
         tracing::info!(num_voices = voices.len(), "voice embeddings loaded");
 
@@ -173,13 +168,11 @@ impl<Q: BackendQ> LoadedModel<Q> {
     }
 
     fn load_pocket_from_hf(temperature: f32, dev: &Q::B) -> Result<Self> {
-        use hf_hub::{Repo, RepoType, api::sync::Api};
         tracing::info!("downloading model artifacts");
-        let api = Api::new()?;
-        let repo = api.repo(Repo::new(DEFAULT_REPO_ID.to_string(), RepoType::Model));
-        let model_path = repo.get(DEFAULT_MODEL_FILE).map_err(anyhow::Error::from)?;
+        let repo = crate::utils::HfRepo::model(DEFAULT_REPO_ID)?;
+        let model_path = repo.get(DEFAULT_MODEL_FILE)?;
         tracing::info!(?model_path, "model weights ready");
-        let tokenizer_path = repo.get("tokenizer.model").map_err(anyhow::Error::from)?;
+        let tokenizer_path = repo.get("tokenizer.model")?;
 
         let mut voices: HashMap<String, Tensor<Q::T, Q::B>> = HashMap::new();
         for &voice in VOICES {

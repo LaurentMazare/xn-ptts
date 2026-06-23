@@ -2,6 +2,7 @@ mod encoder;
 mod handler;
 mod model;
 mod protocol;
+mod utils;
 mod wav;
 
 use anyhow::Result;
