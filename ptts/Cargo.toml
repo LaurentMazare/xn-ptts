@@ -34,6 +34,8 @@ tracing-chrome = { workspace = true }
 [features]
 default = []
 cuda = ["xn/cuda"]
+vulkan = ["xn/vulkan"]
+metal = ["xn/metal"]
 accelerate = ["xn/accelerate"]
 sp = ["dep:sentencepiece"]
 

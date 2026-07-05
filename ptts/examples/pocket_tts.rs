@@ -53,7 +53,7 @@ struct Args {
     #[arg(short, long, default_value_t = 4242424242424242)]
     seed: u64,
 
-    /// Use the cpu device even if cuda is available
+    /// Use the cpu device even if a gpu backend is available
     #[arg(long, default_value_t = false)]
     cpu: bool,
 
@@ -228,7 +228,27 @@ fn main() -> Result<()> {
             run_for_device::<xn::Unquantized<half::bf16, _>>(args, dev)?;
         }
     }
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(all(feature = "vulkan", not(feature = "cuda")))]
+    {
+        if args.cpu {
+            run_cpu(args)?;
+        } else {
+            tracing::info!("using vulkan backend");
+            let dev = xn::vulkan_backend::Device::new(0)?;
+            run_for_device::<xn::Unquantized<f32, _>>(args, dev)?;
+        }
+    }
+    #[cfg(all(feature = "metal", not(any(feature = "cuda", feature = "vulkan"))))]
+    {
+        if args.cpu {
+            run_cpu(args)?;
+        } else {
+            tracing::info!("using metal backend");
+            let dev = xn::metal_backend::Device::new(0)?;
+            run_for_device::<xn::Unquantized<f32, _>>(args, dev)?;
+        }
+    }
+    #[cfg(not(any(feature = "cuda", feature = "vulkan", feature = "metal")))]
     {
         run_cpu(args)?;
     }

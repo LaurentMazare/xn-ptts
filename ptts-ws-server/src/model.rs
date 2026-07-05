@@ -134,6 +134,10 @@ pub enum AppState {
     Q4k(Arc<AppStateB<xn::quantized::Q4kF32>>),
     #[cfg(feature = "cuda")]
     Cuda(Arc<AppStateB<xn::Unquantized<half::bf16, xn::CudaDevice>>>),
+    #[cfg(feature = "vulkan")]
+    Vulkan(Arc<AppStateB<xn::Unquantized<f32, xn::VulkanDevice>>>),
+    #[cfg(feature = "metal")]
+    Metal(Arc<AppStateB<xn::Unquantized<f32, xn::MetalDevice>>>),
 }
 
 struct LoadedModel<Q: BackendQ> {

@@ -26,6 +26,10 @@ pub async fn ws_handler(
             AppState::Q4k(s) => serve_q(socket, s).await,
             #[cfg(feature = "cuda")]
             AppState::Cuda(s) => serve_q(socket, s).await,
+            #[cfg(feature = "vulkan")]
+            AppState::Vulkan(s) => serve_q(socket, s).await,
+            #[cfg(feature = "metal")]
+            AppState::Metal(s) => serve_q(socket, s).await,
         };
         if let Err(e) = result {
             tracing::error!(error = %e, "ws session terminated");

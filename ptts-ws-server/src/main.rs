@@ -42,6 +42,14 @@ struct Args {
     #[arg(long, default_value_t = false)]
     cuda: bool,
 
+    /// Use the Vulkan backend (requires building with --features vulkan).
+    #[arg(long, default_value_t = false)]
+    vulkan: bool,
+
+    /// Use the Metal backend (requires building with --features metal).
+    #[arg(long, default_value_t = false)]
+    metal: bool,
+
     /// Quantization for the flow_lm transformer linear weights.
     /// One of: q8|q8_0, q8_1, q8k, q6k, q5|q5_0, q5_1, q5k, q4|q4_0, q4_1, q4k.
     /// CPU only.
@@ -80,34 +88,66 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "cuda")]
 fn build_app_state(args: &Args) -> Result<model::AppState> {
-    if args.cuda {
-        if args.quant.is_some() {
-            anyhow::bail!("--quant cannot be combined with --cuda; quantization is CPU-only");
-        }
-        let dev = xn::CudaDevice::new(0)?;
-        unsafe {
-            dev.disable_event_tracking();
-        }
-        let s = model::load_ptts::<xn::Unquantized<half::bf16, _>>(
-            args.config.as_ref(),
-            args.voice_dir.as_ref(),
-            args.temperature,
-            args.seed,
-            args.max_seq_len,
-            dev,
-        )?;
-        Ok(model::AppState::Cuda(Arc::new(s)))
-    } else {
-        build_cpu_state(args)
+    if args.cuda as u8 + args.vulkan as u8 + args.metal as u8 > 1 {
+        anyhow::bail!("at most one of --cuda, --vulkan, and --metal can be used");
     }
-}
-
-#[cfg(not(feature = "cuda"))]
-fn build_app_state(args: &Args) -> Result<model::AppState> {
+    if args.quant.is_some() && (args.cuda || args.vulkan || args.metal) {
+        anyhow::bail!("--quant cannot be combined with a gpu backend; quantization is CPU-only");
+    }
     if args.cuda {
+        #[cfg(feature = "cuda")]
+        {
+            let dev = xn::CudaDevice::new(0)?;
+            unsafe {
+                dev.disable_event_tracking();
+            }
+            let s = model::load_ptts::<xn::Unquantized<half::bf16, _>>(
+                args.config.as_ref(),
+                args.voice_dir.as_ref(),
+                args.temperature,
+                args.seed,
+                args.max_seq_len,
+                dev,
+            )?;
+            return Ok(model::AppState::Cuda(Arc::new(s)));
+        }
+        #[cfg(not(feature = "cuda"))]
         anyhow::bail!("--cuda requested but binary was not built with --features cuda");
+    }
+    if args.vulkan {
+        #[cfg(feature = "vulkan")]
+        {
+            let dev = xn::VulkanDevice::new(0)?;
+            let s = model::load_ptts::<xn::Unquantized<f32, _>>(
+                args.config.as_ref(),
+                args.voice_dir.as_ref(),
+                args.temperature,
+                args.seed,
+                args.max_seq_len,
+                dev,
+            )?;
+            return Ok(model::AppState::Vulkan(Arc::new(s)));
+        }
+        #[cfg(not(feature = "vulkan"))]
+        anyhow::bail!("--vulkan requested but binary was not built with --features vulkan");
+    }
+    if args.metal {
+        #[cfg(feature = "metal")]
+        {
+            let dev = xn::MetalDevice::new(0)?;
+            let s = model::load_ptts::<xn::Unquantized<f32, _>>(
+                args.config.as_ref(),
+                args.voice_dir.as_ref(),
+                args.temperature,
+                args.seed,
+                args.max_seq_len,
+                dev,
+            )?;
+            return Ok(model::AppState::Metal(Arc::new(s)));
+        }
+        #[cfg(not(feature = "metal"))]
+        anyhow::bail!("--metal requested but binary was not built with --features metal");
     }
     build_cpu_state(args)
 }

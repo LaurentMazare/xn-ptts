@@ -144,7 +144,7 @@ impl<Q: BackendQ> ModelB<Q> {
 // the [pyclass] attribute is on a struct to get a proper object. The CPU
 // backend supports unquantized f32 as well as the GGML quantized weight
 // formats applied to the flow_lm transformer linear weights; the optional
-// CUDA backend stays unquantized.
+// GPU backends (CUDA, Vulkan, Metal) stay unquantized.
 enum ModelV {
     Cpu(ModelB<Unquantized<f32, xn::CpuDevice>>),
     Q80(ModelB<xn::quantized::Q80F32>),
@@ -159,6 +159,10 @@ enum ModelV {
     Q4k(ModelB<xn::quantized::Q4kF32>),
     #[cfg(feature = "cuda")]
     Cuda(ModelB<Unquantized<f32, xn::CudaDevice>>),
+    #[cfg(feature = "vulkan")]
+    Vulkan(ModelB<Unquantized<f32, xn::VulkanDevice>>),
+    #[cfg(feature = "metal")]
+    Metal(ModelB<Unquantized<f32, xn::MetalDevice>>),
 }
 
 /// Dispatch over a `&ModelV`, binding the inner `ModelB<Q>` to the supplied
@@ -179,6 +183,10 @@ macro_rules! on_model {
             ModelV::Q4k($m) => $body,
             #[cfg(feature = "cuda")]
             ModelV::Cuda($m) => $body,
+            #[cfg(feature = "vulkan")]
+            ModelV::Vulkan($m) => $body,
+            #[cfg(feature = "metal")]
+            ModelV::Metal($m) => $body,
         }
     };
 }
@@ -201,6 +209,10 @@ macro_rules! on_model_to_state {
             ModelV::Q4k($m) => ModelStateV::Q4k($body),
             #[cfg(feature = "cuda")]
             ModelV::Cuda($m) => ModelStateV::Cuda($body),
+            #[cfg(feature = "vulkan")]
+            ModelV::Vulkan($m) => ModelStateV::Vulkan($body),
+            #[cfg(feature = "metal")]
+            ModelV::Metal($m) => ModelStateV::Metal($body),
         }
     };
 }
@@ -267,6 +279,10 @@ enum ModelStateV {
     Q4k(ModelStateB<xn::quantized::Q4kF32>),
     #[cfg(feature = "cuda")]
     Cuda(ModelStateB<Unquantized<f32, xn::CudaDevice>>),
+    #[cfg(feature = "vulkan")]
+    Vulkan(ModelStateB<Unquantized<f32, xn::VulkanDevice>>),
+    #[cfg(feature = "metal")]
+    Metal(ModelStateB<Unquantized<f32, xn::MetalDevice>>),
 }
 
 /// Dispatch over a `&ModelStateV`, binding the inner `ModelStateB<Q>` to the
@@ -287,6 +303,10 @@ macro_rules! on_state {
             ModelStateV::Q4k($s) => $body,
             #[cfg(feature = "cuda")]
             ModelStateV::Cuda($s) => $body,
+            #[cfg(feature = "vulkan")]
+            ModelStateV::Vulkan($s) => $body,
+            #[cfg(feature = "metal")]
+            ModelStateV::Metal($s) => $body,
         }
     };
 }
@@ -309,6 +329,10 @@ macro_rules! on_state_to_state {
             ModelStateV::Q4k($s) => ModelStateV::Q4k($body),
             #[cfg(feature = "cuda")]
             ModelStateV::Cuda($s) => ModelStateV::Cuda($body),
+            #[cfg(feature = "vulkan")]
+            ModelStateV::Vulkan($s) => ModelStateV::Vulkan($body),
+            #[cfg(feature = "metal")]
+            ModelStateV::Metal($s) => ModelStateV::Metal($body),
         }
     };
 }
@@ -815,6 +839,42 @@ fn load_model(
                 )?;
                 Ok(Model(ModelV::Cuda(model)))
             }
+            #[cfg(feature = "vulkan")]
+            Some("vulkan") => {
+                if quant.is_some() {
+                    return Err(xn::Error::msg(
+                        "quant cannot be combined with vulkan; quantization is CPU-only",
+                    ));
+                }
+                let dev = xn::VulkanDevice::new(0)?;
+                let model = load_model_::<Unquantized<f32, xn::VulkanDevice>>(
+                    temperature,
+                    repo_id,
+                    model_file,
+                    config,
+                    eos_threshold,
+                    dev,
+                )?;
+                Ok(Model(ModelV::Vulkan(model)))
+            }
+            #[cfg(feature = "metal")]
+            Some("metal") => {
+                if quant.is_some() {
+                    return Err(xn::Error::msg(
+                        "quant cannot be combined with metal; quantization is CPU-only",
+                    ));
+                }
+                let dev = xn::MetalDevice::new(0)?;
+                let model = load_model_::<Unquantized<f32, xn::MetalDevice>>(
+                    temperature,
+                    repo_id,
+                    model_file,
+                    config,
+                    eos_threshold,
+                    dev,
+                )?;
+                Ok(Model(ModelV::Metal(model)))
+            }
             Some(d) => xn::bail!("unknown device '{d}'"),
         }
     })
@@ -841,6 +901,16 @@ fn cuda_available() -> bool {
     cfg!(feature = "cuda")
 }
 
+#[pyfunction]
+fn vulkan_available() -> bool {
+    cfg!(feature = "vulkan")
+}
+
+#[pyfunction]
+fn metal_available() -> bool {
+    cfg!(feature = "metal")
+}
+
 #[pymodule(name = "ptts")]
 fn ptts_(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Model>()?;
@@ -850,5 +920,7 @@ fn ptts_(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(prepare_text_prompt, m)?)?;
     m.add_function(wrap_pyfunction!(cuda_available, m)?)?;
+    m.add_function(wrap_pyfunction!(vulkan_available, m)?)?;
+    m.add_function(wrap_pyfunction!(metal_available, m)?)?;
     Ok(())
 }
