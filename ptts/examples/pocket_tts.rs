@@ -451,17 +451,14 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
                 if let Some(model_ext) = cfg.model_ext() {
                     let file_content = std::fs::read(&voice_path)?;
                     let (_, metadata) = safetensors::SafeTensors::read_metadata(&file_content)?;
-                    if let Some(metadata) = metadata.metadata() {
-                        if let Some(voice_model_ext) = metadata.get("model_ext") {
-                            tracing::info!(
-                                ?voice_model_ext,
-                                "voice embedding model_ext from metadata"
+                    if let Some(metadata) = metadata.metadata()
+                        && let Some(voice_model_ext) = metadata.get("model_ext")
+                    {
+                        tracing::info!(?voice_model_ext, "voice embedding model_ext from metadata");
+                        if voice_model_ext.as_str() != model_ext {
+                            anyhow::bail!(
+                                "voice embedding model_ext '{voice_model_ext}' does not match config model_ext '{model_ext}'"
                             );
-                            if voice_model_ext.as_str() != model_ext {
-                                anyhow::bail!(
-                                    "voice embedding model_ext '{voice_model_ext}' does not match config model_ext '{model_ext}'"
-                                );
-                            }
                         }
                     }
                 }
