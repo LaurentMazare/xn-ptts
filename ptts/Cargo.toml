@@ -36,6 +36,7 @@ default = []
 cuda = ["xn/cuda"]
 vulkan = ["xn/vulkan"]
 metal = ["xn/metal"]
+webgpu = ["xn/webgpu"]
 accelerate = ["xn/accelerate"]
 sp = ["dep:sentencepiece"]
 

@@ -22,3 +22,7 @@ getrandom = { workspace = true, features = ["wasm_js"] }
 
 [package.metadata.wasm-pack.profile.profiling]
 wasm-opt = false
+
+[features]
+default = []
+webgpu = ["xn/webgpu"]
