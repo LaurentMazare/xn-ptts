@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "ptts"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2245,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "ptts-pyo3"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "hf-hub",
  "numpy",
@@ -2261,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "ptts-wasm"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "getrandom 0.3.4",
  "js-sys",
@@ -2274,7 +2274,7 @@ dependencies = [
 
 [[package]]
 name = "ptts-ws-server"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "axum",
