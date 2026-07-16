@@ -427,6 +427,141 @@ fn run_generate<Q: BackendQ>(
     Ok(pcm)
 }
 
+/// Do not implement Clone on this as it would result in switching is_done
+/// if one of the clone drops.
+struct Recv {
+    pcm_rx: std::sync::mpsc::Receiver<Vec<f32>>,
+    is_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for Recv {
+    fn drop(&mut self) {
+        self.is_done.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_generate_background<Q: BackendQ>(
+    model: Arc<TTSModel<Q>>,
+    mut state: TTSState<Q>,
+    mut cfg_state: Option<(f32, TTSState<Q>)>,
+    tokens: Vec<u32>,
+    temperature: f32,
+    seed: u64,
+    frames_after_eos: usize,
+) -> Result<Recv, xn::Error> {
+    let device = model.device();
+    let num_tokens = tokens.len();
+    let max_frames = ((num_tokens as f64 / 3.0 + 2.0) * 12.5).ceil() as usize;
+    let mut rng = StdRng::new(temperature, seed);
+    let mut mimi_state = model.init_mimi_state(1, 250)?;
+
+    model.prompt_text(&mut state, &tokens)?;
+    if let Some((_, cfg_state)) = cfg_state.as_mut() {
+        model.prompt_text_null(cfg_state)?
+    }
+
+    let ldim = model.flow_lm.ldim;
+    let nan_data = vec![f32::NAN; ldim];
+    let mut prev_latent: Tensor<Q::T, Q::B> =
+        Tensor::from_vec(nan_data, (1, 1, ldim), device)?.to::<Q::T>()?;
+
+    let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Tensor<Q::T, Q::B>>();
+    let (pcm_tx, pcm_rx) = std::sync::mpsc::channel::<Vec<f32>>();
+
+    let decode_model = Arc::clone(&model);
+    let is_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _decode_handle = std::thread::spawn(move || -> Result<(), xn::Error> {
+        while let Ok(latent) = latent_rx.recv() {
+            let audio_chunk = decode_model.decode_latent(&latent, &mut mimi_state)?;
+            let pcm = audio_chunk.narrow(0, ..1)?.contiguous()?.to_vec()?;
+            pcm_tx.send(pcm).map_err(|_| xn::Error::msg("pcm channel closed"))?;
+        }
+        Ok(())
+    });
+
+    let recv = Recv { pcm_rx, is_done: is_done.clone() };
+
+    let _backbone_handle = std::thread::spawn(move || -> Result<(), xn::Error> {
+        let mut eos_countdown: Option<usize> = None;
+        for _step in 0..max_frames {
+            if is_done.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            let (next_latent, is_eos) = match cfg_state.as_mut() {
+                Some((cfg_coef, cfg_state)) => model.generate_step_cfg(
+                    &mut state,
+                    cfg_state,
+                    *cfg_coef,
+                    &prev_latent,
+                    &mut rng,
+                )?,
+                None => model.generate_step(&mut state, &prev_latent, &mut rng)?,
+            };
+            // Rather than raising an error when the channel is closed, we break out of the loop
+            // so as to get a proper error message from the decode thread.
+            if latent_tx.send(next_latent.clone()).is_err() {
+                break;
+            }
+
+            if is_eos && eos_countdown.is_none() {
+                eos_countdown = Some(frames_after_eos);
+            }
+            if let Some(ref mut countdown) = eos_countdown {
+                if *countdown == 0 {
+                    break;
+                }
+                *countdown -= 1;
+            }
+            prev_latent = next_latent;
+        }
+        drop(latent_tx);
+        Ok(())
+    });
+    Ok(recv)
+}
+
+/// Streaming handle over a background generation, iterable from Python. The
+/// pcm receiver sits behind a mutex so the pyclass is `Sync`; `is_done` is
+/// kept outside it so `cancel` never blocks on a pending `__next__`.
+#[pyclass]
+struct Receiver {
+    inner: std::sync::Mutex<Recv>,
+    is_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Receiver {
+    fn new(recv: Recv) -> Self {
+        let is_done = recv.is_done.clone();
+        Self { inner: std::sync::Mutex::new(recv), is_done }
+    }
+}
+
+#[pymethods]
+impl Receiver {
+    /// Stop the background generation threads. Chunks already decoded can
+    /// still be drained via `__next__`.
+    fn cancel(&self) {
+        self.is_done.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyArray1<f32>>>> {
+        let inner = &self.inner;
+        let pcm = py.detach(move || {
+            let inner = match inner.lock() {
+                Ok(inner) => inner,
+                Err(_) => return None,
+            };
+            inner.pcm_rx.recv().ok()
+        });
+        Ok(pcm.map(|pcm| PyArray1::from_vec(py, pcm)))
+    }
+}
+
 impl<Q: BackendQ> ModelStateB<Q> {
     fn clone(&self) -> Self {
         Self {
@@ -474,6 +609,41 @@ impl<Q: BackendQ> ModelStateB<Q> {
             .w()?;
 
         Ok(PyArray1::from_vec(py, pcm))
+    }
+
+    fn generate_bt(
+        &self,
+        py: Python<'_>,
+        text: &str,
+        temperature: f32,
+        seed: u64,
+        pad_to: Option<usize>,
+    ) -> PyResult<Receiver> {
+        let model = Arc::clone(&self.model);
+        let state = self.state.clone();
+        let cfg_state = self.cfg_state.clone();
+        let text = text.to_string();
+
+        let recv = py
+            .detach(move || -> xn::Result<Recv> {
+                let (text, frames_after_eos) = ptts::tts_model::prepare_text_prompt(&text);
+                let mut tokens = model.flow_lm.conditioner.tokenize(&text)?;
+                if let Some(pad_to) = pad_to
+                    && tokens.len() < pad_to
+                {
+                    let learnt_padding_id = match model.flow_lm.conditioner.learnt_padding_id() {
+                        Some(id) => id,
+                        None => {
+                            xn::bail!("model does not have a learnt padding token, cannot pad to {pad_to} tokens")
+                        }
+                    };
+                    tokens.resize(pad_to, learnt_padding_id);
+                }
+                run_generate_background(model, state, cfg_state, tokens, temperature, seed, frames_after_eos)
+            })
+            .w()?;
+
+        Ok(Receiver::new(recv))
     }
 
     fn generate_audio_for_tokens<'py>(
@@ -549,6 +719,21 @@ impl ModelState {
             pad_to,
             check_py_interrupts_every
         ))
+    }
+
+    /// Generate audio on background threads, returning a `Receiver` that can
+    /// be iterated over to get the audio chunks as they get decoded, or
+    /// cancelled to stop the generation early.
+    #[pyo3(signature = (text, temperature=0.5, seed=4242424242424242, pad_to=None))]
+    fn generate_bt(
+        &self,
+        py: Python<'_>,
+        text: &str,
+        temperature: f32,
+        seed: u64,
+        pad_to: Option<usize>,
+    ) -> PyResult<Receiver> {
+        on_state!(&self.0, |s| s.generate_bt(py, text, temperature, seed, pad_to))
     }
 
     #[pyo3(signature = (tokens, temperature=0.5, seed=4242424242424242, frames_after_eos=1, check_py_interrupts_every=5))]
@@ -915,6 +1100,7 @@ fn metal_available() -> bool {
 fn ptts_(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Model>()?;
     m.add_class::<ModelState>()?;
+    m.add_class::<Receiver>()?;
     m.add_function(wrap_pyfunction!(load_model, m)?)?;
     m.add_function(wrap_pyfunction!(get_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
