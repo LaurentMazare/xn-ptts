@@ -109,7 +109,7 @@ fn remap_key(name: &str) -> Option<String> {
 type RawState = StreamingTransformerState<f32, CpuDevice>;
 
 fn wrap_state<Q: BackendQ<T = f32, B = CpuDevice>>(raw: RawState) -> TTSState<Q> {
-    TTSState { flow_lm_state: FlowLMState { transformer_state: raw } }
+    TTSState { flow_lm_state: FlowLMState { transformer_state: raw, padding: None } }
 }
 
 /// Creates a new transformer state with a larger seq_budget, copying the used KV entries
