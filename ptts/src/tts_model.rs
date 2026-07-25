@@ -218,6 +218,46 @@ impl<Q: BackendQ> TTSModel<Q> {
         Ok(())
     }
 
+    /// Run flow LM step with a batch of text prompts. Increments state.
+    ///
+    /// Each prompt is left-padded with the conditioner's padding token up to the
+    /// longest prompt in the batch, so the state must have been initialized with
+    /// `batch_size == text_tokens.len()`. The padded positions are excluded from the
+    /// attention through a key-padding mask carried by the state, and left padding
+    /// (rather than right) keeps the relative positions between the text tokens and the
+    /// generated frames identical to the unpadded case.
+    pub fn prompt_text_batch(
+        &self,
+        state: &mut TTSState<Q>,
+        text_tokens: &[Vec<u32>],
+    ) -> Result<()> {
+        let batch_size = text_tokens.len();
+        let pad_id = self.flow_lm.conditioner.pad_token_id();
+        let max_len = text_tokens.iter().map(|t| t.len()).max().unwrap_or(0);
+        let mut padded = Vec::with_capacity(batch_size * max_len);
+        let mut new_padding = Vec::with_capacity(batch_size);
+        for tokens in text_tokens.iter() {
+            let pad_len = max_len - tokens.len();
+            padded.extend(std::iter::repeat_n(pad_id, pad_len));
+            padded.extend_from_slice(tokens);
+            let mut padding_row = vec![true; pad_len];
+            padding_row.extend(std::iter::repeat_n(false, tokens.len()));
+            new_padding.push(padding_row);
+        }
+        let text_embeddings = self.flow_lm.conditioner.embed_tokens(&padded)?;
+        let output_dim = self.flow_lm.conditioner.output_dim;
+        let text_embeddings = text_embeddings.reshape((batch_size, max_len, output_dim))?;
+        let dev = text_embeddings.device();
+        let empty_latents = Tensor::zeros((batch_size, 0, self.flow_lm.ldim), dev)?;
+        self.run_backbone_and_increment_padded(
+            state,
+            &text_embeddings,
+            &empty_latents,
+            Some(&new_padding),
+        )?;
+        Ok(())
+    }
+
     pub fn prompt_text_null(&self, state: &mut TTSState<Q>) -> Result<()> {
         let empty_text = match self.flow_lm.conditioner.learnt_padding() {
             None => xn::bail!("Model does not support null text prompt"),
@@ -236,8 +276,9 @@ impl<Q: BackendQ> TTSModel<Q> {
         audio_conditioning: &Tensor<Q::T, Q::B>,
     ) -> Result<()> {
         let dev = audio_conditioning.device();
-        let empty_text = Tensor::zeros((1, 0, self.flow_lm.conditioner.dim), dev)?;
-        let empty_latents = Tensor::zeros((1, 0, self.flow_lm.ldim), dev)?;
+        let (b, _, _) = audio_conditioning.dims3()?;
+        let empty_text = Tensor::zeros((b, 0, self.flow_lm.conditioner.dim), dev)?;
+        let empty_latents = Tensor::zeros((b, 0, self.flow_lm.ldim), dev)?;
         let text_embeddings = Tensor::cat(&[&empty_text, audio_conditioning], 1)?;
         self.run_backbone_and_increment(state, &text_embeddings, &empty_latents)?;
         Ok(())
@@ -252,10 +293,24 @@ impl<Q: BackendQ> TTSModel<Q> {
         backbone_input: &Tensor<Q::T, Q::B>,
         rng: &mut impl crate::flow_lm::Rng,
     ) -> Result<(Tensor<Q::T, Q::B>, bool)> {
-        let dev = backbone_input.device();
-        let empty_text = Tensor::zeros((1, 0, self.flow_lm.conditioner.dim), dev)?;
+        let (latent, is_eos) = self.generate_step_batch(state, backbone_input, rng)?;
+        Ok((latent, is_eos[0]))
+    }
 
-        let (latent, is_eos) = self.flow_lm.sample_next_latent(
+    /// Run one autoregressive generation step on a batch.
+    /// Returns (next_latent [B, 1, ldim], per-item is_eos flags of length B).
+    #[allow(clippy::type_complexity)]
+    pub fn generate_step_batch(
+        &self,
+        state: &mut TTSState<Q>,
+        backbone_input: &Tensor<Q::T, Q::B>,
+        rng: &mut impl crate::flow_lm::Rng,
+    ) -> Result<(Tensor<Q::T, Q::B>, Vec<bool>)> {
+        let dev = backbone_input.device();
+        let (b, _, _) = backbone_input.dims3()?;
+        let empty_text = Tensor::zeros((b, 0, self.flow_lm.conditioner.dim), dev)?;
+
+        let (latent, is_eos) = self.flow_lm.sample_next_latents(
             backbone_input,
             &empty_text,
             &mut state.flow_lm_state,
@@ -277,7 +332,8 @@ impl<Q: BackendQ> TTSModel<Q> {
         rng: &mut impl crate::flow_lm::Rng,
     ) -> Result<(Tensor<Q::T, Q::B>, bool)> {
         let dev = backbone_input.device();
-        let empty_text = Tensor::zeros((1, 0, self.flow_lm.conditioner.dim), dev)?;
+        let (b, _, _) = backbone_input.dims3()?;
+        let empty_text = Tensor::zeros((b, 0, self.flow_lm.conditioner.dim), dev)?;
 
         let (latent, is_eos) = self.flow_lm.sample_next_latent_cfg(
             backbone_input,
@@ -325,10 +381,29 @@ impl<Q: BackendQ> TTSModel<Q> {
         text_embeddings: &Tensor<Q::T, Q::B>,
         backbone_input_latents: &Tensor<Q::T, Q::B>,
     ) -> Result<()> {
+        self.run_backbone_and_increment_padded(state, text_embeddings, backbone_input_latents, None)
+    }
+
+    /// Same as `run_backbone_and_increment`, with `new_padding[b][p]` flagging which of
+    /// the new positions hold padding that must not be attended to afterwards.
+    fn run_backbone_and_increment_padded(
+        &self,
+        state: &mut TTSState<Q>,
+        text_embeddings: &Tensor<Q::T, Q::B>,
+        backbone_input_latents: &Tensor<Q::T, Q::B>,
+        new_padding: Option<&[Vec<bool>]>,
+    ) -> Result<()> {
         let input = self.flow_lm.input_linear.forward(backbone_input_latents)?;
         let input = Tensor::cat(&[text_embeddings, &input], 1)?;
-        let _out =
-            self.flow_lm.transformer.forward(&input, &mut state.flow_lm_state.transformer_state)?;
+        match new_padding {
+            Some(new_padding) => state.flow_lm_state.extend_padding(new_padding)?,
+            None => state.flow_lm_state.extend_valid(input.dim(1usize)?),
+        }
+        let _out = self.flow_lm.transformer.forward_masked(
+            &input,
+            &mut state.flow_lm_state.transformer_state,
+            state.flow_lm_state.padding.as_deref(),
+        )?;
         Ok(())
     }
 

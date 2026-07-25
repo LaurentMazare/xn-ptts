@@ -7,6 +7,7 @@ pub struct LUTConditioner<T: WithDTypeF, B: Backend> {
     embed: Tensor<T, B>,
     learnt_padding: Option<Tensor<T, B>>,
     learnt_padding_id: Option<u32>,
+    n_bins: usize,
     pub dim: usize,
     pub output_dim: usize,
 }
@@ -39,11 +40,19 @@ impl<T: WithDTypeF, B: Backend> LUTConditioner<T, B> {
             }
             None => (embed, None),
         };
-        Ok(Self { tokenizer, embed, dim, output_dim, learnt_padding, learnt_padding_id })
+        Ok(Self { tokenizer, embed, n_bins, dim, output_dim, learnt_padding, learnt_padding_id })
     }
 
     pub fn learnt_padding_id(&self) -> Option<u32> {
         self.learnt_padding_id
+    }
+
+    /// Token id used to pad batches of text prompts to a common length. This is the
+    /// learnt padding embedding when the model has one, and the `n_bins` padding entry
+    /// of the embedding table otherwise (the table has `n_bins + 1` rows, the extra one
+    /// being reserved for padding).
+    pub fn pad_token_id(&self) -> u32 {
+        self.learnt_padding_id.unwrap_or(self.n_bins as u32)
     }
 
     /// Tokenize text and return token ids.

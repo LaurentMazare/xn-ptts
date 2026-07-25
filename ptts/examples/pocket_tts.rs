@@ -25,13 +25,16 @@ impl ptts::Tokenizer for SpTokenizer {
 #[command(name = "pocket-tts")]
 #[command(about = "Generate speech from text using Pocket TTS")]
 struct Args {
-    /// Text to synthesize
-    text: String,
+    #[command(subcommand)]
+    command: Option<Command>,
 
-    #[arg(long)]
+    /// Text to synthesize
+    text: Option<String>,
+
+    #[arg(long, global = true)]
     config: Option<String>,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     weights: Option<String>,
 
     #[arg(long)]
@@ -42,28 +45,28 @@ struct Args {
     output: std::path::PathBuf,
 
     /// Voice to use
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     voice: Option<String>,
 
     /// Sampling temperature
-    #[arg(short, long, default_value_t = 0.7)]
+    #[arg(short, long, default_value_t = 0.7, global = true)]
     temperature: f32,
 
     /// Sampling seed
-    #[arg(short, long, default_value_t = 4242424242424242)]
+    #[arg(short, long, default_value_t = 4242424242424242, global = true)]
     seed: u64,
 
     /// Use the cpu device even if a gpu backend is available
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, global = true)]
     cpu: bool,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     quant: Option<String>,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     chrome_tracing: bool,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     rng_values: Option<String>,
 
     #[arg(long)]
@@ -71,6 +74,38 @@ struct Args {
 
     #[arg(long)]
     pad_to: Option<usize>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Process a JSONL file of queries with batched inference.
+    Batch(BatchArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct BatchArgs {
+    /// JSONL file with one query per line: {"text": "...", "output": "optional/path.wav"}
+    input: std::path::PathBuf,
+
+    /// Number of queries processed simultaneously
+    #[arg(short, long, default_value_t = 8)]
+    batch_size: usize,
+
+    /// Directory used for output WAV files when a query has no explicit "output" field
+    #[arg(long, default_value = "batch-out")]
+    output_dir: std::path::PathBuf,
+
+    /// Number of threads used for the mimi audio decoding, the batch entries are split
+    /// evenly between the threads. Defaults to min(batch_size, 4).
+    #[arg(long)]
+    decode_threads: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct Query {
+    text: String,
+    #[serde(default)]
+    output: Option<String>,
 }
 
 const VOICES: &[&str] =
@@ -323,8 +358,101 @@ where
     })
 }
 
+/// Compute the voice conditioning embedding (and the null embedding used by cfg when
+/// applicable) from either a precomputed safetensors file or a raw audio prompt.
+#[allow(clippy::type_complexity)]
+fn load_voice_emb<Q: xn::BackendQ>(
+    voice: Voice,
+    vb: &xn::nn::var_builder::Path<Q::B>,
+    cfg: &TTSConfig,
+    dev: &Q::B,
+    with_cfg: bool,
+) -> Result<(Tensor<Q::T, Q::B>, Option<Tensor<Q::T, Q::B>>)> {
+    let (voice_emb, null_emb) = match voice {
+        Voice::Safetensors(voice_path) => {
+            let voice_vb = VB::load(&[&voice_path], dev.clone())?;
+            let voice_names = voice_vb.tensor_names();
+            let voice_key =
+                voice_names.first().context("no tensors found in voice embedding file")?;
+            let voice_shape = voice_vb.shape(voice_key).context("voice tensor not found")?;
+            let voice_dims = voice_shape.dims();
+
+            // Load as raw tensor and reshape to [1, T, dim]
+            let voice_emb: Tensor<f32, Q::B> = voice_vb.tensor(voice_key, voice_shape.clone())?;
+            let voice_emb = if voice_dims.len() == 2 {
+                voice_emb.reshape((1, voice_dims[0], voice_dims[1]))?
+            } else {
+                voice_emb
+            };
+            if with_cfg {
+                anyhow::bail!("cfg is not supported with pre-computed voice embeddings");
+            }
+            if let Some(model_ext) = cfg.model_ext() {
+                let file_content = std::fs::read(&voice_path)?;
+                let (_, metadata) = safetensors::SafeTensors::read_metadata(&file_content)?;
+                if let Some(metadata) = metadata.metadata()
+                    && let Some(voice_model_ext) = metadata.get("model_ext")
+                {
+                    tracing::info!(?voice_model_ext, "voice embedding model_ext from metadata");
+                    if voice_model_ext.as_str() != model_ext {
+                        anyhow::bail!(
+                            "voice embedding model_ext '{voice_model_ext}' does not match config model_ext '{model_ext}'"
+                        );
+                    }
+                }
+            }
+            (voice_emb.to::<Q::T>()?, None)
+        }
+        Voice::Audio(path) => {
+            tracing::info!("loading voice from audio file {}", path);
+            let (mut pcm, sample_rate) = audio_helpers::pcm_decode(&path)?;
+            ptts::utils::normalize_loudness(&mut pcm, sample_rate)?;
+            let sample_rate = sample_rate as usize;
+            let pcm = if sample_rate != cfg.mimi.sample_rate {
+                audio_helpers::resample(&pcm, sample_rate, cfg.mimi.sample_rate)?
+            } else {
+                pcm
+            };
+            tracing::info!("loaded audio with {} samples", pcm.len());
+            let sr = cfg.mimi.sample_rate as f32;
+            let min_len = (sr * cfg.audio_prompt_min_duration).round() as usize;
+            let max_len = (sr * cfg.audio_prompt_max_duration).round() as usize;
+            let pcm = if pcm.len() > max_len {
+                tracing::info!(
+                    max_duration = cfg.audio_prompt_max_duration,
+                    "trimming audio to max duration"
+                );
+                pcm[..max_len].to_vec()
+            } else {
+                pcm
+            };
+            if pcm.len() < min_len {
+                anyhow::bail!(
+                    "audio prompt is shorter than min duration ({}s, {} samples; got {})",
+                    cfg.audio_prompt_min_duration,
+                    min_len,
+                    pcm.len()
+                );
+            }
+            let pcm_tensor = Tensor::from_vec(pcm, (1, 1, ()), dev)?.to::<Q::T>()?;
+            let mimi_enc: MimiEnc<Q> = MimiEnc::load(vb, cfg)?;
+            let emb = mimi_enc.encode_audio(&pcm_tensor)?;
+            tracing::info!(?emb, "encoded audio to latent");
+            let null_emb = if with_cfg && !cfg.cfg_null_audio_empty {
+                let null_pcm_tensor = pcm_tensor.zeros_like()?;
+                Some(mimi_enc.encode_audio(&null_pcm_tensor)?)
+            } else {
+                None
+            };
+            (emb, null_emb)
+        }
+    };
+    Ok((voice_emb, null_emb))
+}
+
 fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()> {
     use std::str::FromStr;
+    let with_cfg = !matches!(args.cfg_coef, Some(1.0) | None);
     let (model_path, tokenizer_path, voice, cfg) = match args.config.as_ref() {
         Some(config) => {
             let config = std::fs::canonicalize(config)?;
@@ -337,7 +465,7 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
             tracing::info!(?config, "using local config");
             let config: ptts::tts_model::TTSConfig =
                 serde_json::from_str(&std::fs::read_to_string(config)?)?;
-            let voice = match args.voice {
+            let voice = match args.voice.as_ref() {
                 None => None,
                 Some(voice) if voice.ends_with(".safetensors") => {
                     let voice_path = std::path::PathBuf::from(voice);
@@ -346,7 +474,7 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
                     }
                     Some(Voice::Safetensors(voice_path))
                 }
-                Some(voice) => Some(Voice::Audio(voice)),
+                Some(voice) => Some(Voice::Audio(voice.clone())),
             };
             (model_path, tokenizer_path, voice, config)
         }
@@ -354,7 +482,7 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
             if args.weights.is_some() {
                 anyhow::bail!("--weights option is not supported without --config");
             }
-            let voice = args.voice.unwrap_or("alba".to_string());
+            let voice = args.voice.clone().unwrap_or("alba".to_string());
             if !VOICES.contains(&voice.as_str()) && !std::path::PathBuf::from(&voice).exists() {
                 anyhow::bail!("unknown voice '{voice}'. Available voices: {}", VOICES.join(", "));
             }
@@ -367,10 +495,9 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
     let tokenizer_path = tokenizer_path.to_str().context("invalid tokenizer path")?;
     let sp = sentencepiece::SentencePieceProcessor::open(tokenizer_path)?;
     let tokenizer = SpTokenizer(sp);
-    let chunks = split_into_best_sentences(&tokenizer, &args.text, None)?;
 
-    let mut rng = match args.rng_values {
-        Some(path) => Rng::from_file(&path)?,
+    let rng = match args.rng_values.as_ref() {
+        Some(path) => Rng::from_file(path)?,
         None => Rng::std_rng(args.temperature, args.seed)?,
     };
 
@@ -402,6 +529,37 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
     })?;
     tracing::info!("model loaded successfully!");
 
+    let voice_embs = match voice {
+        Some(voice) => Some(load_voice_emb::<Q>(voice, &vb, &cfg, &dev, with_cfg)?),
+        None => None,
+    };
+    let model = std::sync::Arc::new(model);
+
+    match args.command {
+        Some(Command::Batch(ref batch_args)) => {
+            if with_cfg {
+                anyhow::bail!("--cfg_coef is not supported in batch mode");
+            }
+            run_batch::<Q>(batch_args, model, &cfg, voice_embs.map(|v| v.0), rng, &dev)
+        }
+        None => run_single::<Q>(&args, model, &cfg, voice_embs, rng, &dev),
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn run_single<Q: xn::BackendQ + 'static>(
+    args: &Args,
+    model: std::sync::Arc<TTSModel<Q>>,
+    cfg: &TTSConfig,
+    voice_embs: Option<(Tensor<Q::T, Q::B>, Option<Tensor<Q::T, Q::B>>)>,
+    mut rng: Rng,
+    dev: &Q::B,
+) -> Result<()> {
+    let text = args.text.as_ref().context("no text to synthesize provided")?;
+    let tokenizer: &dyn ptts::Tokenizer =
+        model.flow_lm.conditioner.tokenizer.as_deref().context("model has no tokenizer")?;
+    let chunks = split_into_best_sentences(tokenizer, text, None)?;
+
     let mut max_seq_budget = 0;
     let mut all_tokens = vec![];
     for chunk in chunks.iter() {
@@ -427,87 +585,7 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
     let mimi_state = model.init_mimi_state(1, 250)?;
 
     // Load voice embedding
-    if let Some(voice) = voice {
-        let (voice_emb, null_emb) = match voice {
-            Voice::Safetensors(voice_path) => {
-                let voice_vb = VB::load(&[&voice_path], dev.clone())?;
-                let voice_names = voice_vb.tensor_names();
-                let voice_key =
-                    voice_names.first().context("no tensors found in voice embedding file")?;
-                let voice_shape = voice_vb.shape(voice_key).context("voice tensor not found")?;
-                let voice_dims = voice_shape.dims();
-
-                // Load as raw tensor and reshape to [1, T, dim]
-                let voice_emb: Tensor<f32, Q::B> =
-                    voice_vb.tensor(voice_key, voice_shape.clone())?;
-                let voice_emb = if voice_dims.len() == 2 {
-                    voice_emb.reshape((1, voice_dims[0], voice_dims[1]))?
-                } else {
-                    voice_emb
-                };
-                if cfg_state.is_some() {
-                    anyhow::bail!("cfg is not supported with pre-computed voice embeddings");
-                }
-                if let Some(model_ext) = cfg.model_ext() {
-                    let file_content = std::fs::read(&voice_path)?;
-                    let (_, metadata) = safetensors::SafeTensors::read_metadata(&file_content)?;
-                    if let Some(metadata) = metadata.metadata()
-                        && let Some(voice_model_ext) = metadata.get("model_ext")
-                    {
-                        tracing::info!(?voice_model_ext, "voice embedding model_ext from metadata");
-                        if voice_model_ext.as_str() != model_ext {
-                            anyhow::bail!(
-                                "voice embedding model_ext '{voice_model_ext}' does not match config model_ext '{model_ext}'"
-                            );
-                        }
-                    }
-                }
-                (voice_emb.to::<Q::T>()?, None)
-            }
-            Voice::Audio(path) => {
-                tracing::info!("loading voice from audio file {}", path);
-                let (mut pcm, sample_rate) = audio_helpers::pcm_decode(&path)?;
-                ptts::utils::normalize_loudness(&mut pcm, sample_rate)?;
-                let sample_rate = sample_rate as usize;
-                let pcm = if sample_rate != cfg.mimi.sample_rate {
-                    audio_helpers::resample(&pcm, sample_rate, cfg.mimi.sample_rate)?
-                } else {
-                    pcm
-                };
-                tracing::info!("loaded audio with {} samples", pcm.len());
-                let sr = cfg.mimi.sample_rate as f32;
-                let min_len = (sr * cfg.audio_prompt_min_duration).round() as usize;
-                let max_len = (sr * cfg.audio_prompt_max_duration).round() as usize;
-                let pcm = if pcm.len() > max_len {
-                    tracing::info!(
-                        max_duration = cfg.audio_prompt_max_duration,
-                        "trimming audio to max duration"
-                    );
-                    pcm[..max_len].to_vec()
-                } else {
-                    pcm
-                };
-                if pcm.len() < min_len {
-                    anyhow::bail!(
-                        "audio prompt is shorter than min duration ({}s, {} samples; got {})",
-                        cfg.audio_prompt_min_duration,
-                        min_len,
-                        pcm.len()
-                    );
-                }
-                let pcm_tensor = Tensor::from_vec(pcm, (1, 1, ()), &dev)?.to::<Q::T>()?;
-                let mimi_enc: MimiEnc<Q> = MimiEnc::load(&vb, &cfg)?;
-                let emb = mimi_enc.encode_audio(&pcm_tensor)?;
-                tracing::info!(?emb, "encoded audio to latent");
-                let null_emb = if cfg_state.is_some() && !cfg.cfg_null_audio_empty {
-                    let null_pcm_tensor = pcm_tensor.zeros_like()?;
-                    Some(mimi_enc.encode_audio(&null_pcm_tensor)?)
-                } else {
-                    None
-                };
-                (emb, null_emb)
-            }
-        };
+    if let Some((voice_emb, null_emb)) = voice_embs {
         // Prompt with audio conditioning
         tracing::info!("prompting with voice conditioning ({} frames)...", voice_emb.dim(1usize)?);
         let start = std::time::Instant::now();
@@ -525,7 +603,6 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
     tracing::info!("starting generation...");
     let mut all_audios = vec![];
     let mut backbone_step_timings_ms = vec![];
-    let model = std::sync::Arc::new(model);
     for (tokens, max_frames, frames_after_eos) in all_tokens.into_iter() {
         tracing::info!("prompting with text conditioning ({} tokens)...", tokens.len());
         let start = std::time::Instant::now();
@@ -546,7 +623,7 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
         let ldim = cfg.flow_lm.ldim;
         let nan_data: Vec<f32> = vec![f32::NAN; ldim];
         let mut prev_latent: Tensor<Q::T, Q::B> =
-            Tensor::from_vec(nan_data, (1, 1, ldim), &dev)?.to::<Q::T>()?;
+            Tensor::from_vec(nan_data, (1, 1, ldim), dev)?.to::<Q::T>()?;
 
         let mut eos_countdown: Option<usize> = None;
 
@@ -636,5 +713,243 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
     let mut writer = std::io::BufWriter::new(output_file);
     ptts::wav::write_pcm_as_wav(&mut writer, &pcm, cfg.mimi.sample_rate as u32, 1)?;
     tracing::info!("saving output to {}", args.output.display());
+    Ok(())
+}
+
+struct WorkItem {
+    query_idx: usize,
+    tokens: Vec<u32>,
+    max_frames: usize,
+    frames_after_eos: usize,
+}
+
+fn run_batch<Q: xn::BackendQ + 'static>(
+    batch_args: &BatchArgs,
+    model: std::sync::Arc<TTSModel<Q>>,
+    cfg: &TTSConfig,
+    voice_emb: Option<Tensor<Q::T, Q::B>>,
+    mut rng: Rng,
+    dev: &Q::B,
+) -> Result<()> {
+    let tokenizer: &dyn ptts::Tokenizer =
+        model.flow_lm.conditioner.tokenizer.as_deref().context("model has no tokenizer")?;
+
+    let input = std::fs::read_to_string(&batch_args.input)
+        .with_context(|| format!("cannot read '{}'", batch_args.input.display()))?;
+    let queries = input
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(serde_json::from_str)
+        .collect::<std::result::Result<Vec<Query>, _>>()
+        .context("invalid jsonl input")?;
+    if queries.is_empty() {
+        anyhow::bail!("no queries found in '{}'", batch_args.input.display());
+    }
+
+    // Split each query into sentence chunks; each chunk is an independent work item.
+    let mut items = vec![];
+    let mut max_seq_budget = 0;
+    for (query_idx, query) in queries.iter().enumerate() {
+        for chunk in split_into_best_sentences(tokenizer, &query.text, None)?.iter() {
+            let (text, frames_after_eos) = prepare_text_prompt(chunk);
+            let tokens = model.flow_lm.conditioner.tokenize(&text)?;
+            let max_frames = ((tokens.len() as f64 / 3.0 + 2.0) * 12.5).ceil() as usize;
+            max_seq_budget = max_seq_budget.max(tokens.len() + 512 + max_frames);
+            items.push(WorkItem { query_idx, tokens, max_frames, frames_after_eos });
+        }
+    }
+    let batch_size = batch_args.batch_size.min(items.len()).max(1);
+    // The mimi decoding of the batch entries is split over several threads, each thread
+    // owning the mimi streaming state of a contiguous slice of the batch.
+    let decode_threads =
+        batch_args.decode_threads.unwrap_or(batch_size.min(4)).clamp(1, batch_size);
+    let mut slice_bounds = Vec::with_capacity(decode_threads);
+    let mut slice_start = 0;
+    for t in 0..decode_threads {
+        let slice_len = batch_size / decode_threads + usize::from(t < batch_size % decode_threads);
+        slice_bounds.push((slice_start, slice_len));
+        slice_start += slice_len;
+    }
+    tracing::info!(
+        num_queries = queries.len(),
+        num_chunks = items.len(),
+        batch_size,
+        decode_threads,
+        "batch mode"
+    );
+
+    // Group chunks of similar expected lengths together to limit the number of wasted
+    // generation steps within a batch.
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&i| items[i].max_frames);
+
+    // Prime a state with the voice conditioning once, then clone it for every batch.
+    let mut base_state = model.init_flow_lm_state(batch_size, max_seq_budget)?;
+    if let Some(voice_emb) = voice_emb {
+        let (_, t, d) = voice_emb.dims3()?;
+        let voice_emb = voice_emb.expand((batch_size, t, d))?.contiguous()?;
+        tracing::info!("prompting with voice conditioning ({t} frames)...");
+        let start = std::time::Instant::now();
+        model.prompt_audio(&mut base_state, &voice_emb)?;
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        tracing::info!("done prompting with voice conditioning in {elapsed_ms:.2}ms");
+    }
+
+    let start = std::time::Instant::now();
+    tracing::info!("starting generation...");
+    let ldim = cfg.flow_lm.ldim;
+    let mut results: Vec<Option<Vec<f32>>> = (0..items.len()).map(|_| None).collect();
+    let mut backbone_step_timings_ms = vec![];
+    let mut generated_frames = 0usize;
+    let mut used_frames = 0usize;
+    for batch in order.chunks(batch_size) {
+        // Pad incomplete batches by repeating the last item; the extra outputs are discarded.
+        let mut batch_items = batch.to_vec();
+        while batch_items.len() < batch_size {
+            batch_items.push(*batch.last().context("empty batch")?);
+        }
+
+        let mut tts_state = base_state.clone();
+        let token_batch = batch_items.iter().map(|&i| items[i].tokens.clone()).collect::<Vec<_>>();
+        let prompt_start = std::time::Instant::now();
+        model.prompt_text_batch(&mut tts_state, &token_batch)?;
+        let elapsed_ms = prompt_start.elapsed().as_secs_f64() * 1000.0;
+        tracing::info!("prompted batch of {} texts in {elapsed_ms:.2}ms", batch_items.len());
+
+        // BOS marker: NaN tensor [B, 1, ldim]
+        let nan_data: Vec<f32> = vec![f32::NAN; batch_size * ldim];
+        let mut prev_latent: Tensor<Q::T, Q::B> =
+            Tensor::from_vec(nan_data, (batch_size, 1, ldim), dev)?.to::<Q::T>()?;
+
+        let mut eos_countdowns: Vec<Option<usize>> = vec![None; batch_size];
+        // Number of latent frames to keep for each batch entry once it is done.
+        let mut done_frames: Vec<Option<usize>> = vec![None; batch_size];
+        let max_steps =
+            batch_items.iter().map(|&i| items[i].max_frames).max().context("empty batch")?;
+
+        let mut latent_txs = Vec::with_capacity(decode_threads);
+        let mut decode_jhs = Vec::with_capacity(decode_threads);
+        for &(slice_start, slice_len) in slice_bounds.iter() {
+            let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Tensor<Q::T, Q::B>>();
+            let mut mimi_state = model.init_mimi_state(slice_len, 250)?;
+            let jh = spawn({
+                let model = model.clone();
+                move || {
+                    let mut audio_chunks: Vec<Tensor<f32, Q::B>> = Vec::new();
+                    let mut chunk_samples: Vec<usize> = Vec::new();
+                    while let Ok(next_latent) = latent_rx.recv() {
+                        let latent = next_latent
+                            .narrow(0, slice_start..slice_start + slice_len)?
+                            .contiguous()?;
+                        let audio_chunk = model.decode_latent(&latent, &mut mimi_state)?;
+                        chunk_samples.push(audio_chunk.dim(2)?);
+                        audio_chunks.push(audio_chunk);
+                    }
+                    let audio_refs: Vec<&Tensor<f32, Q::B>> = audio_chunks.iter().collect();
+                    let audio = Tensor::cat(&audio_refs, 2)?;
+                    Ok::<_, anyhow::Error>((audio, chunk_samples))
+                }
+            });
+            latent_txs.push(latent_tx);
+            decode_jhs.push(jh);
+        }
+
+        for step in 0..max_steps {
+            let step_start = std::time::Instant::now();
+            let (next_latent, is_eos) =
+                model.generate_step_batch(&mut tts_state, &prev_latent, &mut rng)?;
+            backbone_step_timings_ms.push(step_start.elapsed().as_secs_f64() * 1000.0);
+            for latent_tx in latent_txs.iter() {
+                latent_tx.send(next_latent.clone())?;
+            }
+            generated_frames += batch_size;
+
+            let frames = step + 1;
+            for (b, &item_idx) in batch_items.iter().enumerate() {
+                if done_frames[b].is_some() {
+                    continue;
+                }
+                let item = &items[item_idx];
+                if is_eos[b] && eos_countdowns[b].is_none() {
+                    eos_countdowns[b] = Some(item.frames_after_eos);
+                }
+                if let Some(ref mut countdown) = eos_countdowns[b] {
+                    if *countdown == 0 {
+                        done_frames[b] = Some(frames);
+                        continue;
+                    }
+                    *countdown -= 1;
+                }
+                if frames >= item.max_frames {
+                    done_frames[b] = Some(frames);
+                }
+            }
+            if done_frames.iter().all(|d| d.is_some()) {
+                break;
+            }
+            prev_latent = next_latent;
+
+            if (step + 1) % 25 == 0 {
+                tracing::info!(?step, ?max_steps, "generation progress");
+            }
+        }
+        std::mem::drop(latent_txs); // Close channels to signal the decode threads to finish
+        for (&(slice_start, slice_len), jh) in slice_bounds.iter().zip(decode_jhs) {
+            let (audio, chunk_samples) =
+                jh.join().map_err(|_| anyhow::anyhow!("cannot join thread"))?;
+            for row in 0..slice_len {
+                let b = slice_start + row;
+                if b >= batch.len() {
+                    // Padding entry duplicated from the last item, discard it.
+                    continue;
+                }
+                let item_idx = batch_items[b];
+                let n_frames = done_frames[b].unwrap_or(chunk_samples.len());
+                used_frames += n_frames;
+                let n_samples: usize = chunk_samples[..n_frames].iter().sum();
+                let pcm = audio.narrow(0, row..row + 1)?.contiguous()?.to_vec()?;
+                results[item_idx] = Some(pcm[..n_samples].to_vec());
+            }
+        }
+    }
+
+    // Group the chunk audios back per query (items are created in query order, so the
+    // chunks of a query appear in the right order when scanning `results` sequentially).
+    let mut per_query_pcm: Vec<Vec<f32>> = (0..queries.len()).map(|_| vec![]).collect();
+    for (item, result) in items.iter().zip(results) {
+        let pcm = result.context("missing result for a chunk")?;
+        per_query_pcm[item.query_idx].extend_from_slice(&pcm);
+    }
+
+    let total_samples: usize = per_query_pcm.iter().map(|p| p.len()).sum();
+    let duration = total_samples as f64 / cfg.mimi.sample_rate as f64;
+    let elapsed = start.elapsed().as_secs_f64();
+    let rtf = duration / elapsed;
+    tracing::info!("generated {duration:.2}s in {elapsed:.2}s (RTF={rtf:.3})");
+    let nsteps = backbone_step_timings_ms.len();
+    tracing::info!(
+        ?nsteps,
+        batch_size,
+        "average backbone step time: {:.2}ms",
+        backbone_step_timings_ms.iter().sum::<f64>() / nsteps as f64
+    );
+    tracing::info!(
+        generated_frames,
+        used_frames,
+        "batch efficiency: {:.1}%",
+        100.0 * used_frames as f64 / generated_frames.max(1) as f64
+    );
+
+    std::fs::create_dir_all(&batch_args.output_dir)?;
+    for (query_idx, (query, pcm)) in queries.iter().zip(per_query_pcm.iter()).enumerate() {
+        let output_path = match query.output.as_ref() {
+            Some(p) => std::path::PathBuf::from(p),
+            None => batch_args.output_dir.join(format!("query-{query_idx:04}.wav")),
+        };
+        let output_file = std::fs::File::create(&output_path)?;
+        let mut writer = std::io::BufWriter::new(output_file);
+        ptts::wav::write_pcm_as_wav(&mut writer, pcm, cfg.mimi.sample_rate as u32, 1)?;
+        tracing::info!("saved output to {}", output_path.display());
+    }
     Ok(())
 }

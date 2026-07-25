@@ -70,6 +70,55 @@ pub struct FlowLM<Q: BackendQ> {
 #[derive(Clone, Debug)]
 pub struct FlowLMState<Q: BackendQ> {
     pub transformer_state: StreamingTransformerState<Q::T, Q::B>,
+    /// Per-item key-padding flags covering every position processed so far,
+    /// `padding[b][p]` being true when position `p` of batch item `b` is a padding
+    /// position that must not be attended to. `None` when the stream contains no
+    /// padding at all (the common case), which skips the mask computation entirely.
+    pub padding: Option<Vec<Vec<bool>>>,
+}
+
+impl<Q: BackendQ> FlowLMState<Q> {
+    /// Number of positions processed so far.
+    pub fn current_end(&self) -> usize {
+        match self.transformer_state.layer_states.first() {
+            Some(crate::transformer::LayerAttentionState::FlowLm(s)) => s.current_end,
+            Some(crate::transformer::LayerAttentionState::Mimi(s)) => s.absolute_offset(),
+            None => 0,
+        }
+    }
+
+    /// Record the padding flags for `new_padding.len()` new positions of each batch
+    /// item before they get processed. Once padding tracking is enabled (some
+    /// position of some item was padded), it stays on for the whole stream.
+    pub fn extend_padding(&mut self, new_padding: &[Vec<bool>]) -> xn::Result<()> {
+        let any_padding = new_padding.iter().any(|row| row.iter().any(|&p| p));
+        if self.padding.is_none() && !any_padding {
+            return Ok(());
+        }
+        let current_end = self.current_end();
+        let padding =
+            self.padding.get_or_insert_with(|| vec![vec![false; current_end]; new_padding.len()]);
+        if padding.len() != new_padding.len() {
+            xn::bail!(
+                "batch size mismatch in padding tracking: {} vs {}",
+                padding.len(),
+                new_padding.len()
+            )
+        }
+        for (row, new_row) in padding.iter_mut().zip(new_padding.iter()) {
+            row.extend_from_slice(new_row);
+        }
+        Ok(())
+    }
+
+    /// Record `len` new non-padding positions for each batch item.
+    pub fn extend_valid(&mut self, len: usize) {
+        if let Some(padding) = self.padding.as_mut() {
+            for row in padding.iter_mut() {
+                row.extend(std::iter::repeat_n(false, len));
+            }
+        }
+    }
 }
 
 impl<Q: BackendQ> FlowLM<Q> {
@@ -145,7 +194,7 @@ impl<Q: BackendQ> FlowLM<Q> {
 
     pub fn init_state(&self, batch_size: usize, sequence_length: usize) -> Result<FlowLMState<Q>> {
         let transformer_state = self.transformer.init_state(batch_size, sequence_length)?;
-        Ok(FlowLMState { transformer_state })
+        Ok(FlowLMState { transformer_state, padding: None })
     }
 
     /// Run the backbone: concat text_embeddings + input, run transformer, strip prefix.
@@ -161,7 +210,12 @@ impl<Q: BackendQ> FlowLM<Q> {
             None => input.clone(),
         };
         let input = Tensor::cat(&[text_embeddings, &input], 1)?;
-        let out = self.transformer.forward(&input, &mut state.transformer_state)?;
+        state.extend_valid(input.dim(1usize)?);
+        let out = self.transformer.forward_masked(
+            &input,
+            &mut state.transformer_state,
+            state.padding.as_deref(),
+        )?;
         let out = out.layer_norm(&self.out_norm_weight, &self.out_norm_bias, 1e-5)?;
         // Remove prefix, keep only last seq_len positions
         let total = out.dim(1usize)?;
@@ -170,7 +224,7 @@ impl<Q: BackendQ> FlowLM<Q> {
     }
 
     /// Sample next latent using flow matching.
-    /// Returns (next_latent [B, 1, ldim], is_eos [B, 1]).
+    /// Returns (next_latent [B, 1, ldim], is_eos).
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn sample_next_latent(
         &self,
@@ -181,6 +235,29 @@ impl<Q: BackendQ> FlowLM<Q> {
         rng: &mut impl Rng,
         eos_threshold: f32,
     ) -> Result<(Tensor<Q::T, Q::B>, bool)> {
+        let (latent, is_eos) = self.sample_next_latents(
+            sequence,
+            text_embeddings,
+            state,
+            lsd_decode_steps,
+            rng,
+            eos_threshold,
+        )?;
+        Ok((latent, is_eos[0]))
+    }
+
+    /// Batched variant of `sample_next_latent`.
+    /// Returns (next_latent [B, 1, ldim], per-item is_eos flags of length B).
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn sample_next_latents(
+        &self,
+        sequence: &Tensor<Q::T, Q::B>,
+        text_embeddings: &Tensor<Q::T, Q::B>,
+        state: &mut FlowLMState<Q>,
+        lsd_decode_steps: usize,
+        rng: &mut impl Rng,
+        eos_threshold: f32,
+    ) -> Result<(Tensor<Q::T, Q::B>, Vec<bool>)> {
         let (b, s, _) = sequence.dims3()?;
         let dev = sequence.device();
 
@@ -193,7 +270,7 @@ impl<Q: BackendQ> FlowLM<Q> {
 
         let eos_logit = self.out_eos.forward(&transformer_out)?;
         let eos_val = eos_logit.to_vec()?;
-        let is_eos = eos_val[0].to_f32() > eos_threshold;
+        let is_eos = eos_val.iter().map(|v| v.to_f32() > eos_threshold).collect::<Vec<_>>();
         let noise_data: Vec<Q::T> =
             (0..b * self.ldim).map(|_| Q::T::from_f32(rng.sample())).collect();
         let noise = Tensor::from_vec(noise_data, (b, self.ldim), dev)?;

@@ -119,10 +119,11 @@ impl<Q: BackendQ> StreamingMultiheadAttention<Q> {
         let (q, k) = rope.forward(&q, &k)?;
         let (k, v) = state.complete_kv(&k, &v)?;
 
-        // Transpose to [b, h, t, d] for attention
-        let q = q.transpose(1, 2)?;
-        let k = k.transpose(1, 2)?;
-        let v = v.transpose(1, 2)?;
+        // Transpose to [b, h, t, d] for attention. The `contiguous` calls matter: the
+        // batched matmuls mis-handle transposed (strided) inputs for batch sizes > 1.
+        let q = q.transpose(1, 2)?.contiguous()?;
+        let k = k.transpose(1, 2)?.contiguous()?;
+        let v = v.transpose(1, 2)?.contiguous()?;
 
         // Scaled dot-product attention
         let scale = Q::T::from_f32(1.0 / (d as f32).sqrt());
@@ -135,10 +136,43 @@ impl<Q: BackendQ> StreamingMultiheadAttention<Q> {
         let x = attn.matmul(&v)?;
 
         // Back to [b, t, h*d]
-        let x = x.transpose(1, 2)?.reshape((b, t, self.embed_dim))?.contiguous()?;
+        let x = x.transpose(1, 2)?.contiguous()?.reshape((b, t, self.embed_dim))?;
         self.out_proj.forward(&x)
     }
 }
+/// Build a per-batch additive attention mask of shape [B, 1, num_queries, num_keys]
+/// combining the causal structure with per-item key-padding: padded positions are
+/// never attended to by other positions. A padded position may still attend to
+/// itself so that its (discarded) output stays finite even when every other key is
+/// masked out.
+fn materialize_padded_causal_mask<T: WithDTypeF, B: Backend>(
+    state: &StreamingMHAState<T, B>,
+    num_queries: usize,
+    key_padding: &[Vec<bool>],
+    dev: &B,
+) -> Result<Tensor<T, B>> {
+    let offset = state.current_end;
+    let num_keys = offset + num_queries;
+    let batch_size = key_padding.len();
+    let mut data = Vec::with_capacity(batch_size * num_queries * num_keys);
+    for padding in key_padding.iter() {
+        if padding.len() != num_keys {
+            xn::bail!(
+                "unexpected key-padding length {} for {num_keys} attended positions",
+                padding.len()
+            )
+        }
+        for q in 0..num_queries {
+            let q_abs = q + offset;
+            for (k, &is_padding) in padding.iter().enumerate() {
+                let visible = k <= q_abs && (!is_padding || k == q_abs);
+                data.push(T::from_f32(if visible { 0.0 } else { f32::NEG_INFINITY }));
+            }
+        }
+    }
+    Tensor::from_vec(data, (batch_size, 1, num_queries, num_keys), dev)
+}
+
 // ---- KV Cache ----
 
 /// Simple append-based KV cache with optional context window trimming.
@@ -153,6 +187,10 @@ pub struct KvCache<T: WithDTypeF, B: Backend> {
 impl<T: WithDTypeF, B: Backend> KvCache<T, B> {
     pub fn new(context: usize) -> Self {
         Self { k: None, v: None, context, absolute_offset: 0 }
+    }
+
+    pub fn absolute_offset(&self) -> usize {
+        self.absolute_offset
     }
 
     pub fn current_seq_len(&self) -> Result<usize> {
@@ -457,10 +495,26 @@ impl<Q: BackendQ> StreamingTransformer<Q> {
         x: &Tensor<Q::T, Q::B>,
         state: &mut StreamingTransformerState<Q::T, Q::B>,
     ) -> Result<Tensor<Q::T, Q::B>> {
+        self.forward_masked(x, state, None)
+    }
+
+    /// Forward pass with an optional per-item key-padding mask. `key_padding[b][p]` is
+    /// true when the absolute position `p` of batch item `b` holds padding and must not
+    /// be attended to; each row must cover all positions processed so far plus the new
+    /// ones (`current_end + seq_len`). Only supported by flow-lm style attention.
+    pub fn forward_masked(
+        &self,
+        x: &Tensor<Q::T, Q::B>,
+        state: &mut StreamingTransformerState<Q::T, Q::B>,
+        key_padding: Option<&[Vec<bool>]>,
+    ) -> Result<Tensor<Q::T, Q::B>> {
         let mut x = x.clone();
         let (_, seq_len, _) = x.dims3()?;
         let mask = match state.layer_states.first() {
             Some(LayerAttentionState::Mimi(kv_cache)) => {
+                if key_padding.is_some() {
+                    xn::bail!("key-padding masks are not supported by the mimi attention")
+                }
                 let kv_seq_len = kv_cache.current_seq_len()?;
                 let context = kv_cache.context;
                 // Causal mask of shape (1, 1, seq_len, kv_seq_len + seq_len) with -inf in upper triangle
@@ -480,9 +534,12 @@ impl<Q: BackendQ> StreamingTransformer<Q> {
                     Tensor::from_vec(mask_data, (1, 1, seq_len, kv_seq_len + seq_len), x.device())?;
                 Some(mask)
             }
-            Some(LayerAttentionState::FlowLm(kv_cache)) => {
-                Some(kv_cache.materialize_causal_mask(seq_len)?)
-            }
+            Some(LayerAttentionState::FlowLm(kv_cache)) => match key_padding {
+                None => Some(kv_cache.materialize_causal_mask(seq_len)?),
+                Some(padding) => {
+                    Some(materialize_padded_causal_mask(kv_cache, seq_len, padding, x.device())?)
+                }
+            },
             _ => None,
         };
         let offset = state
@@ -493,8 +550,42 @@ impl<Q: BackendQ> StreamingTransformer<Q> {
                 LayerAttentionState::FlowLm(mha_state) => mha_state.current_end,
             })
             .unwrap_or(0);
-        let rope =
-            RotaryEmbedding::new(self.head_dim, offset, seq_len, self.max_period, x.device())?;
+        let rope = match key_padding {
+            None => {
+                RotaryEmbedding::new(self.head_dim, offset, seq_len, self.max_period, x.device())?
+            }
+            Some(padding) => {
+                // Each item advances its rope position only on non-padding steps, so the
+                // positions seen by an item are exactly the ones of an unpadded run.
+                // Padding steps reuse the upcoming position; they are excluded from the
+                // attention by the mask so their rotation does not matter.
+                let mut positions = Vec::with_capacity(padding.len());
+                for row in padding.iter() {
+                    if row.len() != offset + seq_len {
+                        xn::bail!(
+                            "unexpected key-padding length {} for {} positions",
+                            row.len(),
+                            offset + seq_len
+                        )
+                    }
+                    let mut pos = row[..offset].iter().filter(|&&p| !p).count();
+                    let mut item_positions = Vec::with_capacity(seq_len);
+                    for &is_padding in row[offset..].iter() {
+                        item_positions.push(pos);
+                        if !is_padding {
+                            pos += 1;
+                        }
+                    }
+                    positions.push(item_positions);
+                }
+                RotaryEmbedding::new_per_item(
+                    self.head_dim,
+                    &positions,
+                    self.max_period,
+                    x.device(),
+                )?
+            }
+        };
         for (layer, layer_state) in self.layers.iter().zip(state.layer_states.iter_mut()) {
             x = layer.forward(&x, &rope, layer_state, mask.as_ref())?;
         }
