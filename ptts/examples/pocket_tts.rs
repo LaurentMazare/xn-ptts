@@ -245,7 +245,7 @@ fn main() -> Result<()> {
         } else {
             tracing::info!("using metal backend");
             let dev = xn::metal_backend::Device::new(0)?;
-            run_for_device::<xn::Unquantized<f32, _>>(args, dev)?;
+            run_for_device::<xn::Unquantized<half::bf16, _>>(args, dev)?;
         }
     }
     #[cfg(not(any(feature = "cuda", feature = "vulkan", feature = "metal")))]
