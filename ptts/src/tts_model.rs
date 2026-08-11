@@ -90,6 +90,7 @@ impl TTSConfig {
                 flow_dim: 512,
                 flow_depth: 6,
                 ldim: 32,
+                insert_bos_before_voice: false,
             },
             mimi: MimiConfig {
                 channels: 1,
@@ -235,10 +236,11 @@ impl<Q: BackendQ> TTSModel<Q> {
         state: &mut TTSState<Q>,
         audio_conditioning: &Tensor<Q::T, Q::B>,
     ) -> Result<()> {
+        let audio_conditioning = self.flow_lm.prepare_audio_conditioning(audio_conditioning)?;
         let dev = audio_conditioning.device();
         let empty_text = Tensor::zeros((1, 0, self.flow_lm.conditioner.dim), dev)?;
         let empty_latents = Tensor::zeros((1, 0, self.flow_lm.ldim), dev)?;
-        let text_embeddings = Tensor::cat(&[&empty_text, audio_conditioning], 1)?;
+        let text_embeddings = Tensor::cat(&[&empty_text, &audio_conditioning], 1)?;
         self.run_backbone_and_increment(state, &text_embeddings, &empty_latents)?;
         Ok(())
     }

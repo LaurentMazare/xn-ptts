@@ -48,6 +48,9 @@ pub struct FlowLMConfig {
     pub flow_dim: usize,
     pub flow_depth: usize,
     pub ldim: usize,
+    /// Insert the model's learned conditioning marker before a voice prompt.
+    #[serde(default)]
+    pub insert_bos_before_voice: bool,
 }
 
 /// Transformer-based flow language model.
@@ -59,6 +62,7 @@ pub struct FlowLM<Q: BackendQ> {
     pub emb_std: Tensor<Q::T, Q::B>,
     pub emb_mean: Tensor<Q::T, Q::B>,
     bos_emb: Tensor<Q::T, Q::B>,
+    bos_before_voice: Option<Tensor<Q::T, Q::B>>,
     pub input_linear: Linear<Q::T, Q::B>,
     out_norm_weight: Tensor<Q::T, Q::B>,
     out_norm_bias: Tensor<Q::T, Q::B>,
@@ -121,6 +125,10 @@ impl<Q: BackendQ> FlowLM<Q> {
         let emb_std = vb.tensor("emb_std", (cfg.ldim,))?;
         let emb_mean = vb.tensor("emb_mean", (cfg.ldim,))?;
         let bos_emb = vb.tensor("bos_emb", (cfg.ldim,))?;
+        let bos_before_voice = cfg
+            .insert_bos_before_voice
+            .then(|| vb.tensor("bos_before_voice", (1, 1, cfg.d_model)))
+            .transpose()?;
         let input_linear = Linear::load(vb.pp("input_linear"), cfg.ldim, cfg.d_model)?;
         let out_norm_weight = vb.pp("out_norm").tensor("weight", (cfg.d_model,))?;
         let out_norm_bias = vb.pp("out_norm").tensor("bias", (cfg.d_model,))?;
@@ -134,6 +142,7 @@ impl<Q: BackendQ> FlowLM<Q> {
             emb_std,
             emb_mean,
             bos_emb,
+            bos_before_voice,
             input_linear,
             out_norm_weight,
             out_norm_bias,
@@ -146,6 +155,14 @@ impl<Q: BackendQ> FlowLM<Q> {
     pub fn init_state(&self, batch_size: usize, sequence_length: usize) -> Result<FlowLMState<Q>> {
         let transformer_state = self.transformer.init_state(batch_size, sequence_length)?;
         Ok(FlowLMState { transformer_state })
+    }
+
+    /// Prepend the learned voice marker when this checkpoint requires one.
+    pub(crate) fn prepare_audio_conditioning(
+        &self,
+        audio_conditioning: &Tensor<Q::T, Q::B>,
+    ) -> Result<Tensor<Q::T, Q::B>> {
+        prepend_bos_before_voice(self.bos_before_voice.as_ref(), audio_conditioning)
     }
 
     /// Run the backbone: concat text_embeddings + input, run transformer, strip prefix.
@@ -254,5 +271,76 @@ impl<Q: BackendQ> FlowLM<Q> {
             }
         }
         Tensor::from_vec(out_data, sequence.shape().clone(), sequence.device())
+    }
+}
+
+fn prepend_bos_before_voice<T: WithDTypeF, B: Backend>(
+    bos: Option<&Tensor<T, B>>,
+    audio_conditioning: &Tensor<T, B>,
+) -> Result<Tensor<T, B>> {
+    let Some(bos) = bos else { return Ok(audio_conditioning.clone()) };
+    let (batch_size, _, dim) = audio_conditioning.dims3()?;
+    let bos = bos.expand((batch_size, 1, dim))?.contiguous()?;
+    Tensor::cat(&[&bos, audio_conditioning], 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FlowLMConfig, prepend_bos_before_voice};
+    use serde_json::json;
+    use xn::{CPU, Tensor};
+
+    fn config_json() -> serde_json::Value {
+        json!({
+            "d_model": 1024,
+            "num_heads": 16,
+            "num_layers": 6,
+            "dim_feedforward": 4096,
+            "max_period": 10000.0,
+            "n_bins": 4000,
+            "lut_dim": 1024,
+            "flow_dim": 512,
+            "flow_depth": 6,
+            "ldim": 32
+        })
+    }
+
+    #[test]
+    fn missing_bos_config_preserves_legacy_behavior() {
+        let config: FlowLMConfig = serde_json::from_value(config_json()).unwrap();
+
+        assert!(!config.insert_bos_before_voice);
+    }
+
+    #[test]
+    fn bos_config_can_be_enabled() {
+        let mut value = config_json();
+        value["insert_bos_before_voice"] = json!(true);
+        let config: FlowLMConfig = serde_json::from_value(value).unwrap();
+
+        assert!(config.insert_bos_before_voice);
+    }
+
+    #[test]
+    fn audio_conditioning_is_unchanged_without_bos() {
+        let audio = Tensor::from_vec(vec![1_f32, 2., 3., 4.], (1, 2, 2), &CPU).unwrap();
+        let prepared = prepend_bos_before_voice(None, &audio).unwrap();
+
+        assert_eq!(prepared.dims(), &[1, 2, 2]);
+        assert_eq!(prepared.to_vec().unwrap(), vec![1., 2., 3., 4.]);
+    }
+
+    #[test]
+    fn bos_is_prepended_to_each_audio_conditioning_batch() {
+        let bos = Tensor::from_vec(vec![9_f32, 8.], (1, 1, 2), &CPU).unwrap();
+        let audio =
+            Tensor::from_vec(vec![1_f32, 2., 3., 4., 5., 6., 7., 8.], (2, 2, 2), &CPU).unwrap();
+        let prepared = prepend_bos_before_voice(Some(&bos), &audio).unwrap();
+
+        assert_eq!(prepared.dims(), &[2, 3, 2]);
+        assert_eq!(
+            prepared.to_vec().unwrap(),
+            vec![9., 8., 1., 2., 3., 4., 9., 8., 5., 6., 7., 8.]
+        );
     }
 }
