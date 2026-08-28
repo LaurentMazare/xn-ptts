@@ -1,4 +1,4 @@
-use numpy::{PyArray1, PyReadonlyArray1};
+use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use ptts::tts_model::{MimiEnc, TTSConfig, TTSModel, TTSState};
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -52,6 +52,20 @@ macro_rules! py_bail {
 const POCKET_TTS_VOICES: &[&str] =
     &["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 
+/// Flatten a numpy conditioning-embedding array of shape `[T, dim]` or `[1, T, dim]`
+/// into a contiguous `(data, T, dim)` triple.
+fn parse_embeddings(arr: &PyReadonlyArrayDyn<'_, f32>) -> PyResult<(Vec<f32>, usize, usize)> {
+    let (n_frames, dim) = match arr.shape() {
+        [t, d] => (*t, *d),
+        [1, t, d] => (*t, *d),
+        shape => {
+            py_bail!("expected embeddings of shape [T, dim] or [1, T, dim], got {shape:?}")
+        }
+    };
+    let data: Vec<f32> = arr.as_array().iter().copied().collect();
+    Ok((data, n_frames, dim))
+}
+
 struct ModelB<Q: BackendQ> {
     inner: Arc<TTSModel<Q>>,
     mimi_enc: Option<MimiEnc<Q>>,
@@ -59,6 +73,7 @@ struct ModelB<Q: BackendQ> {
     audio_prompt_min_duration: f32,
     audio_prompt_max_duration: f32,
     cfg_null_audio_empty: bool,
+    speaker_sample_rate: usize,
 }
 
 impl<Q: BackendQ> ModelB<Q> {
@@ -68,7 +83,7 @@ impl<Q: BackendQ> ModelB<Q> {
         cfg_coef: Option<f32>,
         max_seq_len: usize,
     ) -> xn::Result<ModelStateB<Q>> {
-        let sample_rate = self.inner.sample_rate();
+        let sample_rate = self.speaker_sample_rate;
         let mimi_enc = match self.mimi_enc.as_ref() {
             Some(enc) => enc,
             None => xn::bail!("model does not support audio prompts"),
@@ -120,6 +135,46 @@ impl<Q: BackendQ> ModelB<Q> {
         let mut state = self.inner.init_flow_lm_state(1, max_seq_len)?;
         self.inner.prompt_audio(&mut state, voice_emb)?;
         Ok(ModelStateB { model: Arc::clone(&self.inner), state, cfg_state: None })
+    }
+
+    /// Build a generation state from a precomputed conditioning embedding (the mimi
+    /// encoder output, shape `[T, dim]`). When `cfg_coef` is set, a CFG null state is
+    /// also prepared; if the model uses non-empty null audio conditioning, the encoder
+    /// output of silence must be supplied via `null_embeddings`.
+    fn get_state_for_embeddings(
+        &self,
+        embeddings: Vec<f32>,
+        n_frames: usize,
+        dim: usize,
+        cfg_coef: Option<f32>,
+        null_embeddings: Option<(Vec<f32>, usize, usize)>,
+        max_seq_len: usize,
+    ) -> xn::Result<ModelStateB<Q>> {
+        let dev = self.inner.device();
+        let emb = Tensor::from_vec(embeddings, (1, n_frames, dim), dev)?.to::<Q::T>()?;
+        let mut state = self.inner.init_flow_lm_state(1, max_seq_len)?;
+        self.inner.prompt_audio(&mut state, &emb)?;
+        let cfg_state = if let Some(cfg_coef) = cfg_coef {
+            let mut null_state = self.inner.init_flow_lm_state(1, max_seq_len)?;
+            if !self.cfg_null_audio_empty {
+                match null_embeddings {
+                    Some((null, n, d)) => {
+                        let null_emb = Tensor::from_vec(null, (1, n, d), dev)?.to::<Q::T>()?;
+                        self.inner.prompt_audio(&mut null_state, &null_emb)?;
+                    }
+                    None => xn::bail!(
+                        "this model uses non-empty CFG null audio conditioning \
+                         (cfg_null_audio_empty=false); pass `null_embeddings` (e.g. the mimi \
+                         encoder output of silence of the same length) to use CFG with \
+                         precomputed embeddings"
+                    ),
+                }
+            }
+            Some((cfg_coef, null_state))
+        } else {
+            None
+        };
+        Ok(ModelStateB { model: Arc::clone(&self.inner), state, cfg_state })
     }
 
     fn voices(&self) -> Vec<String> {
@@ -240,6 +295,39 @@ impl Model {
     fn get_state_for_voice(&self, voice: &str, max_seq_len: usize) -> PyResult<ModelState> {
         let inner =
             on_model_to_state!(&self.0, |m| m.get_state_for_voice(voice, max_seq_len).w()?);
+        Ok(ModelState(inner))
+    }
+
+    /// Build a generation state from a precomputed conditioning embedding (the mimi
+    /// encoder output), with optional classifier-free guidance.
+    ///
+    /// `embeddings` must have shape `[T, dim]` or `[1, T, dim]`. To use CFG, pass
+    /// `cfg_coef`; for models with non-empty null audio conditioning, also pass
+    /// `null_embeddings` (the encoder output of silence of matching length).
+    #[pyo3(signature = (embeddings, cfg_coef=None, null_embeddings=None, max_seq_len=2048))]
+    fn get_state_for_embeddings(
+        &self,
+        embeddings: PyReadonlyArrayDyn<'_, f32>,
+        cfg_coef: Option<f32>,
+        null_embeddings: Option<PyReadonlyArrayDyn<'_, f32>>,
+        max_seq_len: usize,
+    ) -> PyResult<ModelState> {
+        let (embeddings, n_frames, dim) = parse_embeddings(&embeddings)?;
+        let null = match null_embeddings.as_ref() {
+            Some(arr) => {
+                let (data, n, d) = parse_embeddings(arr)?;
+                if d != dim {
+                    py_bail!(
+                        "null_embeddings last dim ({d}) must match embeddings last dim ({dim})"
+                    );
+                }
+                Some((data, n, d))
+            }
+            None => None,
+        };
+        let inner = on_model_to_state!(&self.0, |m| m
+            .get_state_for_embeddings(embeddings, n_frames, dim, cfg_coef, null, max_seq_len)
+            .w()?);
         Ok(ModelState(inner))
     }
 
@@ -938,11 +1026,11 @@ fn load_model_<Q: BackendQ>(
     } else {
         model
     };
-    let mimi_enc = if vb.contains("mimi.encoder.model.0.conv.weight") {
-        Some(MimiEnc::<Q>::load(&vb, &cfg)?)
-    } else {
-        None
-    };
+    // Probe under the speaker prefix: a dedicated speaker codec ships its
+    // encoder as `<speaker_mimi.prefix>.encoder.*` with no `mimi.encoder.*`.
+    let enc_probe = format!("{}.encoder.model.0.conv.weight", cfg.speaker_mimi_prefix());
+    let mimi_enc =
+        if vb.contains(&enc_probe) { Some(MimiEnc::<Q>::load(&vb, &cfg)?) } else { None };
     vb.check_all_used_with_ignore(|v| {
         v == "flow_lm.condition_provider.conditioners.speaker_wavs.learnt_padding"
             || v.starts_with("mimi.quantizer")
@@ -955,6 +1043,7 @@ fn load_model_<Q: BackendQ>(
         audio_prompt_min_duration: cfg.audio_prompt_min_duration,
         audio_prompt_max_duration: cfg.audio_prompt_max_duration,
         cfg_null_audio_empty: cfg.cfg_null_audio_empty,
+        speaker_sample_rate: cfg.speaker_mimi_cfg().sample_rate,
     })
 }
 
