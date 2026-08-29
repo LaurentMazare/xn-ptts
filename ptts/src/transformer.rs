@@ -467,31 +467,45 @@ impl<Q: BackendQ> StreamingTransformer<Q> {
     ) -> Result<Tensor<Q::T, Q::B>> {
         let mut x = x.clone();
         let (_, seq_len, _) = x.dims3()?;
-        let mask = match state.layer_states.first() {
-            Some(LayerAttentionState::Mimi(kv_cache)) => {
-                let kv_seq_len = kv_cache.current_seq_len()?;
-                let context = kv_cache.context;
-                // Causal mask of shape (1, 1, seq_len, kv_seq_len + seq_len) with -inf in upper triangle
-                let mask_data = (0..seq_len)
-                    .flat_map(|seq_idx| {
-                        let seq_idx = seq_idx + kv_seq_len;
-                        (0..kv_seq_len + seq_len).map(move |attn_idx| {
-                            if seq_idx.saturating_sub(context) <= attn_idx && attn_idx <= seq_idx {
-                                Q::T::from_f32(0.0)
-                            } else {
-                                Q::T::from_f32(f32::NEG_INFINITY)
-                            }
+        // At single-token decode every cached key is visible, so the causal mask is identically
+        // zero: the FlowLm branch masks nothing at all, and the Mimi branch trims its cache to
+        // `context` before this point, which makes its window condition vacuous too. Building
+        // that mask means filling a Vec on the host, uploading it and adding it per layer, all
+        // to add zero.
+        let mask = if seq_len == 1 {
+            None
+        } else {
+            match state.layer_states.first() {
+                Some(LayerAttentionState::Mimi(kv_cache)) => {
+                    let kv_seq_len = kv_cache.current_seq_len()?;
+                    let context = kv_cache.context;
+                    // Causal mask of shape (1, 1, seq_len, kv_seq_len + seq_len) with -inf in upper triangle
+                    let mask_data = (0..seq_len)
+                        .flat_map(|seq_idx| {
+                            let seq_idx = seq_idx + kv_seq_len;
+                            (0..kv_seq_len + seq_len).map(move |attn_idx| {
+                                if seq_idx.saturating_sub(context) <= attn_idx
+                                    && attn_idx <= seq_idx
+                                {
+                                    Q::T::from_f32(0.0)
+                                } else {
+                                    Q::T::from_f32(f32::NEG_INFINITY)
+                                }
+                            })
                         })
-                    })
-                    .collect::<Vec<_>>();
-                let mask =
-                    Tensor::from_vec(mask_data, (1, 1, seq_len, kv_seq_len + seq_len), x.device())?;
-                Some(mask)
+                        .collect::<Vec<_>>();
+                    let mask = Tensor::from_vec(
+                        mask_data,
+                        (1, 1, seq_len, kv_seq_len + seq_len),
+                        x.device(),
+                    )?;
+                    Some(mask)
+                }
+                Some(LayerAttentionState::FlowLm(kv_cache)) => {
+                    Some(kv_cache.materialize_causal_mask(seq_len)?)
+                }
+                _ => None,
             }
-            Some(LayerAttentionState::FlowLm(kv_cache)) => {
-                Some(kv_cache.materialize_causal_mask(seq_len)?)
-            }
-            _ => None,
         };
         let offset = state
             .layer_states
