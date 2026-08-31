@@ -1,7 +1,7 @@
 use crate::layer_scale::LayerScale;
 use crate::rope::RotaryEmbedding;
 use xn::nn::{LayerNorm, Linear, var_builder::Path};
-use xn::{Backend, BackendQ, Result, Tensor, WithDTypeF};
+use xn::{Backend, BackendQ, Result, Tensor, TensorView, WithDTypeF};
 
 /// State for StreamingMultiheadAttention.
 #[derive(Debug, Clone)]
@@ -24,16 +24,16 @@ impl<T: WithDTypeF, B: Backend> StreamingMHAState<T, B> {
         &mut self,
         k: &Tensor<T, B>,
         v: &Tensor<T, B>,
-    ) -> Result<(Tensor<T, B>, Tensor<T, B>)> {
+    ) -> Result<(TensorView<T, B>, TensorView<T, B>)> {
         let t = k.dim(1usize)?;
 
         self.k_cache.slice_set(k, 1usize, self.current_end)?;
         self.v_cache.slice_set(v, 1usize, self.current_end)?;
 
-        let new_end = self.current_end + t;
-        let keys = self.k_cache.narrow(1, 0..new_end)?.contiguous()?;
-        let values = self.v_cache.narrow(1, 0..new_end)?.contiguous()?;
-        self.current_end = new_end;
+        self.current_end += t;
+        let new_end = self.current_end;
+        let keys = self.k_cache.narrow(1, 0..new_end)?;
+        let values = self.v_cache.narrow(1, 0..new_end)?;
         Ok((keys, values))
     }
 
@@ -119,23 +119,31 @@ impl<Q: BackendQ> StreamingMultiheadAttention<Q> {
         let (q, k) = rope.forward(&q, &k)?;
         let (k, v) = state.complete_kv(&k, &v)?;
 
-        // Transpose to [b, h, t, d] for attention
-        let q = q.transpose(1, 2)?;
-        let k = k.transpose(1, 2)?;
-        let v = v.transpose(1, 2)?;
+        let inv_sqrt_d = 1.0 / (d as f32).sqrt();
+        // Single-query decode is the steady-state case; composing it costs a batch of `h` tiny
+        // matmuls per projection plus a separate softmax pass. The fused kernel wants exactly
+        // the [b, t, h, d] layout we already have, and falls back internally if the operand
+        // layout is not one it handles.
+        let x = if t == 1 {
+            q.sdpa_decode(&k, &v, mask, inv_sqrt_d)?
+        } else {
+            // Transpose to [b, h, t, d] for attention
+            let q = q.transpose(1, 2)?;
+            let k = k.transpose(1, 2)?;
+            let v = v.transpose(1, 2)?;
 
-        // Scaled dot-product attention
-        let scale = Q::T::from_f32(1.0 / (d as f32).sqrt());
-        let attn = q.matmul_t(&k)?.scale(scale)?;
-        let attn = match mask {
-            Some(m) => attn.broadcast_add(m)?,
-            None => attn,
+            let scale = Q::T::from_f32(inv_sqrt_d);
+            let attn = q.matmul_t(&k)?.scale(scale)?;
+            let attn = match mask {
+                Some(m) => attn.broadcast_add(m)?,
+                None => attn,
+            };
+            let attn = attn.softmax()?;
+            let x = attn.matmul(&v)?;
+
+            // Back to [b, t, h*d]
+            x.transpose(1, 2)?.reshape((b, t, self.embed_dim))?.contiguous()?
         };
-        let attn = attn.softmax()?;
-        let x = attn.matmul(&v)?;
-
-        // Back to [b, t, h*d]
-        let x = x.transpose(1, 2)?.reshape((b, t, self.embed_dim))?.contiguous()?;
         self.out_proj.forward(&x)
     }
 }
@@ -459,31 +467,45 @@ impl<Q: BackendQ> StreamingTransformer<Q> {
     ) -> Result<Tensor<Q::T, Q::B>> {
         let mut x = x.clone();
         let (_, seq_len, _) = x.dims3()?;
-        let mask = match state.layer_states.first() {
-            Some(LayerAttentionState::Mimi(kv_cache)) => {
-                let kv_seq_len = kv_cache.current_seq_len()?;
-                let context = kv_cache.context;
-                // Causal mask of shape (1, 1, seq_len, kv_seq_len + seq_len) with -inf in upper triangle
-                let mask_data = (0..seq_len)
-                    .flat_map(|seq_idx| {
-                        let seq_idx = seq_idx + kv_seq_len;
-                        (0..kv_seq_len + seq_len).map(move |attn_idx| {
-                            if seq_idx.saturating_sub(context) <= attn_idx && attn_idx <= seq_idx {
-                                Q::T::from_f32(0.0)
-                            } else {
-                                Q::T::from_f32(f32::NEG_INFINITY)
-                            }
+        // At single-token decode every cached key is visible, so the causal mask is identically
+        // zero: the FlowLm branch masks nothing at all, and the Mimi branch trims its cache to
+        // `context` before this point, which makes its window condition vacuous too. Building
+        // that mask means filling a Vec on the host, uploading it and adding it per layer, all
+        // to add zero.
+        let mask = if seq_len == 1 {
+            None
+        } else {
+            match state.layer_states.first() {
+                Some(LayerAttentionState::Mimi(kv_cache)) => {
+                    let kv_seq_len = kv_cache.current_seq_len()?;
+                    let context = kv_cache.context;
+                    // Causal mask of shape (1, 1, seq_len, kv_seq_len + seq_len) with -inf in upper triangle
+                    let mask_data = (0..seq_len)
+                        .flat_map(|seq_idx| {
+                            let seq_idx = seq_idx + kv_seq_len;
+                            (0..kv_seq_len + seq_len).map(move |attn_idx| {
+                                if seq_idx.saturating_sub(context) <= attn_idx
+                                    && attn_idx <= seq_idx
+                                {
+                                    Q::T::from_f32(0.0)
+                                } else {
+                                    Q::T::from_f32(f32::NEG_INFINITY)
+                                }
+                            })
                         })
-                    })
-                    .collect::<Vec<_>>();
-                let mask =
-                    Tensor::from_vec(mask_data, (1, 1, seq_len, kv_seq_len + seq_len), x.device())?;
-                Some(mask)
+                        .collect::<Vec<_>>();
+                    let mask = Tensor::from_vec(
+                        mask_data,
+                        (1, 1, seq_len, kv_seq_len + seq_len),
+                        x.device(),
+                    )?;
+                    Some(mask)
+                }
+                Some(LayerAttentionState::FlowLm(kv_cache)) => {
+                    Some(kv_cache.materialize_causal_mask(seq_len)?)
+                }
+                _ => None,
             }
-            Some(LayerAttentionState::FlowLm(kv_cache)) => {
-                Some(kv_cache.materialize_causal_mask(seq_len)?)
-            }
-            _ => None,
         };
         let offset = state
             .layer_states
