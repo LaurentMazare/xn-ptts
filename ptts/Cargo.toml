@@ -49,3 +49,7 @@ name = "quantize"
 
 [[example]]
 name = "create_voice"
+
+[[example]]
+name = "asr"
+required-features = ["sp"]
