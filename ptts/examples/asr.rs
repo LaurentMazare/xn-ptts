@@ -393,11 +393,8 @@ fn run<Q: xn::BackendQ>(args: Args, dev: Q::B) -> Result<()> {
     let mut text_token = lm.text_start_token();
     let audio_pad = vec![lm.audio_pad_token(); cfg.n_q];
 
-    // SentencePiece needs the separators to place spaces, so the transcript is
-    // re-decoded from scratch each time and only the new tail is printed.
-    let mut all_tokens: Vec<u32> = vec![];
-    let mut printed = 0usize;
     // (start, stop, word). `stop` stays open until the model closes the word.
+    // This is also the transcript: the words joined by a single space.
     let mut timings: Vec<(f64, Option<f64>, String)> = vec![];
 
     let num_frames = pcm.len() / FRAME_SIZE;
@@ -431,19 +428,16 @@ fn run<Q: xn::BackendQ>(args: Args, dev: Q::B) -> Result<()> {
         for event in decoder.push(text_token) {
             match event {
                 Event::Word { tokens, start_time } => {
-                    all_tokens.push(TOKEN_PAD);
-                    all_tokens.extend_from_slice(&tokens);
-                    let text = tokenizer.decode_piece_ids(&all_tokens).unwrap_or_default();
-                    // `get` rather than a slice: the index comes from a shorter
-                    // decode of the same tokens and is not guaranteed to land on
-                    // a char boundary.
-                    let tail = text.get(printed..).unwrap_or_default();
+                    let ids = [&[TOKEN_PAD], tokens.as_slice()].concat();
+                    let word = tokenizer
+                        .decode_piece_ids(&ids)
+                        .map_err(|e| anyhow::anyhow!("decoding {ids:?}: {e}"))?;
+                    let word = word.trim();
                     if !args.timestamps {
-                        print!("{tail}");
+                        print!("{}{word}", if timings.is_empty() { "" } else { " " });
                         std::io::stdout().flush()?;
                     }
-                    timings.push((start_time, None, tail.trim().to_string()));
-                    printed = text.len();
+                    timings.push((start_time, None, word.to_string()));
                 }
                 Event::EndWord { stop_time } => {
                     for open in timings.iter_mut().filter(|(_, stop, _)| stop.is_none()) {
@@ -469,7 +463,8 @@ fn run<Q: xn::BackendQ>(args: Args, dev: Q::B) -> Result<()> {
                 None => println!("[{start_time:7.2}       -] {word}"),
             }
         }
-        println!("{}", tokenizer.decode_piece_ids(&all_tokens).unwrap_or_default());
+        let words: Vec<&str> = timings.iter().map(|(_, _, word)| word.as_str()).collect();
+        println!("{}", words.join(" "));
     }
     tracing::info!(
         elapsed_s = elapsed,
