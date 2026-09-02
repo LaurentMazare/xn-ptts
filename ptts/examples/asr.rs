@@ -182,9 +182,10 @@ fn mimi_config() -> MimiConfig {
 /// lookahead the model was trained with.
 struct WordDecoder {
     delay: usize,
+    /// 0-based index of the next token to be pushed.
     step_idx: usize,
     word_tokens: Vec<u32>,
-    unended_word: bool,
+    open_words: usize,
     last_stop_time: f64,
 }
 
@@ -196,29 +197,39 @@ enum Event {
 
 impl WordDecoder {
     fn new(delay: usize) -> Self {
-        Self { delay, step_idx: 0, word_tokens: vec![], unended_word: false, last_stop_time: 0.0 }
+        Self { delay, step_idx: 0, word_tokens: vec![], open_words: 0, last_stop_time: 0.0 }
+    }
+
+    /// Where in the *input* audio the token at `step_idx` points. The model
+    /// reports with `delay` frames of lookahead, and the stream it reads has
+    /// `INITIAL_SILENCE_FRAMES` of silence prepended that the caller's file
+    /// does not have.
+    fn token_time(&self, step_idx: usize) -> f64 {
+        let frames = step_idx as f64 - self.delay as f64 - INITIAL_SILENCE_FRAMES as f64;
+        (frames / FRAME_RATE).max(0.0)
     }
 
     fn push(&mut self, token: u32) -> Vec<Event> {
+        let step_idx = self.step_idx;
         self.step_idx += 1;
         let mut events = vec![];
-        if self.step_idx < self.delay {
+        if step_idx < self.delay {
             return events;
         }
         let closes_word = matches!(token, TOKEN_EOP | TOKEN_EOS | TOKEN_PAD | TOKEN_SILENCE_PAD);
         if closes_word {
             if !self.word_tokens.is_empty() {
                 let tokens = std::mem::take(&mut self.word_tokens);
-                self.unended_word = true;
+                self.open_words += 1;
                 events.push(Event::Word { tokens, start_time: self.last_stop_time });
             }
         } else {
             self.word_tokens.push(token);
         }
         if token == TOKEN_EOP || token == TOKEN_EOS {
-            let stop_time = (self.step_idx - self.delay) as f64 / FRAME_RATE;
-            if self.unended_word {
-                self.unended_word = false;
+            let stop_time = self.token_time(step_idx);
+            if self.open_words > 0 {
+                self.open_words = 0;
                 events.push(Event::EndWord { stop_time });
             }
             self.last_stop_time = stop_time;
@@ -435,7 +446,7 @@ fn run<Q: xn::BackendQ>(args: Args, dev: Q::B) -> Result<()> {
                     printed = text.len();
                 }
                 Event::EndWord { stop_time } => {
-                    if let Some(open) = timings.iter_mut().find(|(_, stop, _)| stop.is_none()) {
+                    for open in timings.iter_mut().filter(|(_, stop, _)| stop.is_none()) {
                         open.1 = Some(stop_time);
                     }
                 }
