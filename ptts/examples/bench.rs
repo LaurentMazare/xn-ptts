@@ -2,19 +2,7 @@
 //!
 //! Loads a local model once, then generates the same utterance `--iters` times and reports
 //! time-to-first-audio, per-frame time, total generate time and RTF. Model load and voice
-//! conditioning are timed separately and excluded from the per-iteration statistics, since a
-//! server pays them once and then serves many requests.
-//!
-//! ```bash
-//! cargo run --release --features sp,accelerate --example bench -- \
-//!   --model model/model.q8.gguf --config model/config.json --quant q8 \
-//!   --voice voices/freya.safetensors --threads 8 --iters 20
-//! ```
-//!
-//! Unlike `pocket_tts` this never downloads anything and only accepts precomputed voice
-//! embeddings: it measures one specific model. Mimi decoding runs on the generating thread
-//! rather than overlapped, so a frame's time is its sampling plus its decoding; `pocket_tts`
-//! overlaps the two and will report a better RTF for the same weights.
+//! conditioning are timed separately and excluded from the per-iteration statistics.
 
 #[path = "model_helpers.rs"]
 mod model_helpers;
@@ -58,9 +46,7 @@ struct Args {
     #[arg(long, default_value_t = false)]
     cpu: bool,
 
-    /// Number of CPU threads for tensor ops. Defaults to xn's own default of one per logical
-    /// core, which is usually too many here: generation is a single autoregressive stream of
-    /// small ops, so past a few threads the coordination cost outweighs the parallelism.
+    /// Number of CPU threads for tensor ops.
     #[arg(long)]
     threads: Option<usize>,
 
