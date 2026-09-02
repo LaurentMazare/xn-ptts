@@ -2,11 +2,18 @@ use crate::Tokenizer;
 use xn::nn::{Linear, var_builder::Path};
 use xn::{Backend, Result, Tensor, WithDTypeF};
 
+/// Lookup-table conditioner.
+///
+/// The learnt padding embedding, when present, is appended to the table so
+/// "no value given" is just one more index. Two front-ends pick that index:
+/// the flow LM tokenizes free text (`tokenize` + `embed_tokens`), the ASR LM
+/// names one of `possible_values` (`condition`).
 pub struct LUTConditioner<T: WithDTypeF, B: Backend> {
     pub tokenizer: Option<Box<dyn Tokenizer + Send + Sync>>,
     embed: Tensor<T, B>,
     learnt_padding: Option<Tensor<T, B>>,
     learnt_padding_id: Option<u32>,
+    possible_values: Vec<String>,
     pub dim: usize,
     pub output_dim: usize,
 }
@@ -39,11 +46,50 @@ impl<T: WithDTypeF, B: Backend> LUTConditioner<T, B> {
             }
             None => (embed, None),
         };
-        Ok(Self { tokenizer, embed, dim, output_dim, learnt_padding, learnt_padding_id })
+        Ok(Self {
+            tokenizer,
+            embed,
+            dim,
+            output_dim,
+            learnt_padding,
+            learnt_padding_id,
+            possible_values: vec![],
+        })
+    }
+
+    /// Name the table's entries so they can be selected by string.
+    pub fn with_possible_values(mut self, possible_values: Vec<String>) -> Self {
+        self.possible_values = possible_values;
+        self
+    }
+
+    pub fn possible_values(&self) -> &[String] {
+        &self.possible_values
     }
 
     pub fn learnt_padding_id(&self) -> Option<u32> {
         self.learnt_padding_id
+    }
+
+    /// `(1, 1, output_dim)` embedding for `value`, or the learnt padding when no
+    /// value is given.
+    pub fn condition(&self, value: Option<&str>) -> Result<Tensor<T, B>> {
+        let index = match value {
+            None => match self.learnt_padding_id {
+                Some(id) => id as usize,
+                None => xn::bail!("conditioner has no learnt padding, a value is required"),
+            },
+            Some(value) => {
+                self.possible_values.iter().position(|v| v == value).ok_or_else(|| {
+                    xn::Error::Msg(format!(
+                        "unknown conditioner value {value:?}, expected one of {:?}",
+                        self.possible_values
+                    ))
+                })?
+            }
+        };
+        let index = Tensor::from_vec(vec![index as i64], (1,), self.embed.device())?;
+        self.embed.index_select(&index, 0)?.reshape((1, 1, self.output_dim))
     }
 
     /// Tokenize text and return token ids.

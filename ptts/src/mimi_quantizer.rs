@@ -1,10 +1,7 @@
 //! Encode side of the Mimi residual vector quantizer.
 //!
-//! `ptts::mimi::MimiEncoder` stops at the continuous latent because the TTS
-//! runtime feeds those latents straight into the flow LM. The ASR model wants
-//! discrete codes instead, so this adds the quantizer back: latents in,
-//! `n_q` codebook indices per frame out. Only the encode path is needed —
-//! nothing here reconstructs audio.
+//! The decode side the TTS needs is `dummy_quantizer.rs`, which only carries the
+//! output projection.
 
 use xn::nn::var_builder::Path;
 use xn::{Backend, Result, Tensor, WithDTypeF};

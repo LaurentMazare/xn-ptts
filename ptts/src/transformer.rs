@@ -216,69 +216,77 @@ pub struct StreamingTransformerState<T: WithDTypeF, B: Backend> {
     pub layer_states: Vec<LayerAttentionState<T, B>>,
 }
 
-// ---- MimiStreamingMultiheadAttention ----
-// Uses KV cache with context window.
+// ---- CachedMultiheadAttention ----
+// Self-attention over a `KvCache` with a rolling context window. Used both by
+// the Mimi transformer and by the ASR LM, so it is generic over `Q`: Mimi
+// instantiates it with `Unquantized`, the ASR LM with a quantized backend.
 
-pub struct MimiStreamingMultiheadAttention<T: WithDTypeF, B: Backend> {
-    in_proj: Linear<T, B>,
-    out_proj: Linear<T, B>,
+pub struct CachedMultiheadAttention<Q: BackendQ> {
+    in_proj: Q::LinearQ,
+    out_proj: Q::LinearQ,
     embed_dim: usize,
     num_heads: usize,
     context: usize,
 }
 
-impl<T: WithDTypeF, B: Backend> MimiStreamingMultiheadAttention<T, B> {
-    pub fn load(vb: &Path<B>, embed_dim: usize, num_heads: usize, context: usize) -> Result<Self> {
-        let out_dim = 3 * embed_dim;
-        let in_proj = Linear::load(vb.pp("in_proj"), embed_dim, out_dim)?;
-        let out_proj = Linear::load(vb.pp("out_proj"), embed_dim, embed_dim)?;
+impl<Q: BackendQ> CachedMultiheadAttention<Q> {
+    pub fn load(
+        vb: &Path<Q::B>,
+        embed_dim: usize,
+        num_heads: usize,
+        context: usize,
+    ) -> Result<Self> {
+        // `in_proj_weight` is renamed to `in_proj.weight` by the loader's key map.
+        let in_proj = Q::linear_load(vb.pp("in_proj"), embed_dim, 3 * embed_dim)?;
+        let out_proj = Q::linear_load(vb.pp("out_proj"), embed_dim, embed_dim)?;
         Ok(Self { in_proj, out_proj, embed_dim, num_heads, context })
     }
 
-    pub fn init_state(&self) -> Result<KvCache<T, B>> {
+    pub fn init_state(&self) -> Result<KvCache<Q::T, Q::B>> {
         Ok(KvCache::new(self.context))
     }
 
+    /// `mask` may be `None` when every cached key precedes every query — with a
+    /// single query token per step the causal mask is all-zero.
+    #[tracing::instrument(name = "cached-attn", skip_all)]
     pub fn forward(
         &self,
-        query: &Tensor<T, B>,
-        rope: &RotaryEmbedding<T, B>,
-        state: &mut KvCache<T, B>,
-        mask: Option<&Tensor<T, B>>,
-    ) -> Result<Tensor<T, B>> {
+        query: &Tensor<Q::T, Q::B>,
+        rope: &RotaryEmbedding<Q::T, Q::B>,
+        state: &mut KvCache<Q::T, Q::B>,
+        mask: Option<&Tensor<Q::T, Q::B>>,
+    ) -> Result<Tensor<Q::T, Q::B>> {
+        use xn::ModuleT;
         let (b, t, _) = query.dims3()?;
-        let d = self.embed_dim / self.num_heads;
+        let (h, d) = (self.num_heads, self.embed_dim / self.num_heads);
+        let dm = self.embed_dim;
 
-        let projected = self.in_proj.forward(query)?;
-        let packed = projected.reshape((b, t, 3, self.num_heads, d))?;
-        let q = packed.narrow(2, 0..1)?.contiguous()?.reshape((b, t, self.num_heads, d))?;
-        let k = packed.narrow(2, 1..2)?.contiguous()?.reshape((b, t, self.num_heads, d))?;
-        let v = packed.narrow(2, 2..3)?.contiguous()?.reshape((b, t, self.num_heads, d))?;
+        // The projection emits q, k and v as three contiguous `dm`-wide blocks.
+        let qkv = self.in_proj.forward(query)?;
+        let q = qkv.narrow(2, 0..dm)?.contiguous()?.reshape((b, t, h, d))?;
+        let k = qkv.narrow(2, dm..2 * dm)?.contiguous()?.reshape((b, t, h, d))?;
+        let v = qkv.narrow(2, 2 * dm..3 * dm)?.contiguous()?.reshape((b, t, h, d))?;
 
-        // RoPE on [b, t, h, d]
+        // RoPE on [b, t, h, d], then to [b, h, t, d].
         let (q, k) = rope.forward(&q, &k)?;
-
-        // To [b, h, t, d]
         let q = q.transpose(1, 2)?.contiguous()?;
         let k = k.transpose(1, 2)?.contiguous()?;
         let v = v.transpose(1, 2)?.contiguous()?;
 
-        // KV cache with context trimming
+        // KV cache with context trimming.
         let (k, v) = state.append(&k, &v)?;
 
-        // Attention with causal mask
-        let scale = T::from_f32(1.0 / (d as f32).sqrt());
+        let scale = Q::T::from_f32(1.0 / (d as f32).sqrt());
         let attn = q.matmul_t(&k)?.scale(scale)?;
         let attn = match mask {
             Some(m) => attn.broadcast_add(m)?,
             None => attn,
         };
-        let attn = attn.softmax()?;
-        let x = attn.matmul(&v)?;
+        let x = attn.softmax()?.matmul(&v)?;
 
         state.trim()?;
 
-        let x = x.transpose(1, 2)?.reshape((b, t, self.embed_dim))?;
+        let x = x.transpose(1, 2)?.contiguous()?.reshape((b, t, dm))?;
         self.out_proj.forward(&x)
     }
 }
@@ -286,7 +294,7 @@ impl<T: WithDTypeF, B: Backend> MimiStreamingMultiheadAttention<T, B> {
 // ---- StreamingTransformerLayer ----
 
 enum AttentionKind<Q: BackendQ> {
-    Mimi(MimiStreamingMultiheadAttention<Q::T, Q::B>),
+    Mimi(CachedMultiheadAttention<Q>),
     FlowLm(StreamingMultiheadAttention<Q>),
 }
 
@@ -317,7 +325,7 @@ impl<Q: BackendQ> StreamingTransformerLayer<Q> {
         kind: Kind,
     ) -> Result<Self> {
         let self_attn = match kind {
-            Kind::Mimi => AttentionKind::Mimi(MimiStreamingMultiheadAttention::load(
+            Kind::Mimi => AttentionKind::Mimi(CachedMultiheadAttention::load(
                 &vb.pp("self_attn"),
                 d_model,
                 num_heads,

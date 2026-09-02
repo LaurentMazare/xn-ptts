@@ -1,11 +1,14 @@
+pub mod asr_lm;
 pub mod conditioners;
 pub mod conv;
 pub mod dummy_quantizer;
 pub mod flow_lm;
 pub mod layer_scale;
 pub mod mimi;
+pub mod mimi_quantizer;
 pub mod mlp;
 pub mod resample;
+pub mod rms_norm;
 pub mod rope;
 pub mod seanet;
 pub mod transformer;

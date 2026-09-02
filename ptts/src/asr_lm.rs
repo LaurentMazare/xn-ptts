@@ -1,15 +1,16 @@
-//! The phonon ASR language model: a causal transformer that consumes one Mimi
+//! The Graphon ASR language model: a causal transformer that consumes one Mimi
 //! frame (32 audio codes) plus the previously emitted text token per step and
 //! predicts the next text token.
-//!
-//! This is the single-stream (`batch_size == 1`) subset of the moshi STT LM.
-//! There is no depformer — the checkpoint has `dep_q = 0`, so nothing generates
-//! audio — and no batching machinery, which keeps the whole model in one file.
 
-use ptts::rope::RotaryEmbedding;
-use ptts::transformer::KvCache;
+use crate::conditioners::LUTConditioner;
+use crate::rms_norm::RmsNorm;
+use crate::rope::RotaryEmbedding;
+use crate::transformer::{CachedMultiheadAttention, KvCache};
 use xn::nn::{Embedding, Linear, var_builder::Path};
 use xn::{Backend, BackendQ, Result, Tensor, WithDTypeF};
+
+/// The norm's `alpha` gain is trained against this epsilon.
+const NORM_EPS: f32 = 1e-8;
 
 // ---- Config ----
 
@@ -33,14 +34,14 @@ pub enum ConditionerConfig {
     Lut {
         lut: LutConfig,
     },
-    /// Conditioner kinds this example does not implement. The ASR checkpoint
-    /// only ships a LUT, but keeping the catch-all means a sibling checkpoint
-    /// still parses instead of failing at `serde_json::from_str`.
+    /// Conditioner kinds this model does not implement. The ASR checkpoint only
+    /// ships a LUT, but keeping the catch-all means a sibling checkpoint still
+    /// parses instead of failing at `serde_json::from_str`.
     #[serde(other)]
     Unsupported,
 }
 
-/// The subset of the checkpoint's `config.json` this example needs. Unknown
+/// The subset of the checkpoint's `config.json` this model needs. Unknown
 /// fields (the depformer block, delays, ...) are ignored.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Config {
@@ -103,74 +104,6 @@ impl Config {
 
 // ---- Layers ----
 
-/// RMS norm as moshi stores it: a single `alpha` gain, no mean removal.
-struct RmsNorm<T: WithDTypeF, B: Backend> {
-    alpha: Tensor<T, B>,
-}
-
-impl<T: WithDTypeF, B: Backend> RmsNorm<T, B> {
-    const EPS: f32 = 1e-8;
-
-    fn load(vb: &Path<B>, dim: usize) -> Result<Self> {
-        let alpha = vb.tensor::<T>("alpha", (1, 1, dim))?.reshape((dim,))?;
-        Ok(Self { alpha })
-    }
-
-    fn forward(&self, xs: &Tensor<T, B>) -> Result<Tensor<T, B>> {
-        xs.rms_norm(&self.alpha, Self::EPS)
-    }
-}
-
-struct Attention<Q: BackendQ> {
-    in_proj: Q::LinearQ,
-    out_proj: Q::LinearQ,
-    num_heads: usize,
-    head_dim: usize,
-}
-
-impl<Q: BackendQ> Attention<Q> {
-    fn load(vb: &Path<Q::B>, cfg: &Config) -> Result<Self> {
-        let vb = vb.pp("self_attn");
-        // `in_proj_weight` is renamed to `in_proj.weight` by the loader's key map.
-        let in_proj = Q::linear_load(vb.pp("in_proj"), cfg.dim, 3 * cfg.dim)?;
-        let out_proj = Q::linear_load(vb.pp("out_proj"), cfg.dim, cfg.dim)?;
-        Ok(Self { in_proj, out_proj, num_heads: cfg.num_heads, head_dim: cfg.head_dim() })
-    }
-
-    fn forward(
-        &self,
-        xs: &Tensor<Q::T, Q::B>,
-        rope: &RotaryEmbedding<Q::T, Q::B>,
-        cache: &mut KvCache<Q::T, Q::B>,
-    ) -> Result<Tensor<Q::T, Q::B>> {
-        use xn::ModuleT;
-        let (b, t, _) = xs.dims3()?;
-        let (h, d) = (self.num_heads, self.head_dim);
-        let dm = h * d;
-
-        let qkv = self.in_proj.forward(xs)?;
-        let q = qkv.narrow(2, 0..dm)?.contiguous()?.reshape((b, t, h, d))?;
-        let k = qkv.narrow(2, dm..2 * dm)?.contiguous()?.reshape((b, t, h, d))?;
-        let v = qkv.narrow(2, 2 * dm..3 * dm)?.contiguous()?.reshape((b, t, h, d))?;
-
-        let (q, k) = rope.forward(&q, &k)?;
-        let q = q.transpose(1, 2)?.contiguous()?;
-        let k = k.transpose(1, 2)?.contiguous()?;
-        let v = v.transpose(1, 2)?.contiguous()?;
-
-        let (k, v) = cache.append(&k, &v)?;
-        // One query token per step and every cached key precedes it, so the
-        // causal mask is all-zero and can be skipped entirely.
-        let scale = Q::T::from_f32(1.0 / (d as f32).sqrt());
-        let attn = q.matmul_t(&k)?.scale(scale)?.softmax()?;
-        let out = attn.matmul(&v)?;
-        cache.trim()?;
-
-        let out = out.transpose(1, 2)?.contiguous()?.reshape((b, t, dm))?;
-        self.out_proj.forward(&out)
-    }
-}
-
 /// SwiGLU feed-forward: `linear_in` emits both halves, gate first.
 struct Mlp<Q: BackendQ> {
     linear_in: Q::LinearQ,
@@ -198,7 +131,7 @@ impl<Q: BackendQ> Mlp<Q> {
 
 struct Layer<Q: BackendQ> {
     norm1: RmsNorm<Q::T, Q::B>,
-    self_attn: Attention<Q>,
+    self_attn: CachedMultiheadAttention<Q>,
     norm2: RmsNorm<Q::T, Q::B>,
     mlp: Mlp<Q>,
 }
@@ -206,9 +139,14 @@ struct Layer<Q: BackendQ> {
 impl<Q: BackendQ> Layer<Q> {
     fn load(vb: &Path<Q::B>, cfg: &Config) -> Result<Self> {
         Ok(Self {
-            norm1: RmsNorm::load(&vb.pp("norm1"), cfg.dim)?,
-            self_attn: Attention::load(vb, cfg)?,
-            norm2: RmsNorm::load(&vb.pp("norm2"), cfg.dim)?,
+            norm1: RmsNorm::load(&vb.pp("norm1"), cfg.dim, NORM_EPS)?,
+            self_attn: CachedMultiheadAttention::load(
+                &vb.pp("self_attn"),
+                cfg.dim,
+                cfg.num_heads,
+                cfg.context,
+            )?,
+            norm2: RmsNorm::load(&vb.pp("norm2"), cfg.dim, NORM_EPS)?,
             mlp: Mlp::load(vb, cfg)?,
         })
     }
@@ -219,60 +157,12 @@ impl<Q: BackendQ> Layer<Q> {
         rope: &RotaryEmbedding<Q::T, Q::B>,
         cache: &mut KvCache<Q::T, Q::B>,
     ) -> Result<Tensor<Q::T, Q::B>> {
-        let residual = self.self_attn.forward(&self.norm1.forward(xs)?, rope, cache)?;
+        // One query token per step and every cached key precedes it, so the
+        // causal mask is all-zero and can be skipped entirely.
+        let residual = self.self_attn.forward(&self.norm1.forward(xs)?, rope, cache, None)?;
         let xs = xs.add(&residual)?;
         let residual = self.mlp.forward(&self.norm2.forward(&xs)?)?;
         xs.add(&residual)
-    }
-}
-
-// ---- Conditioning ----
-
-/// Lookup-table conditioner. The learnt padding embedding is appended to the
-/// table so "no value given" is just one more index — that is what the ASR uses
-/// when no language is pinned.
-pub struct LutConditioner<T: WithDTypeF, B: Backend> {
-    embed: Tensor<T, B>,
-    possible_values: Vec<String>,
-    padding_id: usize,
-    output_dim: usize,
-}
-
-impl<T: WithDTypeF, B: Backend> LutConditioner<T, B> {
-    fn load(vb: &Path<B>, cfg: &LutConfig, output_dim: usize) -> Result<Self> {
-        let embed = vb.tensor::<T>("embed.weight", (cfg.n_bins + 1, cfg.dim))?;
-        let proj = Linear::load(vb.pp("output_proj"), cfg.dim, output_dim)?;
-        let embed = proj.forward(&embed)?;
-        let learnt_padding = vb.tensor::<T>("learnt_padding", (1, 1, output_dim))?.squeeze(0)?;
-        let embed = Tensor::cat(&[&embed, &learnt_padding], 0)?;
-        Ok(Self {
-            embed,
-            possible_values: cfg.possible_values.clone(),
-            padding_id: cfg.n_bins + 1,
-            output_dim,
-        })
-    }
-
-    /// `(1, 1, output_dim)` embedding for `value`, or the learnt padding when
-    /// no value is given.
-    pub fn condition(&self, value: Option<&str>) -> Result<Tensor<T, B>> {
-        let index = match value {
-            None => self.padding_id,
-            Some(value) => {
-                self.possible_values.iter().position(|v| v == value).ok_or_else(|| {
-                    xn::Error::Msg(format!(
-                        "unknown conditioner value {value:?}, expected one of {:?}",
-                        self.possible_values
-                    ))
-                })?
-            }
-        };
-        let index = Tensor::from_vec(vec![index as i64], (1,), self.embed.device())?;
-        self.embed.index_select(&index, 0)?.reshape((1, 1, self.output_dim))
-    }
-
-    pub fn possible_values(&self) -> &[String] {
-        &self.possible_values
     }
 }
 
@@ -291,8 +181,7 @@ pub struct LmModel<Q: BackendQ> {
     text_linear: Q::LinearQ,
     extra_heads: Vec<Linear<Q::T, Q::B>>,
     /// Keyed by conditioner name, e.g. `languages_in_segment`.
-    pub conditioners: std::collections::HashMap<String, LutConditioner<Q::T, Q::B>>,
-    context: usize,
+    pub conditioners: std::collections::HashMap<String, LUTConditioner<Q::T, Q::B>>,
     head_dim: usize,
     max_period: f32,
     audio_vocab_size: usize,
@@ -312,7 +201,7 @@ impl<Q: BackendQ> LmModel<Q> {
             .map(|i| Embedding::load(vb_e.pp(i), cfg.audio_vocab_size(), cfg.dim))
             .collect::<Result<Vec<_>>>()?;
 
-        let out_norm = RmsNorm::load(&vb.pp("out_norm"), cfg.dim)?;
+        let out_norm = RmsNorm::load(&vb.pp("out_norm"), cfg.dim, NORM_EPS)?;
         let text_linear = Q::linear_load(vb.pp("text_linear"), cfg.dim, cfg.text_card)?;
 
         let mut extra_heads = vec![];
@@ -328,8 +217,10 @@ impl<Q: BackendQ> LmModel<Q> {
         for (name, cond) in cfg.conditioners.iter() {
             match cond {
                 ConditionerConfig::Lut { lut } => {
-                    conditioners
-                        .insert(name.clone(), LutConditioner::load(&vb_c.pp(name), lut, cfg.dim)?);
+                    let conditioner =
+                        LUTConditioner::load(&vb_c.pp(name), lut.n_bins, None, lut.dim, cfg.dim)?
+                            .with_possible_values(lut.possible_values.clone());
+                    conditioners.insert(name.clone(), conditioner);
                 }
                 ConditionerConfig::Unsupported => {
                     tracing::warn!(name, "ignoring unsupported conditioner")
@@ -345,7 +236,6 @@ impl<Q: BackendQ> LmModel<Q> {
             text_linear,
             extra_heads,
             conditioners,
-            context: cfg.context,
             head_dim: cfg.head_dim(),
             max_period: cfg.max_period as f32,
             audio_vocab_size: cfg.audio_vocab_size(),
@@ -353,11 +243,10 @@ impl<Q: BackendQ> LmModel<Q> {
         })
     }
 
-    pub fn init_state(&self) -> LmState<Q::T, Q::B> {
-        LmState {
-            caches: self.layers.iter().map(|_| KvCache::new(self.context)).collect(),
-            offset: 0,
-        }
+    pub fn init_state(&self) -> Result<LmState<Q::T, Q::B>> {
+        let caches =
+            self.layers.iter().map(|l| l.self_attn.init_state()).collect::<Result<Vec<_>>>()?;
+        Ok(LmState { caches, offset: 0 })
     }
 
     /// Codebook entry that stands in for "no audio yet".

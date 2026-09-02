@@ -1,39 +1,26 @@
-//! Streaming ASR with the phonon (moshi-STT) model, end to end in one process.
-//!
-//! Audio is resampled to 24 kHz and pushed through the Mimi encoder 80 ms at a
-//! time; each frame becomes 32 codebook indices that the LM consumes alongside
-//! the text token it emitted on the previous step. Words are printed as soon as
-//! the model closes them.
+//! Streaming ASR (Graphon), end to end in one process.
 //!
 //! ```bash
 //! export HF_TOKEN=...   # read access to the gr4d repos
 //! cargo run --release --example asr --features sp -- sample.wav
 //! ```
-//!
-//! This is the model on its own — no gRPC, no batching, no advertizer. For the
-//! serving path (batched slots, flush handling, keyword boosting) see
-//! `worker-xn` in gradium-serve.
 
-#[path = "asr_lm.rs"]
-mod asr_lm;
-#[path = "asr_quantizer.rs"]
-mod asr_quantizer;
 #[path = "audio_helpers.rs"]
 mod audio_helpers;
 
 use anyhow::{Context, Result};
-use asr_lm::{Config, LmModel};
-use asr_quantizer::MimiQuantizer;
 use clap::Parser;
+use ptts::asr_lm::{Config, LmModel};
 use ptts::mimi::{MimiConfig, MimiEncoder};
+use ptts::mimi_quantizer::MimiQuantizer;
 use xn::nn::VB;
 use xn::{Tensor, Unquantized};
 
+/// Samples per model step: 80 ms at 24 kHz.
 const SAMPLE_RATE: usize = 24_000;
 const FRAME_RATE: f64 = 12.5;
-/// Samples per model step: 80 ms at 24 kHz.
 const FRAME_SIZE: usize = 1920;
-/// Frames of silence prepended before the audio, as the worker does.
+/// Frames of silence prepended before the audio.
 const INITIAL_SILENCE_FRAMES: usize = 2;
 
 /// Text tokens that close the current word.
@@ -159,8 +146,8 @@ fn remap_key(name: &str) -> Option<String> {
     Some(name)
 }
 
-/// Mimi v0.1 at 24 kHz with 32 codebooks — the tokenizer the ASR was trained
-/// against. Only the encoder half is loaded.
+/// Mimi encoder v0.1 at 24 kHz with 32 codebooks, the tokenizer the ASR was trained
+/// against.
 fn mimi_config() -> MimiConfig {
     MimiConfig {
         channels: 1,
@@ -191,7 +178,7 @@ fn mimi_config() -> MimiConfig {
 /// Turns the LM's text stream into words.
 ///
 /// The model emits one text token per 80 ms frame; `EOP`/`PAD` close the word
-/// that came before them. The first `delay` steps are dropped — that is the
+/// that came before them. The first `delay` steps are dropped, that is the
 /// lookahead the model was trained with.
 struct WordDecoder {
     delay: usize,
@@ -390,7 +377,7 @@ fn run<Q: xn::BackendQ>(args: Args, dev: Q::B) -> Result<()> {
             .concat();
 
     let mut enc_state = mimi.init_state(1, 1)?;
-    let mut lm_state = lm.init_state();
+    let mut lm_state = lm.init_state()?;
     let mut decoder = WordDecoder::new(cfg.asr_delay_in_tokens);
     let mut text_token = lm.text_start_token();
     let audio_pad = vec![lm.audio_pad_token(); cfg.n_q];
