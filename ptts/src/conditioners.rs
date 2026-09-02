@@ -2,12 +2,6 @@ use crate::Tokenizer;
 use xn::nn::{Linear, var_builder::Path};
 use xn::{Backend, Result, Tensor, WithDTypeF};
 
-/// Lookup-table conditioner.
-///
-/// The learnt padding embedding, when present, is appended to the table so
-/// "no value given" is just one more index. Two front-ends pick that index:
-/// the flow LM tokenizes free text (`tokenize` + `embed_tokens`), the ASR LM
-/// names one of `possible_values` (`condition`).
 pub struct LUTConditioner<T: WithDTypeF, B: Backend> {
     pub tokenizer: Option<Box<dyn Tokenizer + Send + Sync>>,
     embed: Tensor<T, B>,

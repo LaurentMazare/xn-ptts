@@ -217,10 +217,7 @@ pub struct StreamingTransformerState<T: WithDTypeF, B: Backend> {
 }
 
 // ---- CachedMultiheadAttention ----
-// Self-attention over a `KvCache` with a rolling context window. Used both by
-// the Mimi transformer and by the ASR LM, so it is generic over `Q`: Mimi
-// instantiates it with `Unquantized`, the ASR LM with a quantized backend.
-
+// Self-attention over a `KvCache` with a rolling context window.
 pub struct CachedMultiheadAttention<Q: BackendQ> {
     in_proj: Q::LinearQ,
     out_proj: Q::LinearQ,
@@ -261,7 +258,6 @@ impl<Q: BackendQ> CachedMultiheadAttention<Q> {
         let (h, d) = (self.num_heads, self.embed_dim / self.num_heads);
         let dm = self.embed_dim;
 
-        // The projection emits q, k and v as three contiguous `dm`-wide blocks.
         let qkv = self.in_proj.forward(query)?;
         let q = qkv.narrow(2, 0..dm)?.contiguous()?.reshape((b, t, h, d))?;
         let k = qkv.narrow(2, dm..2 * dm)?.contiguous()?.reshape((b, t, h, d))?;
@@ -273,9 +269,10 @@ impl<Q: BackendQ> CachedMultiheadAttention<Q> {
         let k = k.transpose(1, 2)?.contiguous()?;
         let v = v.transpose(1, 2)?.contiguous()?;
 
-        // KV cache with context trimming.
+        // KV cache with context trimming
         let (k, v) = state.append(&k, &v)?;
 
+        // Attention with causal mask
         let scale = Q::T::from_f32(1.0 / (d as f32).sqrt());
         let attn = q.matmul_t(&k)?.scale(scale)?;
         let attn = match mask {
