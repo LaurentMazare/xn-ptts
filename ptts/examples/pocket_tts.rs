@@ -1,25 +1,15 @@
 #[path = "audio_helpers.rs"]
 mod audio_helpers;
+#[path = "model_helpers.rs"]
+mod model_helpers;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use model_helpers::{SpTokenizer, max_frames_for};
 use ptts::tts_model::{
     MimiEnc, TTSConfig, TTSModel, prepare_text_prompt, split_into_best_sentences,
 };
 use xn::Tensor;
-use xn::nn::VB;
-
-struct SpTokenizer(sentencepiece::SentencePieceProcessor);
-
-impl ptts::Tokenizer for SpTokenizer {
-    fn encode(&self, text: &str) -> xn::Result<Vec<u32>> {
-        Ok(self.0.encode(text).map_err(xn::Error::wrap)?.into_iter().map(|v| v.id).collect())
-    }
-
-    fn decode(&self, tokens: &[u32]) -> xn::Result<String> {
-        self.0.decode_piece_ids(tokens).map_err(xn::Error::wrap)
-    }
-}
 
 #[derive(Parser, Debug)]
 #[command(name = "pocket-tts")]
@@ -111,33 +101,6 @@ fn download_files(voice: &str) -> Result<(std::path::PathBuf, std::path::PathBuf
         Voice::Audio(voice.to_string())
     };
     Ok((model_path, tokenizer_path, voice))
-}
-
-fn remap_key(name: &str) -> Option<String> {
-    // Skip keys we don't need
-    if name.contains("flow.w_s_t")
-        || name.contains("quantizer.vq")
-        || name.contains("quantizer.logvar_proj")
-    {
-        return None;
-    }
-
-    let mut name = name.to_string();
-
-    // Order matters: more specific replacements first
-    name = name.replace(
-        "flow_lm.condition_provider.conditioners.speaker_wavs.output_proj.weight",
-        "flow_lm.speaker_proj_weight",
-    );
-    name = name.replace(
-        "flow_lm.condition_provider.conditioners.transcript_in_segment.",
-        "flow_lm.conditioner.",
-    );
-    name = name.replace("flow_lm.backbone.", "flow_lm.transformer.");
-    name = name.replace("flow_lm.flow.", "flow_lm.flow_net.");
-    name = name.replace("mimi.model.", "mimi.");
-
-    Some(name)
 }
 
 fn init_tracing(chrome_tracing: bool) -> Option<tracing_chrome::FlushGuard> {
@@ -364,9 +327,7 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
         }
     };
 
-    let tokenizer_path = tokenizer_path.to_str().context("invalid tokenizer path")?;
-    let sp = sentencepiece::SentencePieceProcessor::open(tokenizer_path)?;
-    let tokenizer = SpTokenizer(sp);
+    let tokenizer = SpTokenizer::open(&tokenizer_path)?;
     let chunks = split_into_best_sentences(&tokenizer, &args.text, None)?;
 
     let mut rng = match args.rng_values {
@@ -384,22 +345,9 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
 
     let model_ext = cfg.model_ext();
     tracing::info!(?model_path, ?model_ext, "loading model");
-    let vb = if model_path.extension().and_then(|v| v.to_str()) == Some("gguf") {
-        let reader = std::fs::File::open(&model_path)?;
-        let reader = std::io::BufReader::new(reader);
-        VB::load_gguf_with_key_map(reader, dev.clone(), remap_key)?
-    } else {
-        VB::load_with_key_map(&[&model_path], dev.clone(), remap_key)?
-    };
-    let vb = vb.root();
+    let vb = model_helpers::load_weights::<Q>(&model_path, &dev)?;
     let model: TTSModel<Q> = TTSModel::load(&vb, Box::new(tokenizer), &cfg)?;
-    vb.check_all_used_with_ignore(|v| {
-        v == "flow_lm.condition_provider.conditioners.speaker_wavs.learnt_padding"
-            || v.starts_with("mimi.quantizer")
-            || v.starts_with("mimi.encoder")
-            || v == "flow_lm.speaker_proj_weight"
-            || v == "mimi.downsample.conv.conv.weight"
-    })?;
+    vb.check_all_used_with_ignore(model_helpers::is_unused_by_tts_model)?;
     tracing::info!("model loaded successfully!");
 
     let mut max_seq_budget = 0;
@@ -409,7 +357,7 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
         let tokens = model.flow_lm.conditioner.tokenize(&text)?;
         let num_tokens = tokens.len();
         tracing::info!(?text, ?num_tokens, "processing text");
-        let max_frames = ((num_tokens as f64 / 3.0 + 2.0) * 12.5).ceil() as usize;
+        let max_frames = max_frames_for(num_tokens);
         let seq_budget = num_tokens + 512 + max_frames;
         max_seq_budget = max_seq_budget.max(seq_budget);
         all_tokens.push((tokens, max_frames, frames_after_eos));
@@ -430,39 +378,15 @@ fn run_for_device<Q: xn::BackendQ + 'static>(args: Args, dev: Q::B) -> Result<()
     if let Some(voice) = voice {
         let (voice_emb, null_emb) = match voice {
             Voice::Safetensors(voice_path) => {
-                let voice_vb = VB::load(&[&voice_path], dev.clone())?;
-                let voice_names = voice_vb.tensor_names();
-                let voice_key =
-                    voice_names.first().context("no tensors found in voice embedding file")?;
-                let voice_shape = voice_vb.shape(voice_key).context("voice tensor not found")?;
-                let voice_dims = voice_shape.dims();
-
-                // Load as raw tensor and reshape to [1, T, dim]
-                let voice_emb: Tensor<f32, Q::B> =
-                    voice_vb.tensor(voice_key, voice_shape.clone())?;
-                let voice_emb = if voice_dims.len() == 2 {
-                    voice_emb.reshape((1, voice_dims[0], voice_dims[1]))?
-                } else {
-                    voice_emb
-                };
                 if cfg_state.is_some() {
                     anyhow::bail!("cfg is not supported with pre-computed voice embeddings");
                 }
-                if let Some(model_ext) = cfg.model_ext() {
-                    let file_content = std::fs::read(&voice_path)?;
-                    let (_, metadata) = safetensors::SafeTensors::read_metadata(&file_content)?;
-                    if let Some(metadata) = metadata.metadata()
-                        && let Some(voice_model_ext) = metadata.get("model_ext")
-                    {
-                        tracing::info!(?voice_model_ext, "voice embedding model_ext from metadata");
-                        if voice_model_ext.as_str() != model_ext {
-                            anyhow::bail!(
-                                "voice embedding model_ext '{voice_model_ext}' does not match config model_ext '{model_ext}'"
-                            );
-                        }
-                    }
-                }
-                (voice_emb.to::<Q::T>()?, None)
+                let voice_emb = model_helpers::load_voice_emb::<Q>(
+                    &voice_path,
+                    cfg.model_ext().as_deref(),
+                    &dev,
+                )?;
+                (voice_emb, None)
             }
             Voice::Audio(path) => {
                 tracing::info!("loading voice from audio file {}", path);

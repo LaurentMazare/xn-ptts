@@ -16,18 +16,19 @@
 //! rather than overlapped, so a frame's time is its sampling plus its decoding; `pocket_tts`
 //! overlaps the two and will report a better RTF for the same weights.
 
+#[path = "model_helpers.rs"]
+mod model_helpers;
+
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use model_helpers::{SpTokenizer, max_frames_for};
 use ptts::tts_model::{TTSConfig, TTSModel, TTSState};
-use xn::nn::VB;
 use xn::{BackendQ, Tensor};
 
 /// Frames of Mimi decoder context, matching `pocket_tts`.
 const MIMI_CONTEXT_SIZE: usize = 250;
-/// Spare KV positions on top of what an utterance is calculated to need.
-const SEQ_BUDGET_SLACK: usize = 16;
 
 #[derive(Parser, Debug)]
 #[command(name = "bench")]
@@ -73,7 +74,7 @@ struct Args {
     seed: u64,
 
     /// Measured iterations.
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 10, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
     iters: usize,
 
     /// Unmeasured iterations run first, to warm caches and the thread pool.
@@ -83,18 +84,6 @@ struct Args {
     /// Print a line per iteration as well as the summary.
     #[arg(long, default_value_t = false)]
     per_iter: bool,
-}
-
-struct SpTokenizer(sentencepiece::SentencePieceProcessor);
-
-impl ptts::Tokenizer for SpTokenizer {
-    fn encode(&self, text: &str) -> xn::Result<Vec<u32>> {
-        Ok(self.0.encode(text).map_err(xn::Error::wrap)?.into_iter().map(|v| v.id).collect())
-    }
-
-    fn decode(&self, tokens: &[u32]) -> xn::Result<String> {
-        self.0.decode_piece_ids(tokens).map_err(xn::Error::wrap)
-    }
 }
 
 struct StdRng {
@@ -115,66 +104,6 @@ impl ptts::flow_lm::Rng for StdRng {
         use rand::Rng;
         self.inner.sample(self.distr)
     }
-}
-
-fn remap_key(name: &str) -> Option<String> {
-    // Skip keys we don't need
-    if name.contains("flow.w_s_t")
-        || name.contains("quantizer.vq")
-        || name.contains("quantizer.logvar_proj")
-    {
-        return None;
-    }
-
-    let mut name = name.to_string();
-
-    // Order matters: more specific replacements first
-    name = name.replace(
-        "flow_lm.condition_provider.conditioners.speaker_wavs.output_proj.weight",
-        "flow_lm.speaker_proj_weight",
-    );
-    name = name.replace(
-        "flow_lm.condition_provider.conditioners.transcript_in_segment.",
-        "flow_lm.conditioner.",
-    );
-    name = name.replace("flow_lm.backbone.", "flow_lm.transformer.");
-    name = name.replace("flow_lm.flow.", "flow_lm.flow_net.");
-    name = name.replace("mimi.model.", "mimi.");
-
-    Some(name)
-}
-
-fn load_voice_emb<Q: BackendQ>(
-    path: &std::path::Path,
-    cfg: &TTSConfig,
-    dev: &Q::B,
-) -> Result<Tensor<Q::T, Q::B>> {
-    let vb = VB::load(&[path], dev.clone())?;
-    let names = vb.tensor_names();
-    let key = names.first().context("no tensors found in voice embedding file")?;
-    let shape = vb.shape(key).context("voice tensor not found")?;
-    let dims = shape.dims().to_vec();
-    let emb: Tensor<f32, Q::B> = vb.tensor(key, shape)?;
-    // Voice files hold either [T, dim] or an already batched [1, T, dim].
-    let emb = if dims.len() == 2 { emb.reshape((1, dims[0], dims[1]))? } else { emb };
-    if let Some(model_ext) = cfg.model_ext() {
-        let file_content = std::fs::read(path)?;
-        let (_, metadata) = safetensors::SafeTensors::read_metadata(&file_content)?;
-        if let Some(metadata) = metadata.metadata()
-            && let Some(voice_model_ext) = metadata.get("model_ext")
-            && voice_model_ext.as_str() != model_ext
-        {
-            anyhow::bail!(
-                "voice embedding model_ext '{voice_model_ext}' does not match config model_ext '{model_ext}'"
-            )
-        }
-    }
-    Ok(emb.to::<Q::T>()?)
-}
-
-/// Frames an utterance of `num_tokens` tokens is allowed to generate before it is cut off.
-fn max_frames_for(num_tokens: usize) -> usize {
-    ((num_tokens as f64 / 3.0 + 2.0) * 12.5).ceil() as usize
 }
 
 /// One iteration's timings.
@@ -257,21 +186,19 @@ struct Stats {
 }
 
 impl Stats {
-    fn of(xs: &[f64]) -> Option<Self> {
-        if xs.is_empty() {
-            return None;
-        }
+    /// `xs` must be non-empty; `--iters` is validated to be at least 1.
+    fn of(xs: &[f64]) -> Self {
         let mut s = xs.to_vec();
         s.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let pick = |q: f64| s[((s.len() - 1) as f64 * q).round() as usize];
-        Some(Stats {
+        Stats {
             n: s.len(),
             min: s[0],
             mean: s.iter().sum::<f64>() / s.len() as f64,
             max: s[s.len() - 1],
             p50: pick(0.50),
             p95: pick(0.95),
-        })
+        }
     }
 }
 
@@ -303,25 +230,12 @@ impl Bench<'_> {
         };
 
         let t_load = Instant::now();
-        let tokenizer_path = tokenizer_path.to_str().context("invalid tokenizer path")?;
-        let tokenizer = SpTokenizer(sentencepiece::SentencePieceProcessor::open(tokenizer_path)?);
-        let vb = if args.model.extension().and_then(|v| v.to_str()) == Some("gguf") {
-            let reader = std::io::BufReader::new(std::fs::File::open(&args.model)?);
-            VB::load_gguf_with_key_map(reader, dev.clone(), remap_key)?
-        } else {
-            VB::load_with_key_map(&[&args.model], dev.clone(), remap_key)?
-        };
-        let vb = vb.root();
+        let tokenizer = SpTokenizer::open(&tokenizer_path)?;
+        let vb = model_helpers::load_weights::<Q>(&args.model, &dev)?;
         let model: TTSModel<Q> = TTSModel::load(&vb, Box::new(tokenizer), &cfg)?;
-        vb.check_all_used_with_ignore(|v| {
-            v == "flow_lm.condition_provider.conditioners.speaker_wavs.learnt_padding"
-                || v.starts_with("mimi.quantizer")
-                || v.starts_with("mimi.encoder")
-                || v.starts_with("speaker_mimi")
-                || v == "flow_lm.speaker_proj_weight"
-                || v == "mimi.downsample.conv.conv.weight"
-        })?;
-        let voice_emb = load_voice_emb::<Q>(&args.voice, &cfg, &dev)?;
+        vb.check_all_used_with_ignore(model_helpers::is_unused_by_tts_model)?;
+        let voice_emb =
+            model_helpers::load_voice_emb::<Q>(&args.voice, cfg.model_ext().as_deref(), &dev)?;
         let load_ms = ms(t_load.elapsed());
 
         // Tokenize up front: the loop needs the tokens anyway, and the KV cache is sized from
@@ -347,8 +261,7 @@ impl Bench<'_> {
             .iter()
             .map(|(tokens, _)| voice_len + tokens.len() + max_frames_for(tokens.len()))
             .max()
-            .unwrap_or(voice_len)
-            + SEQ_BUDGET_SLACK;
+            .unwrap_or(voice_len);
         let t_voice = Instant::now();
         let mut base_state = model.init_flow_lm_state(1, seq_budget)?;
         model.prompt_audio(&mut base_state, &voice_emb)?;
@@ -370,26 +283,24 @@ impl Bench<'_> {
             }
             runs.push(r);
         }
-        if runs.is_empty() {
-            anyhow::bail!("--iters must be at least 1")
-        }
-
-        let audio_ms = runs[0].samples as f64 / model.sample_rate() as f64 * 1e3;
+        let first = &runs[0];
+        let audio_ms = |r: &Run| r.samples as f64 / model.sample_rate() as f64 * 1e3;
         let totals: Vec<f64> = runs.iter().map(|r| ms(r.total)).collect();
         let ttfas: Vec<f64> = runs.iter().map(|r| ms(r.ttfa)).collect();
         // Pooled across iterations: per-frame variation matters more than which run it came
         // from, and one run has too few frames for a stable tail.
         let frames: Vec<f64> = runs.iter().flat_map(|r| r.frames.iter().copied().map(ms)).collect();
         // Audio produced per unit of wall time, so higher is faster than realtime.
-        let rtfs: Vec<f64> = totals.iter().map(|t| audio_ms / t).collect();
+        let rtfs: Vec<f64> = runs.iter().map(|r| audio_ms(r) / ms(r.total)).collect();
 
         println!();
         println!(
-            "model {}  threads {}  input {} chars  audio {audio_ms:.0}ms  frames/iter {}",
+            "model {}  threads {}  input {} chars  audio {:.0}ms  frames/iter {}",
             args.model.display(),
             xn::get_num_threads(),
             args.input.len(),
-            runs[0].frames.len(),
+            audio_ms(first),
+            first.frames.len(),
         );
         println!("load {load_ms:.1}ms, voice conditioning {voice_ms:.1}ms (both excluded below)");
         println!();
@@ -397,17 +308,13 @@ impl Bench<'_> {
             "{:<22} {:>5}  {:>9} {:>9} {:>9} {:>9} {:>9}",
             "metric", "n", "min", "mean", "p50", "p95", "max"
         );
-        if let Some(s) = Stats::of(&totals) {
-            row("total generate", "ms", 2, &s);
-        }
-        if let Some(s) = Stats::of(&ttfas) {
-            row("time to first audio", "ms", 2, &s);
-        }
-        if let Some(s) = Stats::of(&frames) {
-            row("per-frame", "ms", 3, &s);
-        }
-        if let Some(s) = Stats::of(&rtfs) {
-            row("rtf (higher is better)", "x realtime", 2, &s);
+        for (label, unit, prec, xs) in [
+            ("total generate", "ms", 2, &totals),
+            ("time to first audio", "ms", 2, &ttfas),
+            ("per-frame", "ms", 3, &frames),
+            ("rtf (higher is better)", "x realtime", 2, &rtfs),
+        ] {
+            row(label, unit, prec, &Stats::of(xs));
         }
         Ok(())
     }
