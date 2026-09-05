@@ -1,11 +1,12 @@
 #[path = "audio_helpers.rs"]
 mod audio_helpers;
+#[path = "model_helpers.rs"]
+mod model_helpers;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use ptts::tts_model::MimiEnc;
 use xn::Tensor;
-use xn::nn::VB;
 
 #[derive(Parser, Debug)]
 #[command(name = "create-voice")]
@@ -23,33 +24,6 @@ struct Args {
     /// Voice to use
     #[arg(long)]
     input: String,
-}
-
-fn remap_key(name: &str) -> Option<String> {
-    // Skip keys we don't need
-    if name.contains("flow.w_s_t")
-        || name.contains("quantizer.vq")
-        || name.contains("quantizer.logvar_proj")
-    {
-        return None;
-    }
-
-    let mut name = name.to_string();
-
-    // Order matters: more specific replacements first
-    name = name.replace(
-        "flow_lm.condition_provider.conditioners.speaker_wavs.output_proj.weight",
-        "flow_lm.speaker_proj_weight",
-    );
-    name = name.replace(
-        "flow_lm.condition_provider.conditioners.transcript_in_segment.",
-        "flow_lm.conditioner.",
-    );
-    name = name.replace("flow_lm.backbone.", "flow_lm.transformer.");
-    name = name.replace("flow_lm.flow.", "flow_lm.flow_net.");
-    name = name.replace("mimi.model.", "mimi.");
-
-    Some(name)
 }
 
 fn main() -> Result<()> {
@@ -109,14 +83,7 @@ fn run(args: Args) -> Result<()> {
     let pcm_tensor = Tensor::from_vec(pcm, (1, 1, ()), &dev)?.to::<f32>()?;
 
     tracing::info!(?model_path, "loading model");
-    let vb = if model_path.extension().and_then(|v| v.to_str()) == Some("gguf") {
-        let reader = std::fs::File::open(&model_path)?;
-        let reader = std::io::BufReader::new(reader);
-        VB::load_gguf_with_key_map(reader, dev, remap_key)?
-    } else {
-        VB::load_with_key_map(&[&model_path], dev, remap_key)?
-    };
-    let vb = vb.root();
+    let vb = model_helpers::load_weights::<xn::Unquantized<f32, xn::CpuDevice>>(&model_path, &dev)?;
     let mimi_enc: MimiEnc<xn::Unquantized<f32, xn::CpuDevice>> = MimiEnc::load(&vb, &cfg)?;
     tracing::info!("encoding audio to latent");
     let emb = mimi_enc.encode_audio(&pcm_tensor)?;
