@@ -537,9 +537,9 @@ dependencies = [
 
 [[package]]
 name = "cudarc"
-version = "0.19.4"
+version = "0.19.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f071cd6a7b5d51607df76aa2d426aaabc7a74bc6bdb885b8afa63a880572ad9b"
+checksum = "804764d10e844da09765a7b2ca9641a0851523d1702efb0d7299d73e31b86e80"
 dependencies = [
  "half",
  "libloading 0.9.0",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "ptts"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -2245,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "ptts-pyo3"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "hf-hub",
  "numpy",
@@ -2261,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "ptts-wasm"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "getrandom 0.3.4",
  "js-sys",
@@ -2274,7 +2274,7 @@ dependencies = [
 
 [[package]]
 name = "ptts-ws-server"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -4219,9 +4219,9 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "xn"
-version = "0.1.21"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b488adb5111ee4c14ec77b2183a4bfb3fa232d3db57a3b57ce49dd3b7b99ae71"
+checksum = "71380fcb8e33af18a63293b44e86590bca6c3785f66bf80fe73737a11760203b"
 dependencies = [
  "ash",
  "bindgen_cuda",
