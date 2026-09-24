@@ -205,7 +205,7 @@ jobs:
           RUSTFLAGS: -C target-feature=+simd128,+relaxed-simd
         run: cargo check -p ptts-wasm --target wasm32-unknown-unknown --all-targets --features webgpu
       # The JS wrapper that `phonon-tts` ships around this build. Its tests need neither a
-      # browser nor a model.
+      # browser nor a model; building the package itself is `npm-publish.yml`'s job.
       #
       # Node is pinned rather than taken from the runner image. `js/` has no `package.json`
       # until the package itself lands, so loading its `.js` modules relies on module-syntax

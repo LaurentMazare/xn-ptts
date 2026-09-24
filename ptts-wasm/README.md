@@ -53,7 +53,9 @@ make serve MODEL_DIR=/path/to/model      # build, then serve the demo from site/
 
 The package version is not in `js/package.json`. `pack.mjs` stamps it from `workspace.package.version` in the top-level `Cargo.toml`, so npm, PyPI and crates.io stay on one version.
 
-## Before a release
+## Publishing
+
+`.github/workflows/npm-publish.yml` builds the package on every PR that touches it. It publishes on a `v*` tag, the same tag that publishes the Python wheels. It uses npm trusted publishing, which has to be enabled once for `phonon-tts` on npmjs.com: the package already exists on the registry, so that setting is available.
 
 Check the checkpoint URLs in `js/models.js`. They are pinned to Hugging Face revisions, and the files are cached by URL, so changing a revision makes every user of them download again.
 
