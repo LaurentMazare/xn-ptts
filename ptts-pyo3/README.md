@@ -15,18 +15,6 @@ tts = ptts.TTS(lang="en")
 tts.save("out.wav", "Hello world")
 ```
 
-## No PyTorch
-
-The entire runtime — the flow-matching language model, the Mimi codec, the tokenizer, the
-resampler — is a Rust extension inside this wheel. There is nothing to install alongside it.
-
-| | `ptts` | others |
-|---|---|---|
-| Runtime dependencies | `numpy` | `torch`, `transformers`, and a phonemizer binary |
-| Install size | a wheel and a checkpoint | ~2 GB before the checkpoint |
-| Python versions | 3.9+ | usually capped two releases back |
-| System packages | none | `espeak-ng` or `phonemizer`, per platform |
-
 ## Using it
 
 ```python
@@ -82,8 +70,6 @@ ptts.TTS(lang="en", device="cuda")                # see ptts.available_devices()
 ptts.TTS(lang="en", quant="q8_0")                 # smaller and faster on CPU
 ```
 
-Quantized weights are CPU-only.
-
 ## Command line
 
 The wheel installs a `ptts` command, so `uvx ptts` and `pipx run ptts` need no install step.
@@ -96,7 +82,7 @@ ptts --lang fr "bonjour" -v marius -q q8_0 -o out.wav
 ptts --help
 ```
 
-The first run downloads the checkpoint into the Hugging Face cache; later ones do not.
+The first run downloads the checkpoint into the Hugging Face cache.
 
 ## Errors
 
@@ -113,11 +99,6 @@ Failures raise the exception their class calls for, so `except` can be specific:
 ## Types
 
 The package ships `py.typed` and complete stubs, so editors and `mypy` see the full API.
-
-## Licence
-
-The Python package and the Rust runtime are MIT OR Apache-2.0. The model weights are published
-separately by Kyutai under CC-BY-4.0 with an acceptable-use agreement; see the [model card][model].
 
 [repo]: https://github.com/gradium-ai/xn-ptts
 [model]: https://huggingface.co/kyutai/pocket-tts

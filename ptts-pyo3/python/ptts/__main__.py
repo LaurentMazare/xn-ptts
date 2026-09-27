@@ -3,10 +3,7 @@
     ptts --lang en "hello world" -o out.wav
     python -m ptts --lang en "hello world" -o out.wav
 
-Both spellings run `main`: the first through the `ptts` console script the wheel installs,
-which is also what `uvx ptts` and `pipx run ptts` invoke.
-
-Deliberately thin: every option here maps to one `TTS` argument, so the module doubles as a
+Every option here maps to one `TTS` argument, so the module doubles as a
 worked example of the API.
 """
 
@@ -28,9 +25,6 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("text", nargs="?", help="text to synthesize")
     p.add_argument("-o", "--output", default="out.wav", help="output WAV path (default: out.wav)")
     p.add_argument("-v", "--voice", help="voice name; defaults to the checkpoint's own")
-    # Required, as on `pocket_tts` and `ptts-ws-server`, but enforced below rather than by
-    # argparse: `--build-info` is the one flag that never builds a model, and it should not
-    # have to name a language it has no use for.
     p.add_argument(
         "-l",
         "--lang",
@@ -81,9 +75,6 @@ def main(argv: list[str] | None = None) -> int:
         value = getattr(args, {"config": "model"}.get(name, name))
         if value is not None:
             kwargs[name] = value
-
-    # Errors carry their own remedy -- a gated checkpoint says how to authenticate, an unknown
-    # voice lists the ones that exist -- so print the message rather than a traceback.
     try:
         tts = TTS(**kwargs)  # type: ignore[arg-type]
         if args.list_voices:

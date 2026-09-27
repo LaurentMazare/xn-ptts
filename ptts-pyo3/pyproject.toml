@@ -7,8 +7,6 @@ name = "ptts"
 description = "Text to 24 kHz speech, on device. No PyTorch."
 readme = "README.md"
 requires-python = ">=3.9"
-license = "MIT OR Apache-2.0"
-license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 authors = [{ name = "Laurent Mazare" }, { name = "Gradium" }]
 keywords = ["tts", "text-to-speech", "speech-synthesis", "voice-cloning", "on-device"]
 classifiers = [
