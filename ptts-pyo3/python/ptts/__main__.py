@@ -39,7 +39,7 @@ def _parser() -> argparse.ArgumentParser:
         "-d", "--device", help=f"one of {', '.join(['auto', *available_devices()])} (default: auto)"
     )
     p.add_argument("-q", "--quant", help=f"weight format: {', '.join(available_quants())}")
-    p.add_argument("-t", "--temperature", type=float, default=0.5, help="sampling temperature")
+    p.add_argument("-t", "--temperature", type=float, help="sampling temperature")
     p.add_argument("-s", "--seed", type=int, help="sampling seed, for a reproducible run")
     p.add_argument("--threads", type=int, help="CPU threads for tensor ops")
     p.add_argument("--list-voices", action="store_true", help="list the checkpoint's voices, then exit")
@@ -49,29 +49,31 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
 
     if args.build_info:
         for key, value in build_info().items():
             print(f"{key}: {value}")
         return 0
 
-    if args.threads is not None:
-        # Before the model loads: this sizes a global pool that is built once.
-        from . import set_num_threads
-
-        set_num_threads(args.threads)
-
     if not args.list_voices and not args.text:
-        _parser().error("nothing to say: pass some text, or --list-voices")
+        parser.error("nothing to say: pass some text, or --list-voices")
 
     if args.lang is None:
         # Text is normalized before it is tokenized, and the spoken forms of `@`, `+` and `=`
         # differ per language, so there is nothing safe to guess on the caller's behalf.
-        _parser().error("--lang is required: one of en, fr, de, es, pt, or none to skip it")
+        parser.error("--lang is required: one of en, fr, de, es, pt, or none to skip it")
 
-    kwargs: dict[str, object] = {"temperature": args.temperature, "lang": args.lang}
-    for name in ("config", "device", "quant", "voice", "seed"):
+    if args.threads is not None:
+        # After the arguments are checked, before the model loads: this sizes a global pool
+        # that is built once.
+        from . import set_num_threads
+
+        set_num_threads(args.threads)
+
+    kwargs: dict[str, object] = {"lang": args.lang}
+    for name in ("config", "device", "quant", "voice", "seed", "temperature"):
         value = getattr(args, {"config": "model"}.get(name, name))
         if value is not None:
             kwargs[name] = value

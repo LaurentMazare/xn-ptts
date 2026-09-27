@@ -9,7 +9,7 @@ Try the wasm version online on [github.io](https://laurentmazare.github.io/pocke
 
 ```bash
 uvx ptts --lang en "Hello world" -o out.wav   # nothing to install
-pip install ptts                      # or keep it around
+pip install ptts                              # or keep it around
 ```
 
 ```python

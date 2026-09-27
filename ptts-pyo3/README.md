@@ -5,7 +5,7 @@ the [`kyutai/pocket-tts`][model] model.
 
 ```bash
 uvx ptts --lang en "Hello world" -o out.wav   # nothing to install
-pip install ptts                      # or keep it around
+pip install ptts                              # or keep it around
 ```
 
 ```python
