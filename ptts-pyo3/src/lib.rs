@@ -3,7 +3,7 @@
 //! ```python
 //! import ptts
 //!
-//! tts = ptts.TTS()
+//! tts = ptts.TTS(lang="en")
 //! tts.save("out.wav", "Hello world")
 //! ```
 //!

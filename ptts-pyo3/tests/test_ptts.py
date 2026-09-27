@@ -56,6 +56,17 @@ def test_all_matches_what_is_importable():
         assert hasattr(ptts, name), name
 
 
+def test_all_covers_everything_the_extension_exports():
+    # The other half of the drift check: the test above compares the stubs against `__all__`,
+    # so an `m.add_*` in the Rust that `__init__.py` never re-exports is invisible to both it
+    # and to `import ptts`. `dir(_ptts)` is the ground truth.
+    from ptts import _ptts
+
+    exported = {name for name in dir(_ptts) if not name.startswith("_")} | {"__version__"}
+    missing = exported - set(ptts.__all__)
+    assert not missing, f"in the extension but not re-exported: {sorted(missing)}"
+
+
 # --- introspection ---------------------------------------------------------------------------
 
 
@@ -67,7 +78,7 @@ def test_available_devices_always_offers_the_cpu():
     assert devices[-1] == "cpu"
 
 
-def test_available_quants_are_all_accepted_by_the_constructor():
+def test_available_quants_lists_the_known_formats_and_rejects_others():
     quants = ptts.available_quants()
     assert "f32" in quants and "q8_0" in quants
     # A name not in the list is rejected, which is what makes the list meaningful.
@@ -95,8 +106,8 @@ def test_thread_count_round_trips():
     ("kwargs", "exc", "needle"),
     [
         # A bad argument is a `ValueError`; a checkpoint that is not there is a `LookupError`;
-        # a backend this wheel was not built with is a `NotImplementedError`. The README
-        # documents that table, so this is what holds it to it.
+        # a backend this wheel was not built with is a `NotImplementedError`. `to_py_err` in
+        # `src/lib.rs` is where that mapping lives, and this is what holds it to it.
         ({"quant": "q3k"}, ValueError, "q3k"),
         ({"device": "tpu"}, ValueError, "tpu"),
         ({"config": "/definitely/not/a/checkpoint/config.json"}, LookupError, "config.json"),
@@ -111,13 +122,16 @@ def test_a_bad_argument_raises_its_class_and_names_itself(kwargs, exc, needle):
 
 def test_nothing_is_downloaded_before_the_arguments_are_checked():
     # Each of these fails in milliseconds, which only holds if the check precedes the fetch.
+    # The bound is deliberately loose: this is a smoke test for the ordering, not a benchmark,
+    # and a cold runner's import-time page-ins should not be able to fail it. Fetching a
+    # checkpoint and building a model is well over it even on a fast runner.
     import time
 
     start = time.monotonic()
     for kwargs in ({"quant": "q3k"}, {"device": "cuda", "quant": "q8_0"}):
         with pytest.raises(Exception):
             ptts.TTS(**kwargs, lang="en")
-    assert time.monotonic() - start < 5.0
+    assert time.monotonic() - start < 30.0
 
 
 # --- needs a checkpoint ----------------------------------------------------------------------

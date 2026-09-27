@@ -3,9 +3,10 @@
 #
 #    maturin generate-ci github -m ptts-pyo3/Cargo.toml
 #
-# Two things are hand-added and a regeneration would drop them: the `test-wheel` step, which
-# installs the wheel a job just built and runs pytest against it; and every job deleting
-# `.cargo/config.toml` and sets `RUSTFLAGS` itself. That file pins `target-cpu=native`, which
+# Three things are hand-added and a regeneration would drop them: the `test-wheel` step, which
+# installs the wheel a job just built and runs pytest against it; the pinned `python-version`
+# in each wheel job, so the runner is guaranteed to be among the tags the build produced; and
+# every job deleting `.cargo/config.toml` and setting `RUSTFLAGS` itself. That file pins `target-cpu=native`, which
 # in a published wheel means "whatever CPU the runner happened to have" -- a wheel that can
 # fault with SIGILL on someone's older machine.
 #
@@ -44,7 +45,9 @@ jobs:
         run: rm -f .cargo/config.toml
       - uses: actions/setup-python@v7
         with:
-          python-version: 3.x
+          # Pinned, not `3.x`: the test step below can only install a wheel whose tag
+          # `--find-interpreter` actually produced, and `3.x` floats to the newest release.
+          python-version: '3.13'
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -75,7 +78,9 @@ jobs:
         run: rm -f .cargo/config.toml
       - uses: actions/setup-python@v7
         with:
-          python-version: 3.x
+          # Pinned, not `3.x`: the test step below can only install a wheel whose tag
+          # `--find-interpreter` actually produced, and `3.x` floats to the newest release.
+          python-version: '3.13'
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -107,7 +112,9 @@ jobs:
         run: rm -f .cargo/config.toml
       - uses: actions/setup-python@v7
         with:
-          python-version: 3.x
+          # Pinned, not `3.x`: the test step below can only install a wheel whose tag
+          # `--find-interpreter` actually produced, and `3.x` floats to the newest release.
+          python-version: '3.13'
           architecture: ${{ matrix.platform.target }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -138,7 +145,9 @@ jobs:
         run: rm -f .cargo/config.toml
       - uses: actions/setup-python@v7
         with:
-          python-version: 3.x
+          # Pinned, not `3.x`: the test step below can only install a wheel whose tag
+          # `--find-interpreter` actually produced, and `3.x` floats to the newest release.
+          python-version: '3.13'
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:

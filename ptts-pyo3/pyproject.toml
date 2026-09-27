@@ -13,6 +13,9 @@ dependencies = ["numpy"]
 dynamic = ["version"]
 
 [project.optional-dependencies]
+# For a local `uv sync` or an editable install. The wheel jobs cannot use it: they install
+# the built wheel with `--no-index`, which cannot then resolve an extra's dependencies, so
+# `test-wheel` installs pytest directly.
 test = ["pytest>=7"]
 
 [tool.maturin]

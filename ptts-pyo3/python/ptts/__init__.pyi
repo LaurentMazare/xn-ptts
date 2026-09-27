@@ -154,6 +154,9 @@ class AudioStream(Iterator[NDArray[np.float32]]):
         exc_type: type[BaseException] | None = None,
         exc_value: BaseException | None = None,
         traceback: TracebackType | None = None,
+        # `*_args` on the Rust side: positional only, so `__exit__(exc_type=None)` is a
+        # `TypeError` at runtime and the stub should not type-check it.
+        /,
     ) -> bool: ...
 
 def get_num_threads() -> int:
