@@ -5,6 +5,11 @@
 # be enabled once on npmjs.com: phonon-tts -> Settings -> Trusted publishing -> GitHub Actions,
 # repository gradium-ai/xn-ptts, workflow `npm-publish.yml`. npm records provenance for
 # packages published this way on its own.
+#
+# That setting only exists for a package that is already on the registry, so the very first
+# version has to be published by hand with a token: `make build && cd pkg && npm publish
+# --access public`. Until that is done, a `v*` tag publishes the wheels and fails here, which
+# leaves PyPI and npm on different versions.
 name: npm
 
 on:
@@ -35,6 +40,12 @@ on:
 
 permissions:
   contents: read
+
+# A new push to a PR supersedes the build before it. Tag runs are never cancelled: one of them
+# publishes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   package:
@@ -111,7 +122,9 @@ jobs:
       - name: Publish
         working-directory: pkg
         run: |
-          npm install --global npm@^11.5.1
+          # Pinned, not a range: this is the job that holds the OIDC token, and `^11.5.1`
+          # would install whatever 11.x is newest on the day of a release.
+          npm install --global npm@11.6.2
           tag=latest
           case "$GITHUB_REF_NAME" in *-*) tag=next ;; esac
           npm publish --access public --tag "$tag"
