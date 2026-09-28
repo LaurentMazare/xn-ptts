@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Cargo workspace (resolver "3", edition 2024) with four members:
 
 - `ptts/` — core TTS library. Pure Rust, depends on the `xn` tensor/nn crate. Examples live under `ptts/examples/`: `say` (shortest end-to-end call) and `bench` (benchmark harness) require the `hf` feature for the tokenizer, `pocket_tts` (full CLI) requires `hf` and `audio`, `create_voice` (voice embeddings from audio samples) requires `audio`, and `quantize` (safetensors → GGUF converter that selectively quantizes `flow_lm.transformer.layers.*` weights) requires nothing. `model_helpers.rs` is not an example — it is a shared module each example pulls in with `#[path = "..."] mod`, so `autoexamples = false` and every example is listed explicitly in `Cargo.toml`.
-- `ptts-pyo3/` — PyO3 bindings exposing `TTS` to Python. Built with maturin in a mixed layout: `python/ptts/` is the package (`__init__.py`, `__init__.pyi` stubs, `py.typed`, `__main__.py`) and the cdylib lands inside it as `ptts._ptts`, so a pure-Rust layout's lack of anywhere to put `py.typed` is not a problem. `tests/` is a pytest suite that needs no weights except where marked `checkpoint`; run it against a built wheel, not the source tree. Has its own `pyproject.toml` and `uv.lock`.
-- `ptts-wasm/` — browser build via `wasm-bindgen` / `wasm-pack`. Ships a demo in `ptts-wasm/www/` (`index.html` + `worker.js`).
+- `ptts-pyo3/` — PyO3 bindings exposing `TTSModel` to Python. Built with maturin; the cdylib is named `ptts`. Has its own `pyproject.toml` and `uv.lock`.
+- `ptts-wasm/` — browser build via `wasm-bindgen` / `wasm-pack`, published to npm as `phonon-tts`. `src/lib.rs` is the raw frame-at-a-time `Model`; `js/` is the package's public API around it (`PhononTTS`, which runs the model in a worker, downloads and caches the files, and speaks by voice name), with its own `package.json`, `README.md` and node tests. `www/index.html` is a demo page built on the package.
 - `ptts-ws-server/` — WebSocket streaming server (`axum` + `kaudio`). Needs a system libopus through `kaudio` → `libopus_sys`, which is why CI installs it on Linux and macOS and skips this crate on Windows.
 
 Shared dependency versions (notably `xn`) and the workspace version live in the top-level `Cargo.toml`. Bumping the release version means editing `workspace.package.version` and the `ptts` workspace dep.
@@ -25,7 +25,7 @@ required check called `CI`:
 | `test` | stable + nightly × Linux/macOS/Windows; default features, then `hf,audio`, then doctests; `metal` and `accelerate` type-checked on the macOS leg |
 | `features` | every combination of `hf`/`audio`, plus `vulkan` and `webgpu` |
 | `docs` | `cargo doc` on nightly with `--cfg docsrs` exactly as docs.rs builds it, then again on stable |
-| `wasm` | `ptts-wasm` for `wasm32-unknown-unknown` with the SIMD flags real builds use |
+| `wasm` | `ptts-wasm` for `wasm32-unknown-unknown` with the SIMD flags real builds use, and the `phonon-tts` JS wrapper's node tests |
 
 `.github/actions/setup-rust` is a composite action holding the parts every job shares: the
 toolchain, the cache, and the platform quirks below.
@@ -70,18 +70,23 @@ cargo run --release --features hf,accelerate --example bench -- \
   --voice voices/freya.safetensors --threads 8 --iters 20
 ```
 
-`bench` takes explicit paths and a precomputed voice embedding, never downloads, and reports time-to-first-audio, per-frame time, total generate time and RTF over `--iters` runs, excluding the one-off model load and voice conditioning. It decodes each frame on the generating thread rather than overlapping Mimi with the next frame's sampling as `pocket_tts` does, so its RTF reads higher than `pocket_tts` for the same weights — don't compare the two directly. `--threads` defaults to xn's one-per-logical-core, usually too many for a single autoregressive stream. For profiling rather than measuring, `pocket_tts --chrome-tracing` writes a Chrome trace for https://ui.perfetto.dev.
+`bench` takes explicit paths and a precomputed voice embedding, never downloads, and reports time-to-first-audio, per-frame time, total generate time and RTF over `--iters` runs, excluding the one-off model load and voice conditioning. It decodes each frame on the generating thread rather than overlapping Mimi with the next frame's sampling as `pocket_tts` does, so its RTF reads lower than `pocket_tts` for the same weights — don't compare the two directly. `--threads` defaults to xn's one-per-logical-core, usually too many for a single autoregressive stream. For profiling rather than measuring, `pocket_tts --chrome-tracing` writes a Chrome trace for https://ui.perfetto.dev.
 
 ## WASM build
 
 From `ptts-wasm/`:
 
 ```
-make build        # wasm-pack build --target web --release, then copies www/ into pkg/
+make build        # the phonon-tts npm package in pkg/: wasm-pack output in pkg/wasm/, plus js/
 make profiling    # same but --profiling (no wasm-opt)
+make demo         # pkg/ copied to site/phonon-tts/, plus www/index.html
+make serve        # make demo, then serve site/ on :8080
+make test         # node --test js/test/*.test.mjs -- the wrapper's logic, no browser or model needed
 ```
 
-Requires `wasm-pack` (`cargo install wasm-pack`). Serve `pkg/` with any static server (e.g. `python3 -m http.server 8080`). The demo downloads model weights (~240 MB) from HuggingFace and caches them. Wasm SIMD flags (`+simd128,+relaxed-simd`) and `getrandom_backend="wasm_js"` come from `.cargo/config.toml`.
+Requires `wasm-pack` (`cargo install wasm-pack`) and node. `scripts/pack.mjs` assembles the package and stamps its version from `workspace.package.version`, so `js/package.json` deliberately has no `version`. It also deletes the `.gitignore` wasm-pack writes into `pkg/wasm/`: npm reads a subdirectory `.gitignore` as that directory's `.npmignore`, which would silently publish a package without its wasm. The demo downloads the q8 weights (~146 MB) from HuggingFace once and keeps them in the Cache API. Wasm SIMD flags (`+simd128,+relaxed-simd`) and `getrandom_backend="wasm_js"` come from `.cargo/config.toml`. `relaxed-simd` is required rather than an optimization: `xn`'s quantized kernels call `f32x4_relaxed_madd` unconditionally, so browsers without Relaxed SIMD cannot compile the module at all.
+
+The default checkpoint's URLs, pinned to HF revisions, are in `js/models.js`. Files are cached by URL, so bump those revisions together with the package version.
 
 ## Python build
 
@@ -90,27 +95,9 @@ From the repo root:
 ```
 maturin develop --manifest-path ptts-pyo3/Cargo.toml          # local install
 maturin build --release --manifest-path ptts-pyo3/Cargo.toml  # produce wheel
-cd ptts-pyo3 && python -m pytest -m 'not checkpoint'          # against an installed wheel
-ptts --lang en "hello world" -o out.wav                       # the console script
-python -m ptts --lang en "hello world" -o out.wav             # the same `main`
 ```
 
-Run the tests from `ptts-pyo3/`, so pytest reads the `testpaths` and `markers` in its
-pyproject.toml, and so `import ptts` finds the installed wheel rather than `python/`. Each
-wheel job in CI does the same, through `.github/actions/test-wheel`; musllinux is skipped
-because a musl wheel will not install on the glibc runner.
-
-The package is a mixed maturin layout: `python/ptts/` is the package and the cdylib lands in
-it as `ptts._ptts`. Renaming or adding anything on the Python surface means editing
-`python/ptts/__init__.py`, `python/ptts/__init__.pyi` and the `#[pymodule]` list together;
-`test_the_stubs_cover_everything_the_extension_exports` catches the stub half of that and
-`test_all_covers_everything_the_extension_exports` the re-export half, by diffing
-`dir(ptts._ptts)` against `__all__`. `[project.scripts]` installs the `ptts` command, which is
-what `uvx ptts` and `pipx run ptts` run; `python/ptts/__main__.py` is the whole of it. `--lang`
-is required there as it is on `pocket_tts` and `ptts-ws-server`, but checked by hand rather
-than by argparse, so that `--build-info` still works without one.
-
-Release wheels are produced by `.github/workflows/maturin-pub.yml` (Linux x86_64 manylinux + musllinux, Windows x64, macOS aarch64, sdist), and a `v*` tag is what publishes them. It is autogenerated — regenerate with `maturin generate-ci github -m ptts-pyo3/Cargo.toml` rather than hand-editing, but three edits are hand-added and a regeneration drops them: the `test-wheel` step in each wheel job; the pinned `python-version` in each wheel job, because `3.x` floats to the newest release and the test step can only install a wheel whose tag `--find-interpreter` produced; and every job deleting `.cargo/config.toml` and setting `RUSTFLAGS` itself, because `target-cpu=native` in a published wheel means whatever CPU the runner had. Published x86_64 wheels target `x86-64-v3` — `xn` selects its quantized kernels with `cfg!(target_feature = "avx")` at compile time, so a lower baseline silently costs every `q8_0` path its AVX kernels.
+Release wheels are produced by `.github/workflows/maturin-pub.yml` (Linux x86_64 manylinux + musllinux, Windows x64, macOS aarch64, sdist), and a `v*` tag is what publishes them. It is autogenerated — regenerate with `maturin generate-ci github -m ptts-pyo3/Cargo.toml` rather than hand-editing, but one edit is hand-added and a regeneration drops it: every job deletes `.cargo/config.toml` and sets `RUSTFLAGS` itself, because `target-cpu=native` in a published wheel means whatever CPU the runner had. Published x86_64 wheels target `x86-64-v3` — `xn` selects its quantized kernels with `cfg!(target_feature = "avx")` at compile time, so a lower baseline silently costs every `q8_0` path its AVX kernels.
 
 `pyproject.toml` deliberately has no `features` key under `[tool.maturin]`: a `--features` on the maturin command line replaces that list rather than adding to it, so `pyo3/extension-module` lives in `ptts-pyo3/Cargo.toml` where the macOS job's `--features accelerate` cannot drop it.
 
@@ -121,7 +108,7 @@ The library implements Pocket TTS: text → tokens → flow-matching language mo
 `ptts/src/lib.rs` exposes a single `Tokenizer` trait (`encode` / `decode`) so each binding plugs in its own implementation:
 
 - `say` / `pocket_tts` / `bench` examples, `ptts-pyo3` and `ptts-ws-server`: `ptts::tok::Tok` (the `hf` feature), a Hugging Face `tokenizers` wrapper. The examples find the file beside the weights and pass it to `SynthBuilder::tokenizer_file`.
-- `ptts-wasm`: the same `ptts::tok::Tok`, built from the `tokenizer.json` the demo fetches and handed to `Model::new`; the browser passes text, not token ids.
+- `ptts-wasm`: the same `ptts::tok::Tok`, built from the `tokenizer.json` the `phonon-tts` worker fetches and handed to `Model::new`; the browser passes text, not token ids.
 
 Every frontend loads a `tokenizer.json` and nothing else, and none is bundled or defaulted to: each checkpoint has its own vocabulary, and loading the wrong one yields plausible audio from the wrong ids, so `Tok::open` refuses to guess. `pocket_tts --tokenizer <path>` and `bench --tokenizer <path>` override where the examples look; otherwise they, `ptts-pyo3` and `ptts-ws-server` all expect `tokenizer.json` in the HF repo or beside the config. A checkpoint that carries only a `tokenizer.model` needs converting once with `scripts/convert-tokenizer.py`, which writes the equivalent json.
 
@@ -140,7 +127,7 @@ still drive `TTSModel` directly.
 
 Generation is streaming and stateful: callers `init_flow_lm_state(batch, seq_len)`, then `prompt_text*` / `prompt_audio` to seed the state, then step-decode latents and feed them into `MimiDecoderState`. `lsd_decode_steps` controls flow-matching solver steps; `eos_threshold` controls termination. The default `TTSConfig::v202601` configuration is the canonical one consumed by all three frontends.
 
-Text normalization (`ptts/src/preprocess.rs`) is mandatory to choose and has no default. `preprocess::Normalize` is either `For(lang)` or `Off`, and it is a required third argument to `SynthBuilder::new`, a required `--lang` flag on `pocket_tts`, `bench` and `ptts-ws-server`, a required keyword-only `lang=` on `ptts-pyo3`, and a required third argument to the `ptts-wasm` `Model` constructor. The reason it is not defaulted rather than defaulted to English: normalization makes the model noticeably better, but the spoken forms of `@`, `+` and `=` are per-language, so normalizing German as English says "at" where it should say "ät" -- guessing is worse than doing nothing. `Normalize::Off` (`--lang none`, `lang="none"`) hands text to the tokenizer as written.
+Text normalization (`ptts/src/preprocess.rs`) is mandatory to choose and has no default. `preprocess::Normalize` is either `For(lang)` or `Off`, and it is a required third argument to `SynthBuilder::new`, a required `--lang` flag on `pocket_tts`, `bench` and `ptts-ws-server`, a required keyword-only `lang=` on `ptts-pyo3`, and a required `lang` argument to the `ptts-wasm` `Model` constructor and to `PhononTTS.load` in `phonon-tts`. The reason it is not defaulted rather than defaulted to English: normalization makes the model noticeably better, but the spoken forms of `@`, `+` and `=` are per-language, so normalizing German as English says "at" where it should say "ät" -- guessing is worse than doing nothing. `Normalize::Off` (`--lang none`, `lang="none"`) hands text to the tokenizer as written.
 
 `Normalize::apply` is the one implementation, and it has to run before `prepare_text_prompt`, whose leading-space padding of short text it would otherwise collapse. `Synth::normalization` / `Session::normalization` hand it to callers that tokenize by hand (`ptts-ws-server`, `ptts-wasm`) rather than going through `say`/`stream`.
 
