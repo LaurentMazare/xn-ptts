@@ -6,7 +6,7 @@ Try it online [here](https://laurentmazare.github.io/pocket-tts).
 
 ## Prerequisites
 
-Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/):
+Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) 0.12 or later, for `--no-pack`, and Node 22.7 or later:
 
 ```bash
 cargo install wasm-pack
@@ -20,7 +20,11 @@ From the `ptts-wasm/` directory:
 make build
 ```
 
-This runs `wasm-pack build` and copies `www/` into `pkg/`.
+This runs `wasm-pack build` into `pkg/wasm/`, then `scripts/pack.mjs`, which assembles the
+`phonon-tts` npm package in `pkg/`. See [`js/README.md`](js/README.md) for using it.
+
+`pkg/` is a package, not a site: it no longer holds the demo page, so the Run section below
+does not apply until `make demo` arrives with the demo itself.
 
 ## Run
 
