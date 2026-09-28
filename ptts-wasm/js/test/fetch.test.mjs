@@ -51,4 +51,22 @@ test('fetchBytes reports HTTP errors', async () => {
   await assert.rejects(fetchBytes('https://x/missing', { cache: false }), /HTTP 404/);
 });
 
-// ---- wav ----
+
+test('fetchBytes grows its buffer when the server sends no content-length', async () => {
+  // The path a chunked response with no length takes: start at 1 MiB, double, then trim.
+  const chunk = new Uint8Array(700_000).map((_, i) => i % 253);
+  globalThis.fetch = async () =>
+    new Response(
+      new ReadableStream({
+        start(c) {
+          for (let i = 0; i < 3; i++) c.enqueue(chunk);
+          c.close();
+        },
+      }),
+    );
+  const progress = [];
+  const bytes = await fetchBytes('https://x/big', { cache: false, onProgress: (p) => progress.push(p) });
+  assert.equal(bytes.length, 3 * chunk.length, 'trimmed back to what arrived');
+  assert.deepEqual(bytes.subarray(2 * chunk.length), chunk, 'the last chunk survived the growth');
+  assert.equal(progress.at(-1).total, null, 'no total to report');
+});

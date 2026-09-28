@@ -14,5 +14,9 @@ test('encodeWav writes a 16-bit mono header and clips', async () => {
   assert.equal(wav.getUint32(24, true), 24000);
   assert.equal(wav.getUint32(40, true), 8);
   assert.deepEqual([0, 1, 2, 3].map((i) => wav.getInt16(44 + 2 * i, true)), [0, 32767, -32768, 32767]);
+});
+
+test('concatPcm joins frames in order', () => {
   assert.deepEqual(concatPcm([new Float32Array([1]), new Float32Array([2, 3])]), new Float32Array([1, 2, 3]));
+  assert.deepEqual(concatPcm([]), new Float32Array(0));
 });
