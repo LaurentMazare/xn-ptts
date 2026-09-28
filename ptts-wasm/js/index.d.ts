@@ -36,9 +36,11 @@ export interface LoadOptions {
    */
   lang: Lang;
   /**
-   * Which word rewrites run on the normalized text: `'all'` (the default), `'none'`, or a
-   * comma-separated list of rule names, of which there is one today, `'numbers'`. Ignored
-   * when `lang` is `'none'`, which does not normalize at all.
+   * Which word rewrites run on the normalized text: `'all'` (the default), `'none'` (or
+   * `'off'`), or a comma-separated list of rule names, of which there is one today,
+   * `'numbers'`. Case and surrounding space do not matter, and `'all'` / `'none'` / `'off'`
+   * count only on their own, not inside a list. Ignored when `lang` is `'none'`, which does
+   * not normalize at all.
    */
   rewrites?: string;
   /** Default `'q8'`. */

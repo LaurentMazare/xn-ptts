@@ -70,7 +70,7 @@ test('rewrites is checked before anything is downloaded, then handed to the work
   // report the bad rule only once they had arrived.
   await assert.rejects(
     PhononTTS.load({ lang: 'en', rewrites: 'numbers,colours', model: MODEL }),
-    /unknown rewrite rule\(s\) colours/,
+    /unknown rewrite rule\(s\) 'colours'/,
   );
   assert.equal(FakeWorker.last?.init, undefined, 'no worker should have been started');
 
@@ -80,6 +80,26 @@ test('rewrites is checked before anything is downloaded, then handed to the work
   // Left out, it stays undefined all the way to `Model::new`, whose own default is every rule.
   await load();
   assert.equal(FakeWorker.last.init.rewrites, undefined);
+});
+
+test('the rewrites check accepts exactly what Rules::parse accepts', async () => {
+  // `Rules::parse` trims and lowercases, and takes `off` as a synonym for `none`.
+  for (const value of ['off', 'ALL', ' none ', 'Numbers', 'numbers']) {
+    await PhononTTS.load({ lang: 'en', rewrites: value, model: MODEL, workerUrl: 'worker.js' });
+    assert.equal(FakeWorker.last.init.rewrites, value, 'passed through as written');
+  }
+  // `all` and `none` are whole-string values in Rust, so a list containing one is an error
+  // there. Catching it here is the whole point: otherwise it surfaces after the download.
+  for (const value of ['all,numbers', 'none,numbers', '', 'numbers,colours']) {
+    await assert.rejects(
+      PhononTTS.load({ lang: 'en', rewrites: value, model: MODEL }),
+      /unknown rewrite rule/,
+    );
+  }
+  await assert.rejects(
+    PhononTTS.load({ lang: 'en', rewrites: ['numbers'], model: MODEL }),
+    /rewrites must be a string/,
+  );
 });
 
 test('stream yields every frame in order, then its stats', async () => {

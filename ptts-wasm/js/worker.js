@@ -92,6 +92,12 @@ async function handleGenerate(id, { text, voice, temperature, seed }) {
   let stepMsMin = Infinity;
   try {
     outer: for (;;) {
+      // Checked here as well as in the frame loop: a cancel that lands on the yield after a
+      // chunk's last frame would otherwise still prompt the next chunk before it took effect.
+      if (cancelled.has(id)) {
+        stats.cancelled = true;
+        break;
+      }
       const p0 = performance.now();
       const tokens = model.next_chunk();
       if (tokens === undefined) break;

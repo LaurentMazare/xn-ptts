@@ -12,8 +12,10 @@ export { clearCache } from './fetch.js';
 export { encodeWav, concatPcm } from './wav.js';
 
 const LANGS = ['en', 'fr', 'de', 'es', 'pt', 'none'];
-/** Rewrite rules the Rust side knows, beyond `'all'` and `'none'`. */
+/** Rewrite rules the Rust side knows, beyond the whole-string values below. */
 const RULES = ['numbers'];
+/** Values `Rules::parse` accepts only as the entire string, never inside a list. */
+const WHOLE_RULES = ['all', 'none', 'off'];
 
 export class PhononTTS {
   #worker;
@@ -60,16 +62,20 @@ export class PhononTTS {
       throw new TypeError(`quant must be 'f32' or 'q8', got '${quant}'`);
     }
     // Checked here rather than left to Rust: `load` is async and the error would otherwise
-    // arrive after the weights had been downloaded.
+    // arrive after the weights had been downloaded. This mirrors `Rules::parse`, which trims
+    // and lowercases the whole string, takes `all`, `none` and `off` only on their own, and
+    // otherwise reads a comma-separated list of rule names. Accepting anything it rejects
+    // would put the error back after the download, which is what this check is here to avoid.
     if (rewrites !== undefined) {
-      const unknown = rewrites
-        .split(',')
-        .map((r) => r.trim())
-        .filter((r) => r !== 'all' && r !== 'none' && !RULES.includes(r));
+      if (typeof rewrites !== 'string') throw new TypeError('rewrites must be a string');
+      const value = rewrites.trim().toLowerCase();
+      const unknown = WHOLE_RULES.includes(value)
+        ? []
+        : value.split(',').map((r) => r.trim()).filter((r) => !RULES.includes(r));
       if (unknown.length > 0) {
         throw new TypeError(
-          `unknown rewrite rule(s) ${unknown.join(', ')}: expected 'all', 'none', or ` +
-            RULES.map((r) => `'${r}'`).join(', '),
+          `unknown rewrite rule(s) ${unknown.map((r) => `'${r}'`).join(', ')}: expected ` +
+            `${WHOLE_RULES.map((r) => `'${r}'`).join(', ')}, or ${RULES.map((r) => `'${r}'`).join(', ')}`,
         );
       }
     }
@@ -117,7 +123,7 @@ export class PhononTTS {
       e.preventDefault?.();
       // A dead worker never replies: fail what is pending and refuse what comes next, rather
       // than leaving later requests waiting forever.
-      const error = new Error(`phonon-tts worker failed: ${e.message ?? 'could not start'}`);
+      const error = new Error(`phonon-tts worker failed: ${e.message || 'could not start'}`);
       this.#disposed = true;
       this.#failure = error;
       worker.terminate();
