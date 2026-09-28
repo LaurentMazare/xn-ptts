@@ -12,6 +12,7 @@ const Q8_REPO = `${HF}/lmz/pocket-tts-without-voice-cloning-q8/resolve/c2d23606a
 
 const VOICES = ['alba', 'marius', 'javert', 'jean', 'fantine', 'cosette', 'eponine', 'azelma'];
 
+/** @type {import('./index.js').ModelSpec} */
 export const DEFAULT_MODEL = Object.freeze({
   weights: Object.freeze({
     f32: `${F32_REPO}/tts_b6369a24.safetensors`,
