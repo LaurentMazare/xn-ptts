@@ -280,16 +280,6 @@ impl Normalize {
     }
 }
 
-fn is_emoji(c: char) -> bool {
-    let c = c as u32;
-    matches!(c,
-        0x1F600..=0x1FAFF |
-        0x2600..=0x27BF |
-        // Flags (regional indicator symbols)
-        0x1F1E6..=0x1F1FF
-    )
-}
-
 /// Character sink that keeps the output free of the punctuation pile-ups the substitutions
 /// below would otherwise produce: a `.` or `,` swallows any whitespace and punctuation
 /// immediately before it, and runs of whitespace collapse to a single space.
@@ -340,6 +330,65 @@ impl StringAppender {
     }
 }
 
+fn is_emoji(c: char) -> bool {
+    let c = c as u32;
+    matches!(c,
+        0x1F600..=0x1FAFF |
+        0x2600..=0x27BF |
+        // Flags (regional indicator symbols)
+        0x1F1E6..=0x1F1FF
+    )
+}
+
+/// Unicode characters that read as a double quotation mark: the curly and
+/// reversed variants, the low-9 ones sitting on the baseline (German/Czech
+/// opening quotes), double primes, dingbat and CJK corner quotes, and the
+/// fullwidth form.
+fn is_double_quote(c: char) -> bool {
+    matches!(
+        c,
+        '»' | '«'
+            | '“'
+            | '”'
+            | '„'
+            | '‟'
+            | '″'
+            | '‶'
+            | '⹂'
+            | '❝'
+            | '❞'
+            | '❠'
+            | '〝'
+            | '〞'
+            | '〟'
+            | '＂'
+    )
+}
+
+/// Unicode characters that read as a single quotation mark or apostrophe:
+/// the curly and reversed variants, the low-9 one sitting on the baseline,
+/// primes, dingbat quotes, the fullwidth form and the modifier letter and
+/// accent characters commonly typed in place of an apostrophe.
+fn is_single_quote(c: char) -> bool {
+    matches!(
+        c,
+        '‘' | '’'
+            | '‚'
+            | '‛'
+            | '′'
+            | '‵'
+            | '❛'
+            | '❜'
+            | '❟'
+            | '＇'
+            | 'ʼ'
+            | 'ʻ'
+            | 'ʹ'
+            | '´'
+            | '`'
+    )
+}
+
 /// Rewrite `input` into the character set the model was trained on.
 ///
 /// Typographic quotes, dashes, bullets, arrows and emoji are dropped or folded to their ASCII
@@ -349,8 +398,8 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
     let mut res = StringAppender::new();
     for c in input.chars() {
         match c {
-            '“' | '”' | '"' => res.push_whitespace(),
-            '’' | '‘' => res.push('\''),
+            c if is_double_quote(c) => res.push('"'),
+            c if is_single_quote(c) => res.push('\''),
             '‐' | '‑' | '‒' | '―' => res.push('-'),
             // The two dashes below are not - (ascii 45) but similar unicode chars.
             '–' | '*' | '—' | '[' | ']' | '{' | '}' => res.push_whitespace(),
