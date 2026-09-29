@@ -392,11 +392,14 @@ fn is_single_quote(c: char) -> bool {
 /// Rewrite `input` into the character set the model was trained on.
 ///
 /// Typographic quotes, dashes, bullets, arrows and emoji are dropped or folded to their ASCII
-/// equivalents; `@`, `+` and `=` are spelled out in `lang`; `;`, `:` and parentheses become
-/// commas, which is how the model is asked to pause.
+/// equivalents; `@`, `+` and `=` are spelled out in `lang`; `;`, parentheses and a `:` with
+/// whitespace on either side become commas, which is how the model is asked to pause. A `:`
+/// between two non-space characters, as in `10:30`, is kept.
 pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
     let mut res = StringAppender::new();
-    for c in input.chars() {
+    let mut chars = input.chars().peekable();
+    let mut prev = None;
+    while let Some(c) = chars.next() {
         match c {
             c if is_double_quote(c) => res.push('"'),
             c if is_single_quote(c) => res.push('\''),
@@ -422,6 +425,11 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
                 res.push_str(lang.special_chars().equals);
                 res.push_whitespace();
             }
+            ':' if !prev.is_none_or(char::is_whitespace)
+                && !chars.peek().is_none_or(|c| c.is_whitespace()) =>
+            {
+                res.push(':')
+            }
             ';' | ':' | '(' | ')' => {
                 res.pop_whitespace();
                 res.push(',');
@@ -435,6 +443,7 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
                 }
             }
         }
+        prev = Some(c);
     }
     let text = res.into_string();
     if rules == Rules::NONE {
@@ -462,9 +471,13 @@ mod tests {
             ("user@host @home", "user at host at home"),
             ("café résumé 日本語", "café résumé 日本語"),
             ("hello 😀 flag 🇫🇷 sun ☀", "hello flag sun"),
-            // ';', ':' and '(' / ')' all collapse to ", " (comma + single space).
-            ("a;b:c", "a, b, c"),
-            ("time: 10:30", "time, 10, 30"),
+            // ';', '(' / ')' and a ':' next to whitespace collapse to ", " (comma + single
+            // space); a ':' between two non-space characters is kept.
+            ("a;b:c", "a, b:c"),
+            ("time: 10:30", "time, 10:30"),
+            ("a :b", "a, b"),
+            ("note:", "note,"),
+            (":start", ", start"),
             ("; leading", ", leading"),
             ("hello (world)", "hello, world,"),
             // Surrounding whitespace is absorbed into the comma replacement.
@@ -481,7 +494,7 @@ mod tests {
             ),
             (
                 "The conference will be held on Tuesday, March 15th at 3:30 PM.",
-                "The conference will be held on Tuesday, March 15th at 3, 30 PM.",
+                "The conference will be held on Tuesday, March 15th at 3:30 PM.",
             ),
         ];
         for (input, expected) in cases {
