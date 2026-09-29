@@ -294,8 +294,10 @@ impl StringAppender {
 
     fn push(&mut self, c: char) {
         if c == '.' || c == ',' {
-            while self.buffer.last().is_some_and(|l| l.is_whitespace() || l.is_ascii_punctuation())
-            {
+            // Quotes are kept: dropping a closing one would leave the opening one unbalanced.
+            while self.buffer.last().is_some_and(|&l| {
+                l.is_whitespace() || (l.is_ascii_punctuation() && l != '"' && l != '\'')
+            }) {
                 self.buffer.pop();
             }
         }
@@ -462,7 +464,7 @@ mod tests {
         let cases: &[(&str, &str)] = &[
             ("Hello, world!", "Hello, world!"),
             ("", ""),
-            ("“hello” world it's", "hello world it's"),
+            ("“hello” world it's", "\"hello\" world it's"),
             ("a‐b‑c‒d―e", "a-b-c-d-e"),
             ("a–b—c", "a b c"),
             ("foo (bar) [baz] {qux} *quux*", "foo, bar, baz qux quux"),
@@ -487,7 +489,10 @@ mod tests {
             ("a   b\t\tc\n\nd", "a b c d"),
             ("hello   ", "hello"),
             ("a • b • c", "a b c"),
-            ("“Hello”; please email user@host (now)… 🚀", "Hello, please email user at host, now."),
+            (
+                "“Hello”; please email user@host (now)… 🚀",
+                "\"Hello\", please email user at host, now.",
+            ),
             (
                 "Numbers: one, two, three, four, five. Special items: at sign, hash, dollar, percent.",
                 "Numbers, one, two, three, four, five. Special items, at sign, hash, dollar, percent.",
