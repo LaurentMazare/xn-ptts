@@ -201,6 +201,11 @@ pub struct SpeechOptions {
     /// Classifier-free guidance coefficient. `1.0` and `None` both disable it.
     pub cfg_coef: Option<f32>,
     pub max_tokens_per_chunk: Option<usize>,
+    /// Values for the model's per-state summed conditionings, by name: a LUT value, or a float
+    /// as a string for a continuous one such as `duration_delta`. A conditioning left out gets
+    /// what training feeds for a dropped attribute, and so does the CFG null branch always.
+    /// These override a LUT voice's own value.
+    pub conditions: BTreeMap<String, String>,
 }
 
 impl SpeechOptions {
@@ -228,6 +233,12 @@ impl SpeechOptions {
         self.max_tokens_per_chunk = Some(max_tokens);
         self
     }
+
+    /// Set one summed conditioning, see [`Self::conditions`].
+    pub fn condition(mut self, name: impl Into<String>, value: impl ToString) -> Self {
+        self.conditions.insert(name.into(), value.to_string());
+        self
+    }
 }
 
 /// Defaults applied to every request unless overridden per call.
@@ -238,6 +249,7 @@ struct Defaults {
     seed: u64,
     cfg_coef: Option<f32>,
     max_tokens_per_chunk: usize,
+    conditions: BTreeMap<String, String>,
 }
 
 /// Merge per-request overrides onto the settings a [`SynthBuilder`] was given.
@@ -268,6 +280,7 @@ fn resolve(defaults: &Defaults, opts: &SpeechOptions) -> Result<Defaults> {
             _ => None,
         },
         max_tokens_per_chunk: opts.max_tokens_per_chunk.unwrap_or(defaults.max_tokens_per_chunk),
+        conditions: opts.conditions.clone(),
     })
 }
 
@@ -501,12 +514,18 @@ impl<Q: BackendQ> SynthOf<Q> {
     fn session_at(&self, settings: &Defaults, seq_budget: usize) -> Result<SessionOf<Q>> {
         let voice = settings.voice.as_deref();
         let (mut base, cfg_base) = self.primed_state(voice, seq_budget, settings.cfg_coef)?;
-        // The voice's LUT values go on the conditioned branch only, after priming, so a primed
-        // prefix is cached without them. The null branch keeps the dropped-attribute state every
-        // fresh state starts with.
-        if let Some(sum) = voice.and_then(|v| self.voices.get(v)).and_then(|v| v.sum.as_ref()) {
-            let values = sum.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
-            self.model.set_sum_conditions(&mut base, &values)?;
+        // The voice's LUT values, then the request's conditions over them, on the conditioned
+        // branch only and after priming, so a primed prefix is cached without them. The null
+        // branch keeps the dropped-attribute state every fresh state starts with.
+        let voice_sum = voice.and_then(|v| self.voices.get(v)).and_then(|v| v.sum.as_ref());
+        let mut values: HashMap<String, Option<String>> = HashMap::new();
+        for (k, v) in voice_sum.into_iter().flatten().chain(settings.conditions.iter()) {
+            values.insert(k.clone(), Some(v.clone()));
+        }
+        if !values.is_empty() {
+            self.model
+                .set_sum_conditions(&mut base, &values)
+                .map_err(|e| Error::invalid_argument(e.to_string()))?;
         }
         Ok(SessionOf {
             prompt_len: primed_len(&base),
@@ -1468,6 +1487,7 @@ impl SynthBuilder {
                 seed: self.seed,
                 cfg_coef: self.cfg_coef,
                 max_tokens_per_chunk: self.max_tokens_per_chunk,
+                conditions: BTreeMap::new(),
             },
             normalize: self.normalize,
         };
@@ -1884,6 +1904,7 @@ mod tests {
             seed: 42,
             cfg_coef: None,
             max_tokens_per_chunk: 50,
+            conditions: BTreeMap::new(),
         }
     }
 
