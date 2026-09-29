@@ -585,18 +585,14 @@ impl<Q: BackendQ> SynthOf<Q> {
 
         if let Some((_, Voice { sum: Some(sum), .. })) = voice {
             // A summed-LUT voice: nothing to prime, the value is added to every audio frame.
-            // The null branch gets each LUT's learnt padding, as training does for a dropped
-            // attribute.
+            // The null branch is a fresh state, whose LUTs `init_flow_lm_state` sets as dropped
+            // attributes, as training does.
             let values = sum.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
             let mut state = self.model.init_flow_lm_state(1, seq_budget)?;
             self.model.set_sum_conditions(&mut state, &values)?;
             let cfg_state = match cfg_coef {
                 None => None,
-                Some(coef) => {
-                    let mut null_state = self.model.init_flow_lm_state(1, seq_budget)?;
-                    self.model.set_sum_conditions(&mut null_state, &Default::default())?;
-                    Some((coef, null_state))
-                }
+                Some(coef) => Some((coef, self.model.init_flow_lm_state(1, seq_budget)?)),
             };
             return Ok((state, cfg_state));
         }
@@ -1432,7 +1428,8 @@ impl SynthBuilder {
 
         // A model whose voice is a summed LUT (no speaker prompt) gets each of its values as a
         // voice, named by the value. Only with a single summed LUT: with several, a voice would
-        // have to pick a value in each.
+        // have to pick a value in each. A voice added below or later under the same name
+        // replaces the LUT value's voice; LUT voices are never primed, so nothing is cached.
         if let [lut] = synth.model.sum_luts() {
             let empty = Tensor::zeros((1, 0, synth.cfg.flow_lm.d_model), &device)?;
             for value in lut.values.iter() {
