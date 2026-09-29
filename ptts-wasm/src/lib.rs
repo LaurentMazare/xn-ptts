@@ -327,6 +327,8 @@ impl Model {
             ModelInner::Q8(_) => StateInner::Q8(wrap_state(raw)),
         };
         let mimi_state = dispatch!(&self.inner, &mut tts_state, |m, s| {
+            // `wrap_state` has no model to ask, so summed LUTs start as dropped attributes here.
+            m.set_sum_conditions(s, &Default::default())?;
             m.prompt_text(s, &chunk.tokens)?;
             m.init_mimi_state(1)?
         });

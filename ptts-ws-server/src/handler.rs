@@ -43,7 +43,7 @@ async fn serve(socket: WebSocket, app: AppState) -> Result<()> {
 
 enum SessionState {
     Awaiting,
-    Ready { session: Session, text_buffer: String, stream_id: u32, encoder: Box<Encoder> },
+    Ready { session: Box<Session>, text_buffer: String, stream_id: u32, encoder: Box<Encoder> },
 }
 
 async fn run_session(
@@ -227,7 +227,7 @@ async fn handle_setup(
         }
     }
     Ok(Some(SessionState::Ready {
-        session,
+        session: Box::new(session),
         text_buffer: String::new(),
         stream_id: 0,
         encoder: Box::new(encoder),
