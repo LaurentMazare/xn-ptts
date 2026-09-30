@@ -1,89 +1,21 @@
-# wasm-pocket-tts
+# Pocket TTS in WebAssembly
 
-WebAssembly build of [Pocket TTS](../ptts/) — run text-to-speech directly in the browser.
+`ptts-wasm` runs the Rust Pocket TTS model in a browser. It exports a low-level [`Model`](src/lib.rs) that generates one 80 ms frame per call. The caller supplies weights, the matching `tokenizer.json`, and a voice safetensors file.
 
-Try it online [here](https://laurentmazare.github.io/pocket-tts).
+## Build and run the demo
 
-## Prerequisites
-
-Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/):
-
-```bash
-cargo install wasm-pack
-```
-
-## Build
-
-From the `ptts-wasm/` directory:
+Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) and build from this directory:
 
 ```bash
 make build
-```
-
-This runs `wasm-pack build` and copies `www/` into `pkg/`.
-
-## Run
-
-Serve the `pkg/` directory with any HTTP server, for example:
-
-```bash
-cd ptts-wasm/pkg
+cd pkg
 python3 -m http.server 8080
 ```
 
-Then open http://localhost:8080 in your browser. The page will download the
-model weights from HuggingFace on first use (~240 MB) and cache them for subsequent generations.
+Open `http://localhost:8080`. The demo fetches model files from Hugging Face when you load a model. It offers f32 and q8 weights; the q8 file is about 146 MB. The build requires WebAssembly Relaxed SIMD support in the browser.
 
-## The JS API
+## Raw JavaScript API
 
-A browser has no threads to hand generation to, so the module generates one frame per call
-and the caller yields to the event loop between them. Long text is split into
-sentence-aligned chunks, and each chunk is prompted before its frames are generated, which
-makes the loop two levels deep:
+The `Model` constructor takes the weights and tokenizer as bytes, an optional `config.json` as bytes (or `undefined` for the original Pocket TTS architecture), `"f32"` or `"q8"`, and a required normalization language (`"en"`, `"fr"`, `"de"`, `"es"`, `"pt"`, or `"none"`). An optional final argument selects text rewrite rules.
 
-```js
-const model = new Model(modelWeights, tokenizerJson, configJson, quant, lang, rewrites);
-const voiceIndex = model.add_voice(voiceBytes);
-
-// Splits and tokenizes. Runs no model, and returns the number of chunks.
-model.start_generation(voiceIndex, text, temperature, seed);
-
-while (true) {
-  // Prompts the next chunk's text, or returns undefined once every chunk is done.
-  const numTokens = model.next_chunk();
-  if (numTokens === undefined) break;
-
-  while (true) {
-    // 80ms of mono PCM at model.sample_rate(), or undefined at the end of the chunk.
-    const pcm = model.generation_step();
-    if (!pcm) break;
-    // ... play or buffer pcm ...
-  }
-}
-```
-
-`model.stop_generation()` drops a generation in progress. An error thrown by `next_chunk` or
-`generation_step` also drops it, so a caller that swallows one cannot carry on and silently
-lose a sentence -- every later call reports the end instead.
-
-`configJson` is a checkpoint's `config.json`, or `undefined` for the original Pocket TTS
-architecture; `rewrites` may be omitted. See `Model::new` in `src/lib.rs` for `quant`, `lang`
-and what a supplied config does not change.
-
-### Incompatible with earlier builds
-
-`Model::new` and `start_generation` both took fewer arguments before, and the old positional
-calls now bind the wrong parameters at runtime rather than failing to build:
-
-| Before | Now |
-| --- | --- |
-| `new Model(weights, tokenizer, quant, lang, rewrites)` | `new Model(weights, tokenizer, configJson, quant, lang, rewrites)` |
-| `start_generation(voice, text, temperature)` -> token count | `start_generation(voice, text, temperature, seed)` -> chunk count |
-| `generation_step()` until `undefined` | `next_chunk()` per chunk, `generation_step()` within it |
-
-The seed was a hardcoded 42 and is now the caller's; one noise source covers every chunk, so
-a seed fixes the whole utterance.
-
-## Todo
-
-- Voice cloning.
+`start_generation` splits and tokenizes the text; `next_chunk` prompts each chunk; `generation_step` produces PCM until that chunk ends. `stop_generation()` cancels the current run. The page in [`www/`](www/) shows how to fetch files and run generation in a worker.

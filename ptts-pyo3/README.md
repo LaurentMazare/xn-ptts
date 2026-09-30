@@ -1,11 +1,11 @@
-# ptts
+# ptts for Python
 
-Text to 24 kHz speech, on device. Python bindings for [Pocket TTS][repo], a Rust runtime for
-the [`kyutai/pocket-tts`][model] model.
+Python bindings for the Rust [Pocket TTS runtime](../README.md). The package produces 24 kHz mono speech without PyTorch.
 
 ```bash
-uvx ptts --lang en "Hello world" -o out.wav   # nothing to install
-pip install ptts                              # or keep it around
+uvx ptts --lang en "Hello world" -o out.wav
+# Or install the package for Python code:
+pip install ptts
 ```
 
 ```python
@@ -15,90 +15,34 @@ tts = ptts.TTS(lang="en")
 tts.save("out.wav", "Hello world")
 ```
 
-## Using it
+The first run downloads the default [`kyutai/pocket-tts`](https://huggingface.co/kyutai/pocket-tts) checkpoint. `lang` is a required keyword argument: `en`, `fr`, `de`, `es`, or `pt` normalizes text before tokenization; `none` leaves it as written.
+
+## Speech and voices
 
 ```python
-import ptts
+tts = ptts.TTS(lang="en")
+print(tts.voices)
 
-tts = ptts.TTS(lang="en")                 # downloads the checkpoint on first use
-print(tts.voices)                         # ['alba', 'azelma', 'cosette', ...]
+pcm = tts.synth("Hello", voice="marius")  # 1-D float32 NumPy array
+seconds = tts.save("out.wav", "Hello")    # mono 16-bit WAV
 
-pcm = tts.synth("Hello", voice="marius")  # 1-D float32 numpy array
-seconds = tts.save("out.wav", "Hello")    # straight to a mono 16-bit WAV
-
-for chunk in tts.stream("A longer piece of text."):
-    play(chunk)                           # audio as the decoder produces it
-```
-
-Streaming is cancellable — leave the block and the worker threads stop:
-
-```python
-with tts.stream(text) as audio:
+with tts.stream("A longer piece of text.") as audio:
     for chunk in audio:
-        if user_interrupted():
-            break
+        print(chunk.shape)
 ```
 
-Ctrl-C works during a generation, not only between them.
+Leave the `with` block to stop a stream early. For a checkpoint with a speaker encoder, `tts.supports_voice_cloning` is true. Pass about ten seconds of float32 mono PCM at `tts.voice_prompt_sample_rate` to `tts.clone_voice("me", pcm)` and then use `voice="me"` in `synth`, `save`, or `stream`.
 
-### Language
-
-`lang` is required and keyword-only. Text is normalized before it is tokenized, and the spoken
-forms of `@`, `+` and `=` differ per language, so there is nothing safe to default to:
-
-```python
-ptts.TTS(lang="en")     # en, fr, de, es, pt
-ptts.TTS(lang="none")   # hand the text to the tokenizer as written
-```
-
-### Voices
-
-Bundled voices come with the checkpoint. To clone one, pass about ten seconds of speech as
-float32 PCM at `tts.voice_prompt_sample_rate` — no transcript needed:
-
-```python
-tts.clone_voice("me", my_pcm)
-tts.save("out.wav", "Now in my voice.", voice="me")
-```
-
-### Choosing a checkpoint and a backend
-
-```python
-ptts.TTS(lang="en", config="kyutai/pocket-tts")   # a Hugging Face repo id
-ptts.TTS(lang="en", config="model/config.json")   # a local checkpoint
-ptts.TTS(lang="en", device="cuda")                # see ptts.available_devices()
-ptts.TTS(lang="en", quant="q8_0")                 # smaller and faster on CPU
-```
+`ptts.TTS(lang="en", config="model/config.json")` loads a local checkpoint whose weights and `tokenizer.json` sit next to the config. `ptts.available_devices()` and `ptts.available_quants()` list options supported by the installed build; quantized weights require a matching GGUF checkpoint.
 
 ## Command line
 
-The wheel installs a `ptts` command, so `uvx ptts` and `pipx run ptts` need no install step.
-`python -m ptts` runs the same thing.
+The installed `ptts` command and `python -m ptts` share the same options:
 
 ```bash
 ptts --lang en "hello world" -o out.wav
 ptts --lang en --list-voices
-ptts --lang fr "bonjour" -v marius -q q8_0 -o out.wav
 ptts --help
 ```
 
-The first run downloads the checkpoint into the Hugging Face cache.
-
-## Errors
-
-Failures raise the exception their class calls for, so `except` can be specific:
-
-| Exception | Cause |
-|---|---|
-| `ValueError` | a bad argument — an unknown weight format, a mis-shaped array |
-| `LookupError` | an unknown voice, or a checkpoint file that is not there |
-| `NotImplementedError` | a backend this wheel was not built with, or cloning on a checkpoint without a speaker encoder |
-| `PermissionError` | a gated Hugging Face repo — the message says how to authenticate |
-| `RuntimeError` | anything else |
-
-## Types
-
-The package ships `py.typed` and complete stubs, so editors and `mypy` see the full API.
-
-[repo]: https://github.com/gradium-ai/xn-ptts
-[model]: https://huggingface.co/kyutai/pocket-tts
+`-m` selects a Hugging Face repo with `config.json` or a local config file. `-v` selects a voice, `-d` a compiled-in device, and `-q` a weight format. The package ships type stubs and `py.typed`.
