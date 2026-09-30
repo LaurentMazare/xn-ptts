@@ -533,3 +533,19 @@ pub fn prepare_text_prompt(text: &str) -> (String, usize) {
     }
     (text, frames_after_eos)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_text_is_not_padded() {
+        // pocket-tts prepended 8 spaces to texts of fewer than 5 words; audium-trained models
+        // never see those spaces, and short texts go wrong with them.
+        assert_eq!(prepare_text_prompt("not a thing"), ("Not a thing.".to_string(), 3));
+        assert_eq!(
+            prepare_text_prompt("one two three four five"),
+            ("One two three four five.".to_string(), 1)
+        );
+    }
+}

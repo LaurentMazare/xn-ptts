@@ -269,9 +269,6 @@ impl Normalize {
     /// Normalize `text`, or hand it back untouched when this is [`Self::OFF`].
     ///
     /// Borrows when off, so opting out costs no allocation per request.
-    ///
-    /// This has to run before `prepare_text_prompt`, which pads short text with leading spaces
-    /// that normalization would collapse away.
     pub fn apply<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
         match self.lang {
             None => std::borrow::Cow::Borrowed(text),
