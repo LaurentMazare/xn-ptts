@@ -196,6 +196,18 @@ jobs:
         env:
           RUSTFLAGS: -C target-feature=+simd128,+relaxed-simd
         run: cargo check -p ptts-wasm --target wasm32-unknown-unknown --all-targets
+      # The JS wrapper that `phonon-tts` ships around this build. Its tests need neither a
+      # browser nor a model.
+      #
+      # Node is pinned rather than taken from the runner image. `js/` has no `package.json`
+      # until the package itself lands, so loading its `.js` modules relies on module-syntax
+      # detection, which is only on by default from Node 22.7. An older image would fail here
+      # with `SyntaxError: Unexpected token 'export'`.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test the JS wrapper
+        run: node --test ptts-wasm/js/test/*.test.mjs
       # `ptts-wasm`'s `webgpu` feature is deliberately not checked here: it does not compile for
       # this target, and has not since before this workflow. `xn 0.2.4`'s webgpu backend wants
       # `Send + Sync` storage, while `wgpu`'s browser backend holds a `RefCell` and so is
