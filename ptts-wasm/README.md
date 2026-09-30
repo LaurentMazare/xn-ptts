@@ -1,21 +1,13 @@
 # Pocket TTS in WebAssembly
 
-`ptts-wasm` runs the Rust Pocket TTS model in a browser. It exports a low-level [`Model`](src/lib.rs) that generates one 80 ms frame per call. The caller supplies weights, the matching `tokenizer.json`, and a voice safetensors file.
+`ptts-wasm` exposes the Rust model as a low-level browser [`Model`](src/lib.rs). It accepts checkpoint weights, a matching `tokenizer.json`, an optional `config.json`, and a voice safetensors file as bytes supplied by the caller. It generates one 80 ms PCM frame per call.
 
-## Build and run the demo
-
-Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) and build from this directory:
+Build the module from this directory with [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/):
 
 ```bash
 make build
-cd pkg
-python3 -m http.server 8080
 ```
 
-Open `http://localhost:8080`. The demo fetches model files from Hugging Face when you load a model. It offers f32 and q8 weights; the q8 file is about 146 MB. The build requires WebAssembly Relaxed SIMD support in the browser.
+`Model` accepts `"f32"` or `"q8"` weights. Its required language argument is one of `"en"`, `"fr"`, `"de"`, `"es"`, `"pt"`, or `"none"`; an optional final argument selects text rewrite rules. `start_generation` splits and tokenizes text, `next_chunk` prompts each chunk, `generation_step` returns PCM frames, and `stop_generation` cancels a run. The build requires WebAssembly Relaxed SIMD support in the browser.
 
-## Raw JavaScript API
-
-The `Model` constructor takes the weights and tokenizer as bytes, an optional `config.json` as bytes (or `undefined` for the original Pocket TTS architecture), `"f32"` or `"q8"`, and a required normalization language (`"en"`, `"fr"`, `"de"`, `"es"`, `"pt"`, or `"none"`). An optional final argument selects text rewrite rules.
-
-`start_generation` splits and tokenizes the text; `next_chunk` prompts each chunk; `generation_step` produces PCM until that chunk ends. `stop_generation()` cancels the current run. The page in [`www/`](www/) shows how to fetch files and run generation in a worker.
+The included [`www/`](www/) demo currently fetches a Kyutai compatibility checkpoint. It does not load the separately supplied Gradium preview checkpoint. For a runnable preview with that checkpoint, use the [Rust or Python instructions](../README.md#run-the-preview-from-source).

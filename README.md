@@ -1,94 +1,63 @@
 # Phonon
 
-On-device text-to-speech with [Kyutai's Pocket TTS model](https://huggingface.co/kyutai/pocket-tts). The Rust runtime produces 24 kHz audio and powers the `ptts` Python package, a command-line tool, a WebSocket server, and a browser build. It does not require PyTorch.
+Phonon is Gradium's on-device text-to-speech runtime in Rust, with Python, WebSocket, and WebAssembly frontends. It builds on [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), developed by Kyutai, and can load compatible checkpoints. This preview uses a checkpoint supplied separately by Gradium; the model files are not in this repository.
 
 [![Rust CI](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml)
 
-## Try it
+## Run the preview from source
 
-```bash
-uvx ptts --lang en "Hello world" -o out.wav
+From the repository root, set `MODEL_DIR` to the supplied checkpoint directory. It must contain:
+
+```text
+config.json
+model.safetensors              # or model.q8.gguf
+tokenizer.json
+voices/                        # at least one .safetensors voice file
 ```
 
-Or use Python:
+The config, weights, tokenizer, and voice files must belong to the same checkpoint. If the supplied files contain `tokenizer.model` instead of `tokenizer.json`, run `uv run --script scripts/convert-tokenizer.py "$MODEL_DIR/tokenizer.model"` once. The Rust example selects the first available voice unless you pass `--voice <name>`.
 
 ```bash
-pip install ptts
+export MODEL_DIR=/absolute/path/to/checkpoint
+cargo run --release -p ptts --example pocket_tts --features hf,audio -- \
+  --lang en --dir "$MODEL_DIR" "Hello world" -o out.wav
 ```
 
-```python
+This command uses `model.safetensors`. If your checkpoint contains `model.q8.gguf` instead, add `--weights model.q8.gguf --quant q8` after `--dir "$MODEL_DIR"`. It reads the checkpoint locally; it does not download Kyutai's model. Choose `--lang en`, `fr`, `de`, `es`, or `pt` for text normalization, or `none` to pass text through unchanged. The normalization choice does not establish which languages the supplied checkpoint supports.
+
+## Python from the checkout
+
+With [uv](https://docs.astral.sh/uv/) installed, run the Python package directly from this repository:
+
+```bash
+uv run --project ptts-pyo3 --locked python - <<'PY'
+import os
+from pathlib import Path
 import ptts
 
-tts = ptts.TTS(lang="en")
+model = Path(os.environ["MODEL_DIR"])
+quant = "q8" if not (model / "model.safetensors").is_file() else None
+tts = ptts.TTS(lang="en", config=str(model / "config.json"), quant=quant)
 tts.save("out.wav", "Hello world")
+PY
 ```
 
-The first run downloads the default checkpoint from [`kyutai/pocket-tts`](https://huggingface.co/kyutai/pocket-tts). `lang` is required: choose `en`, `fr`, `de`, `es`, or `pt` for text normalization, or `none` to pass text to the tokenizer as written. These are normalization options, not a claim about which languages a checkpoint was trained to speak.
+See the [Python README](ptts-pyo3/README.md) for streaming, voices, and the source-built command line.
 
-The checkpoint supplies eight voice embeddings: `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, and `azelma`. Checkpoints with a speaker encoder can also clone a voice from a short audio sample. See the [Python package README](ptts-pyo3/README.md) for streaming, voices, and local checkpoints.
+## Other interfaces
 
-## Rust
+The [`ptts` crate](ptts/) exposes `Synth` for applications that load checkpoint files themselves. The [`pocket_tts` example](ptts/examples/pocket_tts.rs) is a complete Rust caller; [`model_helpers.rs`](ptts/examples/model_helpers.rs) documents its local checkpoint lookup rules. Optional Cargo features include `audio` for audio-file voice prompts and `cuda`, `vulkan`, `metal`, `webgpu`, and `accelerate` for supported backends. Quantized GGUF weights run on CPU.
 
-The `ptts` crate reads checkpoint files supplied by the caller; it does not download them. With a local weights file, matching `tokenizer.json`, and voice embedding:
+The WebSocket server accepts the same local checkpoint layout:
 
 ```bash
-cargo add ptts --features hf
+cargo run --release -p ptts-ws-server -- --lang en --config "$MODEL_DIR/config.json"
 ```
 
-```rust
-use ptts::preprocess::{Lang, Normalize};
-use ptts::synth::Synth;
-use ptts::tts_model::TTSConfig;
+It serves `/speech/tts` and requires a system `libopus` to build. For `model.q8.gguf`, add `--quant q8`. The wire format is defined in [`protocol.rs`](ptts-ws-server/src/protocol.rs).
 
-fn main() -> ptts::Result<()> {
-    let tts = Synth::builder(
-        TTSConfig::v202601(0.3),
-        "model/model.safetensors",
-        Normalize::for_lang(Lang::En),
-    )
-    .tokenizer_file("model/tokenizer.json")
-    .add_voice("alba", "model/embeddings/alba.safetensors")
-    .build()?;
+The [WebAssembly crate](ptts-wasm/README.md) exposes a frame-by-frame browser API. Its included demo is wired to a Kyutai compatibility checkpoint, so it is not the entry point for this preview checkpoint.
 
-    let pcm = tts.say("Hello world")?;
-    ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate() as u32)?;
-    Ok(())
-}
-```
+## Development
 
-`Synth::stream` yields audio chunks as they are decoded. The `audio` feature adds audio file decoding and resampling for voice cloning. GPU features are `cuda`, `vulkan`, `metal`, and `webgpu`; `accelerate` enables Apple's CPU acceleration. Quantized GGUF weights run on CPU. See the [API docs](https://docs.rs/ptts) for the builder and lower-level `TTSModel` API.
-
-For a ready-to-run Rust example that downloads the checkpoint:
-
-```bash
-cargo run --release --example pocket_tts --features hf,audio -- --lang en "Hello world" -o out.wav
-```
-
-Use `--dir <path>` for a local checkpoint, `--voice <name-or-file>` to select or clone a voice, and `--weights <file> --quant <format>` for GGUF weights. The example's checkpoint layout and defaults are in [`model_helpers.rs`](ptts/examples/model_helpers.rs).
-
-## Server and browser
-
-The WebSocket server streams audio at `/speech/tts` in formats including PCM, WAV, and Ogg Opus. Building it requires a system `libopus`:
-
-```bash
-cargo run --release -p ptts-ws-server -- --lang en
-```
-
-The wire format is defined in [`protocol.rs`](ptts-ws-server/src/protocol.rs).
-
-The browser build runs the model in WebAssembly. To build and serve its demo:
-
-```bash
-cd ptts-wasm
-make build
-cd pkg
-python3 -m http.server 8080
-```
-
-Open `http://localhost:8080`. The demo fetches its model files from Hugging Face. See the [WASM README](ptts-wasm/README.md) for build requirements and the frame-by-frame API.
-
-## Development and licence
-
-CI checks formatting, Clippy, tests, optional features, docs, and the WASM target. Run `cargo fmt --all -- --check` and `cargo test -p ptts --features hf,audio` locally. The server needs `libopus` to build.
-
-The code is available under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). Model weights are distributed separately under the terms on their respective model cards.
+`cargo fmt --all -- --check` and `cargo test -p ptts --features hf,audio` cover the core crate. [Rust CI](.github/workflows/rust-ci.yml) checks the workspace, optional features, docs, and WebAssembly build.
