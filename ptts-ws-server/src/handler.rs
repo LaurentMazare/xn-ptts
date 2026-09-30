@@ -247,8 +247,7 @@ async fn generate_one(
     // One request is one utterance: prepare and tokenize it here rather than
     // letting `Session::stream` split it on sentence boundaries, which is what
     // this server did before and what its stream ids assume. Normalization is
-    // the session's, and has to run before `prepare_text_prompt`, whose padding
-    // of short text it would otherwise collapse.
+    // the session's, and runs before `prepare_text_prompt`.
     let text = session.normalization().apply(text);
     // Normalization drops whole classes of characters, so a buffer that was
     // non-empty when it was flushed can be empty here: emoji or quotes on their

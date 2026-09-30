@@ -15,9 +15,9 @@
 //! use ptts::tts_model::TTSConfig;
 //!
 //! let tts = Synth::builder(
-//!     TTSConfig::v202601(0.5),
+//!     TTSConfig::v202601(0.3),
 //!     "model/model.safetensors",
-//!     Normalize::For(Lang::En),
+//!     Normalize::for_lang(Lang::En),
 //! )
 //! .tokenizer_file("model/tokenizer.json")
 //! .add_voice("alba", "model/voices/alba.safetensors")
@@ -56,14 +56,14 @@
 //! handed, and never guesses at names or downloads anything itself.
 //!
 //! Text is normalized before it is tokenized — see [`preprocess`]. Which
-//! language, or [`preprocess::Normalize::Off`], is a required argument to
+//! language, or [`preprocess::Normalize::OFF`], is a required argument to
 //! [`synth::SynthBuilder::new`]: the model reads normalized text noticeably
 //! better, but the spoken forms are per-language, so guessing is worse than
 //! doing nothing.
 //!
-//! A server answering many requests for one voice wants
-//! [`synth::Synth::session`], which conditions on the voice prompt once
-//! instead of per request.
+//! A voice is conditioned on once per [`synth::Synth`], whichever entry point
+//! is used; [`synth::Synth::session`] additionally pins the KV budget for a
+//! stream of requests.
 //!
 //! Callers that need to drive the loop themselves — a browser build stepping
 //! from an event loop, with no threads to spawn — should use
@@ -88,6 +88,14 @@ pub mod preprocess;
 pub mod resample;
 pub mod rope;
 pub mod seanet;
+// Not on wasm: `Synth` runs the flow LM and the Mimi decoder on two `std::thread`s, and
+// `wasm32-unknown-unknown` has none -- `spawn` there compiles and then panics. Browser
+// frontends drive `tts_model::TTSModel` directly instead.
+//
+// Deliberately `//` and not `///`: an outer doc comment here is concatenated ahead of
+// `synth.rs`'s own `//!` header, whose intra-doc links then resolve in this scope and all
+// come out unresolved.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod synth;
 #[cfg(feature = "hf")]
 pub mod tok;

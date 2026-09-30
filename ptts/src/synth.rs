@@ -14,9 +14,9 @@
 //! use ptts::preprocess::{Lang, Normalize};
 //!
 //! let tts = Synth::builder(
-//!     TTSConfig::v202601(0.5),
+//!     TTSConfig::v202601(0.3),
 //!     "model/model.safetensors",
-//!     Normalize::For(Lang::En),
+//!     Normalize::for_lang(Lang::En),
 //! )
 //! .tokenizer_file("model/tokenizer.json")
 //!     .add_voice("alba", "model/voices/alba.safetensors")
@@ -32,8 +32,8 @@
 //!
 //! ```no_run
 //! # fn main() -> xn::Result<()> {
-//! # let cfg = ptts::tts_model::TTSConfig::v202601(0.5);
-//! # let norm = ptts::preprocess::Normalize::For(ptts::preprocess::Lang::En);
+//! # let cfg = ptts::tts_model::TTSConfig::v202601(0.3);
+//! # let norm = ptts::preprocess::Normalize::for_lang(ptts::preprocess::Lang::En);
 //! # let tts = ptts::synth::Synth::builder(cfg, "model/model.safetensors", norm)
 //! #     .tokenizer_file("model/tokenizer.json")
 //! #     .build()?;
@@ -45,11 +45,11 @@
 //! # }
 //! ```
 //!
-//! A server answering many requests for one voice wants [`Synth::session`],
-//! which conditions on the voice prompt once instead of per request.
+//! A voice is conditioned on once per [`Synth`], whichever entry point is used;
+//! [`Synth::session`] additionally pins the KV budget for a stream of requests.
 //!
 //! Text is normalized before it is tokenized — see [`crate::preprocess`]. Which
-//! language, or [`Normalize::Off`], is a required argument to
+//! language, or [`Normalize::OFF`], is a required argument to
 //! [`SynthBuilder::new`]: the model reads normalized text noticeably better,
 //! but the spoken forms are per-language, so guessing is worse than doing
 //! nothing.
@@ -60,7 +60,7 @@
 //! the loop by hand, from an event loop with no threads to spawn, is what
 //! [`crate::tts_model::TTSModel`]'s primitives are for.
 
-use crate::flow_lm::NormalRng;
+use crate::flow_lm::{NormalRng, StepInput};
 use crate::loader;
 use crate::plan::{self, EosPolicy};
 use crate::preprocess::Normalize;
@@ -69,9 +69,9 @@ use crate::tts_model::{
     split_into_best_sentences,
 };
 use crate::{Error, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path as FsPath, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use xn::{Backend, BackendQ, Tensor};
 
 /// Which device to run on.
@@ -290,6 +290,21 @@ pub struct SynthOf<Q: BackendQ> {
     defaults: Defaults,
     /// How every request's text is normalized. See [`SynthBuilder::new`].
     normalize: Normalize,
+    /// Each voice's primed KV prefix, keyed by name and by whether guidance is on: the null
+    /// branch's prefix differs, the coefficient does not enter the state. Sized to the prompt;
+    /// copied out to each generation's budget.
+    primed: Mutex<HashMap<(String, bool), Primed<Q>>>,
+}
+
+/// How many primed prefixes to keep. A process that clones voices under fresh names -- which
+/// `ptts-pyo3` exposes -- would otherwise grow the map without bound. Past the cap it is cleared;
+/// generation still works, it just re-primes.
+const MAX_PRIMED: usize = 16;
+
+/// A voice's conditioning, run through the transformer once.
+struct Primed<Q: BackendQ> {
+    state: TTSState<Q>,
+    null_state: Option<TTSState<Q>>,
 }
 
 impl<Q: BackendQ> SynthOf<Q> {
@@ -337,6 +352,7 @@ impl<Q: BackendQ> SynthOf<Q> {
         let emb =
             loader::load_voice_emb(path, model_ext.as_deref(), self.model.speaker_proj(), &dev)?
                 .to::<Q::T>()?;
+        self.forget_primed(name);
         self.voices.insert(name.to_string(), Voice { emb, null_emb: None });
         Ok(())
     }
@@ -381,6 +397,7 @@ impl<Q: BackendQ> SynthOf<Q> {
         } else {
             Some(enc.encode_audio(&pcm.zeros_like()?)?)
         };
+        self.forget_primed(name);
         self.voices.insert(name.to_string(), Voice { emb, null_emb });
         Ok(())
     }
@@ -423,6 +440,7 @@ impl<Q: BackendQ> SynthOf<Q> {
             }
             Some(null) => Some(to_tensor(null)?),
         };
+        self.forget_primed(name);
         self.voices.insert(name.to_string(), Voice { emb, null_emb });
         Ok(())
     }
@@ -518,14 +536,24 @@ impl<Q: BackendQ> SynthOf<Q> {
             settings.max_tokens_per_chunk,
             self.normalize,
         )?;
-        // A one-shot call primes a session sized to this text and drops it
-        // afterwards, so there is one generation path rather than two.
+        // A one-shot call is a session sized to this text and dropped afterwards,
+        // so there is one generation path rather than two.
         let seq_budget = chunks.iter().map(|c| c.seq_budget).max().unwrap_or(0);
         self.session_at(&settings, seq_budget)?.stream_chunks(chunks, rng)
     }
 
-    /// Build the state every chunk starts from: allocated, then conditioned on
-    /// the voice. Cloning it per chunk is much cheaper than re-priming.
+    /// Called whenever a voice is (re)registered, so a replaced embedding is never generated
+    /// from the old conditioning.
+    fn forget_primed(&self, name: &str) {
+        let mut primed = self.primed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        primed.retain(|(voice, _), _| voice != name);
+    }
+
+    /// The state every chunk starts from, sized to `seq_budget` and conditioned on the voice.
+    ///
+    /// Conditioning is the expensive part and depends only on (voice, guidance), so it happens
+    /// once per `SynthOf`; each call copies the kept prefix into fresh buffers rather than
+    /// cloning it, since a clone would share the KV storage.
     #[allow(clippy::type_complexity)]
     fn primed_state(
         &self,
@@ -542,7 +570,7 @@ impl<Q: BackendQ> SynthOf<Q> {
                 )));
             }
             Some(name) => match self.voices.get(name) {
-                Some(voice) => Some(voice),
+                Some(v) => Some((name, v)),
                 None => {
                     return Err(Error::UnknownVoice {
                         name: name.to_string(),
@@ -552,43 +580,92 @@ impl<Q: BackendQ> SynthOf<Q> {
             },
         };
 
-        if let Some(voice) = voice {
-            let frames = voice.emb.dim(1usize)?;
-            if frames >= seq_budget {
-                // Its own variant rather than `SeqBudgetExceeded`: nothing about the text is
-                // wrong here, so "split the text" would be useless advice, and the prompt
-                // length alone cannot say what budget would actually work.
-                return Err(Error::VoicePromptTooLong { frames, budget: seq_budget });
-            }
-        }
-        let mut state = self.model.init_flow_lm_state(1, seq_budget)?;
-        if let Some(voice) = voice {
-            self.model.prompt_audio(&mut state, &voice.emb)?;
+        let Some((name, voice)) = voice else {
+            let state = self.model.init_flow_lm_state(1, seq_budget)?;
+            let cfg_state = match cfg_coef {
+                None => None,
+                Some(coef) => Some((coef, self.model.init_flow_lm_state(1, seq_budget)?)),
+            };
+            return Ok((state, cfg_state));
+        };
+
+        let frames = voice.emb.dim(1usize)?;
+        if frames >= seq_budget {
+            // Its own variant rather than `SeqBudgetExceeded`: nothing about the text is
+            // wrong here, so "split the text" would be useless advice, and the prompt
+            // length alone cannot say what budget would actually work.
+            return Err(Error::VoicePromptTooLong { frames, budget: seq_budget });
         }
 
-        let cfg_state = match cfg_coef {
-            None => None,
-            Some(coef) => {
-                let mut null_state = self.model.init_flow_lm_state(1, seq_budget)?;
-                if !self.cfg.cfg_null_audio_empty
-                    && let Some(voice) = voice
-                {
-                    match voice.null_emb.as_ref() {
-                        Some(null_emb) => self.model.prompt_audio(&mut null_state, null_emb)?,
-                        None => {
-                            return Err(Error::unsupported(
-                                "this model conditions its CFG null branch on silence \
-                                 (cfg_null_audio_empty=false), which needs the voice's source \
-                                 audio. Register the voice with add_voice_from_pcm instead of a \
-                                 precomputed embedding, or disable CFG.",
-                            ));
-                        }
-                    }
+        let key = (name.to_string(), cfg_coef.is_some());
+        // Prime outside the lock so first callers for different voices do not serialise; a
+        // same-voice race primes twice and the second insert wins, harmlessly.
+        let cached = {
+            let primed = self.primed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            primed.get(&key).map(|p| (p.state.clone(), p.null_state.clone()))
+        };
+        let (prefix, null_prefix) = match cached {
+            Some(hit) => hit,
+            None => {
+                let fresh = self.prime(voice, cfg_coef.is_some(), frames)?;
+                let out = (fresh.state.clone(), fresh.null_state.clone());
+                let mut primed =
+                    self.primed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if primed.len() >= MAX_PRIMED {
+                    primed.clear();
                 }
-                Some((coef, null_state))
+                primed.insert(key, fresh);
+                out
+            }
+        };
+
+        let state = grow(&prefix, seq_budget)?;
+        let cfg_state = match (cfg_coef, null_prefix) {
+            (Some(coef), Some(null)) => Some((coef, grow(&null, seq_budget)?)),
+            (None, _) => None,
+            // A guidance-keyed entry always carries a null branch. Spelled out rather than
+            // folded into a catch-all, which would silently generate without guidance.
+            (Some(_), None) => {
+                return Err(Error::Tensor(xn::Error::msg(
+                    "internal: a primed entry keyed with guidance has no null branch",
+                )));
             }
         };
         Ok((state, cfg_state))
+    }
+
+    /// Run the voice prompt, and with guidance on the null branch, into states just large
+    /// enough to hold them.
+    fn prime(&self, voice: &Voice<Q>, cfg_on: bool, frames: usize) -> Result<Primed<Q>> {
+        let mut state = self.model.init_flow_lm_state(1, frames)?;
+        self.model.prompt_audio(&mut state, &voice.emb)?;
+
+        let null_state = if !cfg_on {
+            None
+        } else {
+            // Sized to what the null branch will consume, so the `emb`/`null_emb` length
+            // invariant stays local to registration rather than load-bearing here.
+            let null_frames = match voice.null_emb.as_ref() {
+                Some(null_emb) if !self.cfg.cfg_null_audio_empty => null_emb.dim(1usize)?,
+                _ => frames,
+            };
+            let mut null_state = self.model.init_flow_lm_state(1, null_frames)?;
+            if !self.cfg.cfg_null_audio_empty {
+                match voice.null_emb.as_ref() {
+                    Some(null_emb) => self.model.prompt_audio(&mut null_state, null_emb)?,
+                    None => {
+                        return Err(Error::unsupported(
+                            "this model conditions its CFG null branch on silence \
+                             (cfg_null_audio_empty=false), which needs the voice's source \
+                             audio. Register the voice with add_voice_from_pcm instead of a \
+                             precomputed embedding, or disable CFG.",
+                        ));
+                    }
+                }
+            }
+            Some(null_state)
+        };
+        Ok(Primed { state, null_state })
     }
 }
 
@@ -600,6 +677,12 @@ impl<Q: BackendQ> std::fmt::Debug for SynthOf<Q> {
             .field("voices", &self.voices())
             .finish()
     }
+}
+
+/// A fresh, independently-owned state at `seq_budget`, seeded with `prefix`'s filled positions.
+fn grow<Q: BackendQ>(prefix: &TTSState<Q>, seq_budget: usize) -> Result<TTSState<Q>> {
+    let transformer_state = prefix.flow_lm_state.transformer_state.with_seq_budget(seq_budget)?;
+    Ok(TTSState { flow_lm_state: crate::flow_lm::FlowLMState { transformer_state } })
 }
 
 /// Split `text` into chunks and work out the budgets for each.
@@ -625,8 +708,7 @@ fn plan_chunks<Q: BackendQ>(
         }
     };
     // Normalization runs first, on the whole input: it rewrites the characters
-    // the sentence splitter looks for, and `prepare_text_prompt` pads short
-    // text with leading spaces that normalization would collapse away.
+    // the sentence splitter looks for.
     let text = normalize.apply(text);
     let texts = split_into_best_sentences(tokenizer, &text, Some(max_tokens_per_chunk))?;
     let mut chunks = Vec::with_capacity(texts.len());
@@ -700,9 +782,7 @@ impl<Q: BackendQ> SessionOf<Q> {
     ///
     /// [`Self::stream`] and [`Self::say`] apply it themselves. Callers that
     /// tokenize by hand for [`Self::stream_tokens`] should run their text
-    /// through [`Normalize::apply`] first, before [`prepare_text_prompt`]:
-    /// normalization collapses runs of whitespace, including the padding
-    /// `prepare_text_prompt` adds to short text.
+    /// through [`Normalize::apply`] first, before [`prepare_text_prompt`].
     pub fn normalization(&self) -> Normalize {
         self.normalize
     }
@@ -825,7 +905,6 @@ impl<Q: BackendQ> SessionOf<Q> {
         let base_state = self.base.clone();
         let cfg_base = self.cfg_base.clone();
         let mimi_init = self.model.init_mimi_state(1)?;
-        let ldim = self.model.flow_lm.ldim;
 
         let (pcm_tx, pcm_rx) = std::sync::mpsc::channel::<Result<Vec<f32>>>();
         let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Frame<Q>>();
@@ -891,7 +970,7 @@ impl<Q: BackendQ> SessionOf<Q> {
         let backbone_handle = std::thread::spawn(move || {
             // Dropped when this thread ends, which is after its last write.
             let _in_flight = in_flight;
-            let result = run_backbone(&model, chunks, base_state, cfg_base, rng, ldim, &latent_tx);
+            let result = run_backbone(&model, chunks, base_state, cfg_base, rng, &latent_tx);
             if let Err(e) = result {
                 let _ = pcm_tx.send(Err(e));
             }
@@ -957,10 +1036,8 @@ fn run_backbone<Q: BackendQ>(
     base_state: TTSState<Q>,
     cfg_base: Option<(f32, TTSState<Q>)>,
     mut rng: Box<dyn crate::flow_lm::Rng + Send>,
-    ldim: usize,
     latent_tx: &std::sync::mpsc::Sender<Frame<Q>>,
 ) -> Result<()> {
-    let device = model.device().clone();
     for chunk in chunks.iter() {
         let mut state = base_state.clone();
         let mut cfg_state = cfg_base.clone();
@@ -969,18 +1046,19 @@ fn run_backbone<Q: BackendQ>(
             model.prompt_text_null(null_state)?;
         }
 
-        // A NaN latent marks the start of the sequence.
-        let nan = vec![f32::NAN; ldim];
-        let mut prev: Tensor<Q::T, Q::B> =
-            Tensor::from_vec(nan, (1, 1, ldim), &device)?.to::<Q::T>()?;
+        let mut prev: Option<Tensor<Q::T, Q::B>> = None;
         let mut eos = EosPolicy::new(chunk.frames_after_eos);
 
         for _ in 0..chunk.frame_budget {
+            let input = match &prev {
+                None => StepInput::Bos { batch: 1 },
+                Some(t) => StepInput::Latent(t),
+            };
             let (next, is_eos) = match cfg_state.as_mut() {
                 Some((coef, null_state)) => {
-                    model.generate_step_cfg(&mut state, null_state, *coef, &prev, &mut rng)?
+                    model.generate_step_cfg(&mut state, null_state, *coef, input, &mut rng)?
                 }
-                None => model.generate_step(&mut state, &prev, &mut rng)?,
+                None => model.generate_step(&mut state, input, &mut rng)?,
             };
             // A closed channel means the consumer went away; stop quietly and
             // let the decoder thread report any error of its own.
@@ -990,7 +1068,7 @@ fn run_backbone<Q: BackendQ>(
             if eos.should_stop(is_eos) {
                 break;
             }
-            prev = next;
+            prev = Some(next);
         }
         if latent_tx.send(Frame::ChunkEnd).is_err() {
             return Ok(());
@@ -1104,7 +1182,7 @@ impl SynthBuilder {
     /// turn on — but the spoken forms of `@`, `+` and `=` are per-language, so
     /// normalizing German as English makes it say "at" where it should say
     /// "ät". Guessing is worse than doing nothing, so the caller says which:
-    /// [`Normalize::For`] with a language, or [`Normalize::Off`] to hand text
+    /// [`Normalize::for_lang`] with a language, or [`Normalize::OFF`] to hand text
     /// to the tokenizer as written.
     ///
     /// ```no_run
@@ -1114,9 +1192,9 @@ impl SynthBuilder {
     /// use ptts::tts_model::TTSConfig;
     ///
     /// let tts = SynthBuilder::new(
-    ///     TTSConfig::v202601(0.5),
+    ///     TTSConfig::v202601(0.3),
     ///     "model/model.safetensors",
-    ///     Normalize::For(Lang::De),
+    ///     Normalize::for_lang(Lang::De),
     /// )
     /// .tokenizer_file("model/tokenizer.model")
     /// .build()?;
@@ -1132,7 +1210,7 @@ impl SynthBuilder {
             device: DeviceKind::Auto,
             quant: Quant::F32,
             tokenizer: None,
-            temperature: 0.5,
+            temperature: 0.3,
             seed: 4242424242424242,
             cfg_coef: None,
             eos_threshold: None,
@@ -1319,6 +1397,7 @@ impl SynthBuilder {
             mimi_enc,
             cfg: config,
             voices: BTreeMap::new(),
+            primed: Mutex::new(HashMap::new()),
             defaults: Defaults {
                 voice: self.voice.clone(),
                 temperature: self.temperature,
@@ -1771,7 +1850,7 @@ mod tests {
     /// could stand in for a language the caller never named.
     #[test]
     fn the_builder_keeps_the_policy_it_was_given() {
-        for norm in [Normalize::For(Lang::En), Normalize::For(Lang::De), Normalize::Off] {
+        for norm in [Normalize::for_lang(Lang::En), Normalize::for_lang(Lang::De), Normalize::OFF] {
             let b = SynthBuilder::new(TTSConfig::v202601(0.5), "model.safetensors", norm);
             assert_eq!(b.normalize, norm);
         }

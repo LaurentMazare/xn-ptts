@@ -14,7 +14,7 @@ mod model_helpers;
 
 use anyhow::Result;
 use clap::Parser;
-use ptts::preprocess::Normalize;
+use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant, SpeechOptions};
 
 #[derive(Parser, Debug)]
@@ -34,7 +34,7 @@ struct Args {
     voice: Option<String>,
 
     /// Sampling temperature.
-    #[arg(short, long, default_value_t = 0.5)]
+    #[arg(short, long, default_value_t = 0.3)]
     temperature: f32,
 
     /// Sampling seed.
@@ -94,12 +94,17 @@ struct Args {
     /// `none` hands the text to the tokenizer as written, which the model reads less well.
     #[arg(long)]
     lang: String,
+
+    /// Which word rewrites run on the normalized text: `all`, `none`, or a comma-separated list
+    /// of rule names, of which there is one today, `numbers`. Has no effect with `--lang none`.
+    #[arg(long, default_value = "all")]
+    rewrites: String,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     // Parsed before anything is downloaded, so a bad --lang fails in milliseconds.
-    let normalize = Normalize::parse(&args.lang)?;
+    let normalize = Normalize::parse(&args.lang)?.with_rules(Rules::parse(&args.rewrites)?);
     if let Some(threads) = args.threads {
         // Must happen before the first tensor op, since it sets the size of rayon's global pool.
         xn::set_num_threads(threads);
@@ -169,9 +174,10 @@ fn main() -> Result<()> {
 
     // `Synth` normalizes the text itself; log what it will see.
     let text = args.text.as_str();
-    if normalize != Normalize::Off {
+    if normalize != Normalize::OFF {
         tracing::info!(
             lang = normalize.as_str(),
+            rewrites = args.rewrites.as_str(),
             normalized = %normalize.apply(text),
             "normalizing text"
         );
@@ -198,9 +204,9 @@ fn main() -> Result<()> {
 
     let elapsed = start.elapsed().as_secs_f64();
     let duration = pcm.len() as f64 / sample_rate as f64;
+    let rtf = if duration > 0.0 { format!("{:.4}", elapsed / duration) } else { "?".to_string() };
     tracing::info!(
-        "generated {duration:.2}s in {elapsed:.2}s (RTF={:.3}, first chunk {:.0}ms)",
-        duration / elapsed,
+        "generated {duration:.2}s in {elapsed:.2}s (RTF={rtf}, first chunk {:.0}ms)",
         first_chunk_ms.unwrap_or(0.0),
     );
     // `getrusage` is unix-only, so this is absent on Windows.

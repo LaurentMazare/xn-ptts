@@ -5,14 +5,15 @@
 //! are read aloud (`@`, `+`, `=`) are best spelled out in the target language. [`normalize_text`]
 //! does both, driven by a [`Lang`].
 //!
-//! This is deliberately conservative: it does not expand numbers, dates or abbreviations, which
-//! the model handles natively.
-//!
 //! Every caller says which language, or says not to normalize: [`Normalize`] is a required
 //! argument to [`crate::synth::SynthBuilder::new`], and every frontend takes it as a required
 //! flag. There is no default, deliberately. Output is noticeably better with normalization than
 //! without, but normalizing German as English speaks `@` as "at" rather than "ät", so guessing
 //! the language is worse than doing nothing.
+
+mod rewrite;
+
+pub use rewrite::{Rules, rewrite_word};
 
 /// Spoken forms of the punctuation characters that are read aloud rather than dropped.
 #[derive(Debug, Clone)]
@@ -214,56 +215,66 @@ impl Lang {
     }
 }
 
-/// Whether to normalize, and in which language.
+/// Whether to normalize, in which language, and with which [`Rules`].
 ///
 /// There is no default and no "unset": [`crate::synth::SynthBuilder::new`] takes one of these,
-/// so choosing is not something a caller can forget. [`Normalize::Off`] is the way to say "hand
+/// so choosing is not something a caller can forget. [`Normalize::OFF`] is the way to say "hand
 /// the text to the tokenizer as written", which is for callers that normalize it themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Normalize {
-    For(Lang),
-    Off,
+pub struct Normalize {
+    lang: Option<Lang>,
+    rules: Rules,
 }
 
 impl Normalize {
-    /// Parse what the frontends' `--lang` flag accepts: a language code, or `none` / `off`.
+    /// Hand text to the tokenizer as written.
+    pub const OFF: Self = Self { lang: None, rules: Rules::NONE };
+
+    /// Normalize as `lang`, with every rewrite rule.
+    pub const fn for_lang(lang: Lang) -> Self {
+        Self { lang: Some(lang), rules: Rules::ALL }
+    }
+
+    /// This policy with `rules` instead. A no-op on [`Self::OFF`], which rewrites nothing.
+    pub const fn with_rules(self, rules: Rules) -> Self {
+        match self.lang {
+            Some(lang) => Self { lang: Some(lang), rules },
+            None => Self::OFF,
+        }
+    }
+
+    /// Which rewrites this policy applies.
+    pub const fn rules(self) -> Rules {
+        self.rules
+    }
+
+    /// Parse what the frontends' `--lang` flag accepts: a language code, or `none` / `off`. The
+    /// rules are a flag of their own, see [`Rules::parse`].
     pub fn parse(s: &str) -> crate::Result<Self> {
         match s.to_lowercase().as_str() {
-            "none" | "off" => Ok(Self::Off),
-            other => other.parse().map(Self::For),
+            "none" | "off" => Ok(Self::OFF),
+            other => other.parse().map(Self::for_lang),
         }
     }
 
-    /// How this policy spells itself back, round-tripping through [`Self::parse`].
+    /// The language half of this policy, round-tripping through [`Self::parse`]. The rules are
+    /// not part of it, since they parse from a flag of their own: see [`Rules::parse`].
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::For(lang) => lang.as_str(),
-            Self::Off => "none",
+        match self.lang {
+            Some(lang) => lang.as_str(),
+            None => "none",
         }
     }
 
-    /// Normalize `text`, or hand it back untouched when this is [`Self::Off`].
+    /// Normalize `text`, or hand it back untouched when this is [`Self::OFF`].
     ///
     /// Borrows when off, so opting out costs no allocation per request.
-    ///
-    /// This has to run before `prepare_text_prompt`, which pads short text with leading spaces
-    /// that normalization would collapse away.
     pub fn apply<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
-        match self {
-            Self::Off => std::borrow::Cow::Borrowed(text),
-            Self::For(lang) => std::borrow::Cow::Owned(normalize_text(text, lang)),
+        match self.lang {
+            None => std::borrow::Cow::Borrowed(text),
+            Some(lang) => std::borrow::Cow::Owned(normalize_text(text, lang, self.rules)),
         }
     }
-}
-
-fn is_emoji(c: char) -> bool {
-    let c = c as u32;
-    matches!(c,
-        0x1F600..=0x1FAFF |
-        0x2600..=0x27BF |
-        // Flags (regional indicator symbols)
-        0x1F1E6..=0x1F1FF
-    )
 }
 
 /// Character sink that keeps the output free of the punctuation pile-ups the substitutions
@@ -280,8 +291,10 @@ impl StringAppender {
 
     fn push(&mut self, c: char) {
         if c == '.' || c == ',' {
-            while self.buffer.last().is_some_and(|l| l.is_whitespace() || l.is_ascii_punctuation())
-            {
+            // Quotes are kept: dropping a closing one would leave the opening one unbalanced.
+            while self.buffer.last().is_some_and(|&l| {
+                l.is_whitespace() || (l.is_ascii_punctuation() && l != '"' && l != '\'')
+            }) {
                 self.buffer.pop();
             }
         }
@@ -316,18 +329,79 @@ impl StringAppender {
     }
 }
 
+fn is_emoji(c: char) -> bool {
+    let c = c as u32;
+    matches!(c,
+        0x1F600..=0x1FAFF |
+        0x2600..=0x27BF |
+        // Flags (regional indicator symbols)
+        0x1F1E6..=0x1F1FF
+    )
+}
+
+/// Unicode characters that read as a double quotation mark: the curly and
+/// reversed variants, the low-9 ones sitting on the baseline (German/Czech
+/// opening quotes), double primes, dingbat and CJK corner quotes, and the
+/// fullwidth form.
+fn is_double_quote(c: char) -> bool {
+    matches!(
+        c,
+        '»' | '«'
+            | '“'
+            | '”'
+            | '„'
+            | '‟'
+            | '″'
+            | '‶'
+            | '⹂'
+            | '❝'
+            | '❞'
+            | '❠'
+            | '〝'
+            | '〞'
+            | '〟'
+            | '＂'
+    )
+}
+
+/// Unicode characters that read as a single quotation mark or apostrophe:
+/// the curly and reversed variants, the low-9 one sitting on the baseline,
+/// primes, dingbat quotes, the fullwidth form and the modifier letter and
+/// accent characters commonly typed in place of an apostrophe.
+fn is_single_quote(c: char) -> bool {
+    matches!(
+        c,
+        '‘' | '’'
+            | '‚'
+            | '‛'
+            | '′'
+            | '‵'
+            | '❛'
+            | '❜'
+            | '❟'
+            | '＇'
+            | 'ʼ'
+            | 'ʻ'
+            | 'ʹ'
+            | '´'
+            | '`'
+    )
+}
+
 /// Rewrite `input` into the character set the model was trained on.
 ///
 /// Typographic quotes, dashes, bullets, arrows and emoji are dropped or folded to their ASCII
-/// equivalents; `@`, `+` and `=` are spelled out in `lang`; `;`, `:` and parentheses become
-/// commas, which is how the model is asked to pause. Numbers, dates and abbreviations are left
-/// alone -- the model reads those natively.
-pub fn normalize_text(input: &str, lang: Lang) -> String {
+/// equivalents; `@`, `+` and `=` are spelled out in `lang`; `;`, parentheses and a `:` with
+/// whitespace on either side become commas, which is how the model is asked to pause. A `:`
+/// between two non-space characters, as in `10:30`, is kept.
+pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
     let mut res = StringAppender::new();
-    for c in input.chars() {
+    let mut chars = input.chars().peekable();
+    let mut prev = None;
+    while let Some(c) = chars.next() {
         match c {
-            '“' | '”' | '"' => res.push_whitespace(),
-            '’' | '‘' => res.push('\''),
+            c if is_double_quote(c) => res.push('"'),
+            c if is_single_quote(c) => res.push('\''),
             '‐' | '‑' | '‒' | '―' => res.push('-'),
             // The two dashes below are not - (ascii 45) but similar unicode chars.
             '–' | '*' | '—' | '[' | ']' | '{' | '}' => res.push_whitespace(),
@@ -350,6 +424,11 @@ pub fn normalize_text(input: &str, lang: Lang) -> String {
                 res.push_str(lang.special_chars().equals);
                 res.push_whitespace();
             }
+            ':' if !prev.is_none_or(char::is_whitespace)
+                && !chars.peek().is_none_or(|c| c.is_whitespace()) =>
+            {
+                res.push(':')
+            }
             ';' | ':' | '(' | ')' => {
                 res.pop_whitespace();
                 res.push(',');
@@ -363,8 +442,14 @@ pub fn normalize_text(input: &str, lang: Lang) -> String {
                 }
             }
         }
+        prev = Some(c);
     }
-    res.into_string()
+    let text = res.into_string();
+    if rules == Rules::NONE {
+        return text;
+    }
+    let words = text.split(' ').map(|w| rewrite_word(w, lang, rules).unwrap_or_else(|| w.into()));
+    words.collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -376,7 +461,7 @@ mod tests {
         let cases: &[(&str, &str)] = &[
             ("Hello, world!", "Hello, world!"),
             ("", ""),
-            ("“hello” world it's", "hello world it's"),
+            ("“hello” world it's", "\"hello\" world it's"),
             ("a‐b‑c‒d―e", "a-b-c-d-e"),
             ("a–b—c", "a b c"),
             ("foo (bar) [baz] {qux} *quux*", "foo, bar, baz qux quux"),
@@ -385,9 +470,13 @@ mod tests {
             ("user@host @home", "user at host at home"),
             ("café résumé 日本語", "café résumé 日本語"),
             ("hello 😀 flag 🇫🇷 sun ☀", "hello flag sun"),
-            // ';', ':' and '(' / ')' all collapse to ", " (comma + single space).
-            ("a;b:c", "a, b, c"),
-            ("time: 10:30", "time, 10, 30"),
+            // ';', '(' / ')' and a ':' next to whitespace collapse to ", " (comma + single
+            // space); a ':' between two non-space characters is kept.
+            ("a;b:c", "a, b:c"),
+            ("time: 10:30", "time, 10:30"),
+            ("a :b", "a, b"),
+            ("note:", "note,"),
+            (":start", ", start"),
             ("; leading", ", leading"),
             ("hello (world)", "hello, world,"),
             // Surrounding whitespace is absorbed into the comma replacement.
@@ -397,28 +486,31 @@ mod tests {
             ("a   b\t\tc\n\nd", "a b c d"),
             ("hello   ", "hello"),
             ("a • b • c", "a b c"),
-            ("“Hello”; please email user@host (now)… 🚀", "Hello, please email user at host, now."),
+            (
+                "“Hello”; please email user@host (now)… 🚀",
+                "\"Hello\", please email user at host, now.",
+            ),
             (
                 "Numbers: one, two, three, four, five. Special items: at sign, hash, dollar, percent.",
                 "Numbers, one, two, three, four, five. Special items, at sign, hash, dollar, percent.",
             ),
             (
                 "The conference will be held on Tuesday, March 15th at 3:30 PM.",
-                "The conference will be held on Tuesday, March 15th at 3, 30 PM.",
+                "The conference will be held on Tuesday, March 15th at 3:30 PM.",
             ),
         ];
         for (input, expected) in cases {
-            assert_eq!(&normalize_text(input, Lang::En), expected, "input: {input:?}");
+            assert_eq!(&normalize_text(input, Lang::En, Rules::ALL), expected, "input: {input:?}");
         }
     }
 
     #[test]
     fn spoken_symbols_follow_the_language() {
-        assert_eq!(normalize_text("a@b", Lang::En), "a at b");
-        assert_eq!(normalize_text("a@b", Lang::Fr), "a arobaze b");
-        assert_eq!(normalize_text("a@b", Lang::De), "a ät b");
-        assert_eq!(normalize_text("1+1=2", Lang::Es), "1 mas 1 igual 2");
-        assert_eq!(normalize_text("1+1=2", Lang::Pt), "1 mais 1 igual 2");
+        assert_eq!(normalize_text("a@b", Lang::En, Rules::ALL), "a at b");
+        assert_eq!(normalize_text("a@b", Lang::Fr, Rules::ALL), "a arobaze b");
+        assert_eq!(normalize_text("a@b", Lang::De, Rules::ALL), "a ät b");
+        assert_eq!(normalize_text("1+1=2", Lang::Es, Rules::ALL), "1 mas 1 igual 2");
+        assert_eq!(normalize_text("1+1=2", Lang::Pt, Rules::ALL), "1 mais 1 igual 2");
     }
 
     /// The frontends take one flag for the language and for turning
@@ -427,14 +519,14 @@ mod tests {
     #[test]
     fn normalize_parses_and_round_trips() {
         for lang in [Lang::En, Lang::Fr, Lang::De, Lang::Es, Lang::Pt] {
-            let norm = Normalize::For(lang);
+            let norm = Normalize::for_lang(lang);
             assert_eq!(Normalize::parse(lang.as_str()).unwrap(), norm);
             assert_eq!(Normalize::parse(norm.as_str()).unwrap(), norm);
         }
-        assert_eq!(Normalize::parse("EN").unwrap(), Normalize::For(Lang::En));
-        assert_eq!(Normalize::parse("none").unwrap(), Normalize::Off);
-        assert_eq!(Normalize::parse("off").unwrap(), Normalize::Off);
-        assert_eq!(Normalize::parse(Normalize::Off.as_str()).unwrap(), Normalize::Off);
+        assert_eq!(Normalize::parse("EN").unwrap(), Normalize::for_lang(Lang::En));
+        assert_eq!(Normalize::parse("none").unwrap(), Normalize::OFF);
+        assert_eq!(Normalize::parse("off").unwrap(), Normalize::OFF);
+        assert_eq!(Normalize::parse(Normalize::OFF.as_str()).unwrap(), Normalize::OFF);
         let err = Normalize::parse("klingon").unwrap_err();
         assert!(matches!(err, crate::Error::InvalidArgument(_)), "{err:?}");
         let msg = err.to_string();
@@ -447,10 +539,14 @@ mod tests {
     #[test]
     fn apply_follows_the_policy() {
         use std::borrow::Cow;
-        assert_eq!(Normalize::Off.apply("a@b (c)"), "a@b (c)");
-        assert_eq!(Normalize::For(Lang::En).apply("a@b (c)"), "a at b, c,");
-        assert_eq!(Normalize::For(Lang::Fr).apply("a@b"), "a arobaze b");
-        assert!(matches!(Normalize::Off.apply("text"), Cow::Borrowed(_)));
+        assert_eq!(Normalize::OFF.apply("a@b (c)"), "a@b (c)");
+        assert_eq!(Normalize::for_lang(Lang::En).apply("a@b (c)"), "a at b, c,");
+        assert_eq!(Normalize::for_lang(Lang::Fr).apply("a@b"), "a arobaze b");
+        assert!(matches!(Normalize::OFF.apply("text"), Cow::Borrowed(_)));
+        // The rules travel with the policy, so `apply` is all a caller needs.
+        let en = Normalize::for_lang(Lang::En);
+        assert_eq!(en.apply("I paid 1500."), "I paid 1 thousand 500.");
+        assert_eq!(en.with_rules(Rules::NONE).apply("I paid 1500."), "I paid 1500.");
     }
 
     #[test]

@@ -1,41 +1,21 @@
-# wasm-pocket-tts
+# Pocket TTS in WebAssembly
 
-WebAssembly build of [Pocket TTS](../ptts/) — run text-to-speech directly in the browser.
+`ptts-wasm` runs the Rust Pocket TTS model in a browser. It exports a low-level [`Model`](src/lib.rs) that generates one 80 ms frame per call. The caller supplies weights, the matching `tokenizer.json`, and a voice safetensors file.
 
-Try it online [here](https://laurentmazare.github.io/pocket-tts).
+## Build and run the demo
 
-## Prerequisites
-
-Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/):
-
-```bash
-cargo install wasm-pack
-```
-
-## Build
-
-From the `ptts-wasm/` directory:
+Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) and build from this directory:
 
 ```bash
 make build
-```
-
-This runs `wasm-pack build` and copies `www/` into `pkg/`.
-
-## Run
-
-Serve the `pkg/` directory with any HTTP server, for example:
-
-```bash
-cd ptts-wasm/pkg
+cd pkg
 python3 -m http.server 8080
 ```
 
-Then open http://localhost:8080 in your browser. The page will download the
-model weights from HuggingFace on first use (~240 MB) and cache them for subsequent generations.
+Open `http://localhost:8080`. The demo fetches model files from Hugging Face when you load a model. It offers f32 and q8 weights; the q8 file is about 146 MB. The build requires WebAssembly Relaxed SIMD support in the browser.
 
-## Todo
+## Raw JavaScript API
 
-- Handle long prompts, see `split_into_best_sentences` in
-  [tts_model.py](https://github.com/kyutai-labs/pocket-tts/blob/aca7dc8db698e5885fe9dd4850bacfa757b429b1/pocket_tts/models/tts_model.py#L893).
-- Voice cloning.
+The `Model` constructor takes the weights and tokenizer as bytes, an optional `config.json` as bytes (or `undefined` for the original Pocket TTS architecture), `"f32"` or `"q8"`, and a required normalization language (`"en"`, `"fr"`, `"de"`, `"es"`, `"pt"`, or `"none"`). An optional final argument selects text rewrite rules.
+
+`start_generation` splits and tokenizes the text; `next_chunk` prompts each chunk; `generation_step` produces PCM until that chunk ends. `stop_generation()` cancels the current run. The page in [`www/`](www/) shows how to fetch files and run generation in a worker.

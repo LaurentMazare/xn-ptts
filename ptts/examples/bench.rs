@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use ptts::flow_lm::NormalRng;
+use ptts::flow_lm::{NormalRng, StepInput};
 use ptts::plan::{EosPolicy, frame_budget};
-use ptts::preprocess::Normalize;
+use ptts::preprocess::{Normalize, Rules};
 use ptts::tok::Tok;
 use ptts::tts_model::{TTSConfig, TTSModel, TTSState};
 use xn::{BackendQ, Tensor};
@@ -76,6 +76,11 @@ struct Args {
     /// `none` measures the unnormalized text, as runs that predate this flag did.
     #[arg(long)]
     lang: String,
+
+    /// Which word rewrites run on the normalized text: `all`, `none`, or a comma-separated list
+    /// of rule names, of which there is one today, `numbers`. Has no effect with `--lang none`.
+    #[arg(long, default_value = "all")]
+    rewrites: String,
 }
 
 /// One iteration's timings.
@@ -101,8 +106,6 @@ fn one<Q: BackendQ>(
     args: &Args,
     frame_rate: f64,
 ) -> Result<Run> {
-    let dev = model.device();
-    let ldim = model.flow_lm.ldim;
     let mut rng = NormalRng::new(args.temperature, args.seed)?;
     let mut frames = Vec::new();
     let mut sample_t = Vec::new();
@@ -116,14 +119,16 @@ fn one<Q: BackendQ>(
         model.prompt_text(&mut state, tokens)?;
         let mut mimi_state = model.init_mimi_state(1)?;
 
-        // BOS marker: an all-NaN latent.
-        let nan: Tensor<f32, Q::B> = Tensor::from_vec(vec![f32::NAN; ldim], (1, 1, ldim), dev)?;
-        let mut prev_latent = nan.to::<Q::T>()?;
+        let mut prev_latent: Option<Tensor<Q::T, Q::B>> = None;
         let mut eos = EosPolicy::new(*frames_after_eos);
 
         for _ in 0..frame_budget(tokens.len(), frame_rate) {
             let frame_start = Instant::now();
-            let (next_latent, is_eos) = model.generate_step(&mut state, &prev_latent, &mut rng)?;
+            let input = match &prev_latent {
+                None => StepInput::Bos { batch: 1 },
+                Some(t) => StepInput::Latent(t),
+            };
+            let (next_latent, is_eos) = model.generate_step(&mut state, input, &mut rng)?;
             let sampled = Instant::now();
             // Decoding on this thread rather than overlapped, so the measurement attributes
             // sampling and decoding to the frame that caused them.
@@ -140,7 +145,7 @@ fn one<Q: BackendQ>(
             if eos.should_stop(is_eos) {
                 break;
             }
-            prev_latent = next_latent;
+            prev_latent = Some(next_latent);
         }
     }
 
@@ -270,6 +275,10 @@ impl Bench<'_> {
             }
             runs.push(r);
         }
+        anyhow::ensure!(
+            runs.iter().all(|r| r.samples > 0),
+            "no audio generated, nothing to measure"
+        );
         let first = &runs[0];
         let audio_ms = |r: &Run| r.samples as f64 / model.sample_rate() as f64 * 1e3;
         let totals: Vec<f64> = runs.iter().map(|r| ms(r.total)).collect();
@@ -281,8 +290,8 @@ impl Bench<'_> {
             runs.iter().flat_map(|r| r.sample_t.iter().copied().map(ms)).collect();
         let decode_t: Vec<f64> =
             runs.iter().flat_map(|r| r.decode_t.iter().copied().map(ms)).collect();
-        // Audio produced per unit of wall time, so higher is faster than realtime.
-        let rtfs: Vec<f64> = runs.iter().map(|r| audio_ms(r) / ms(r.total)).collect();
+        // Wall time per unit of audio produced, so below 1.0 is faster than realtime.
+        let rtfs: Vec<f64> = runs.iter().map(|r| ms(r.total) / audio_ms(r)).collect();
 
         println!();
         println!(
@@ -305,7 +314,7 @@ impl Bench<'_> {
             ("per-frame", "ms", 3, &frames),
             ("  flow_lm sample", "ms", 3, &sample_t),
             ("  mimi decode", "ms", 3, &decode_t),
-            ("rtf (higher is better)", "x realtime", 2, &rtfs),
+            ("rtf (lower is better)", "ratio", 4, &rtfs),
         ] {
             row(label, unit, prec, &Stats::of(xs));
         }
@@ -318,7 +327,7 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
     // Parsed before the weights are read, so a bad --lang does not cost a model load.
-    let normalize = Normalize::parse(&args.lang)?;
+    let normalize = Normalize::parse(&args.lang)?.with_rules(Rules::parse(&args.rewrites)?);
     if let Some(threads) = args.threads {
         // Must happen before the first tensor op, since it sets the size of rayon's global pool.
         xn::set_num_threads(threads);

@@ -3,8 +3,10 @@
 #
 #    maturin generate-ci github -m ptts-pyo3/Cargo.toml
 #
-# One thing is hand-added and a regeneration would drop it: every job deletes
-# `.cargo/config.toml` and sets `RUSTFLAGS` itself. That file pins `target-cpu=native`, which
+# Three things are hand-added and a regeneration would drop them: the `test-wheel` step, which
+# installs the wheel a job just built and runs pytest against it; the pinned `python-version`
+# in each wheel job, so the runner is guaranteed to be among the tags the build produced; and
+# every job deleting `.cargo/config.toml` and setting `RUSTFLAGS` itself. That file pins `target-cpu=native`, which
 # in a published wheel means "whatever CPU the runner happened to have" -- a wheel that can
 # fault with SIGILL on someone's older machine.
 #
@@ -43,7 +45,9 @@ jobs:
         run: rm -f .cargo/config.toml
       - uses: actions/setup-python@v7
         with:
-          python-version: 3.x
+          # Pinned, not `3.x`: the test step below can only install a wheel whose tag
+          # `--find-interpreter` actually produced, and `3.x` floats to the newest release.
+          python-version: '3.13'
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -53,6 +57,7 @@ jobs:
           manylinux: auto
         env:
           RUSTFLAGS: -C target-cpu=x86-64-v3
+      - uses: ./.github/actions/test-wheel
       - name: Upload wheels
         uses: actions/upload-artifact@v7
         with:
@@ -73,7 +78,9 @@ jobs:
         run: rm -f .cargo/config.toml
       - uses: actions/setup-python@v7
         with:
-          python-version: 3.x
+          # Pinned, not `3.x`: the test step below can only install a wheel whose tag
+          # `--find-interpreter` actually produced, and `3.x` floats to the newest release.
+          python-version: '3.13'
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -83,6 +90,8 @@ jobs:
           manylinux: musllinux_1_2
         env:
           RUSTFLAGS: -C target-cpu=x86-64-v3
+      # No test step: these are musl wheels and the runner is glibc, so there is no
+      # interpreter here that can install one.
       - name: Upload wheels
         uses: actions/upload-artifact@v7
         with:
@@ -103,7 +112,9 @@ jobs:
         run: rm -f .cargo/config.toml
       - uses: actions/setup-python@v7
         with:
-          python-version: 3.x
+          # Pinned, not `3.x`: the test step below can only install a wheel whose tag
+          # `--find-interpreter` actually produced, and `3.x` floats to the newest release.
+          python-version: '3.13'
           architecture: ${{ matrix.platform.target }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -113,6 +124,7 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
         env:
           RUSTFLAGS: -C target-cpu=x86-64-v3
+      - uses: ./.github/actions/test-wheel
       - name: Upload wheels
         uses: actions/upload-artifact@v7
         with:
@@ -133,7 +145,9 @@ jobs:
         run: rm -f .cargo/config.toml
       - uses: actions/setup-python@v7
         with:
-          python-version: 3.x
+          # Pinned, not `3.x`: the test step below can only install a wheel whose tag
+          # `--find-interpreter` actually produced, and `3.x` floats to the newest release.
+          python-version: '3.13'
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -142,6 +156,7 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
         env:
           RUSTFLAGS: "-C target-cpu=apple-m1"
+      - uses: ./.github/actions/test-wheel
       - name: Upload wheels
         uses: actions/upload-artifact@v7
         with:

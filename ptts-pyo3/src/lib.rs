@@ -3,7 +3,7 @@
 //! ```python
 //! import ptts
 //!
-//! tts = ptts.TTS()
+//! tts = ptts.TTS(lang="en")
 //! tts.save("out.wav", "Hello world")
 //! ```
 //!
@@ -16,7 +16,7 @@
 //! other Python thread wanting the same lock, and Ctrl-C reaches neither.
 
 use numpy::{PyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
-use ptts::preprocess::Normalize;
+use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant, SpeechOptions, SpeechStream, Synth, SynthBuilder};
 use ptts::tts_model::TTSConfig;
 use pyo3::prelude::*;
@@ -210,7 +210,7 @@ struct Tts {
 
 #[pymethods]
 impl Tts {
-    /// `TTS(*, lang, config=None, device=None, quant=None, voice=None, temperature=0.5, seed=..., cfg_coef=None, eos_threshold=None)`
+    /// `TTS(*, lang, rewrites="all", config=None, device=None, quant=None, voice=None, temperature=0.3, seed=..., cfg_coef=None, eos_threshold=None)`
     ///
     /// `lang` is required and keyword-only: the language text is normalized as
     /// before it is tokenized, one of `"en"`, `"fr"`, `"de"`, `"es"` or
@@ -218,18 +218,23 @@ impl Tts {
     /// forms of `@`, `+` and `=` differ per language, so there is nothing safe
     /// to default to. `lang="none"` or `lang=None` hands text to the tokenizer
     /// as written, for callers that normalize it themselves.
+    ///
+    /// `rewrites` picks which word rewrites run on the normalized text:
+    /// `"all"` (the default), `"none"`, or a comma-separated list of rule
+    /// names, of which there is one today, `"numbers"`.
     #[new]
     #[pyo3(signature = (
         config = None,
         device = None,
         quant = None,
         voice = None,
-        temperature = 0.5,
+        temperature = 0.3,
         seed = 4242424242424242,
         cfg_coef = None,
         eos_threshold = None,
         *,
         lang,
+        rewrites = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -243,14 +248,20 @@ impl Tts {
         cfg_coef: Option<f32>,
         eos_threshold: Option<f32>,
         lang: Option<&str>,
+        rewrites: Option<&str>,
     ) -> PyResult<Self> {
         // `None` opts out as well as `"none"`: `lang` has to be passed, but a
         // caller forwarding a config value should not have to special-case the
         // absent one.
         let normalize = match lang {
-            None => Normalize::Off,
+            None => Normalize::OFF,
             Some(lang) => Normalize::parse(lang).py()?,
         };
+        let rules = match rewrites {
+            None => Rules::ALL,
+            Some(rewrites) => Rules::parse(rewrites).py()?,
+        };
+        let normalize = normalize.with_rules(rules);
         let device = match device {
             None => DeviceKind::Auto,
             Some(name) => DeviceKind::parse(name).py()?,
@@ -624,7 +635,7 @@ fn build_info(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     Ok(info)
 }
 
-#[pymodule(name = "ptts")]
+#[pymodule(name = "_ptts")]
 fn ptts_(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<Tts>()?;
