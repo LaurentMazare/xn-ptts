@@ -25,9 +25,20 @@ The package loads `model.safetensors` when present, otherwise `model.q8.gguf`; a
 
 ## Speech and voices
 
-`tts.synth(text)` returns a one-dimensional float32 NumPy array at `tts.sample_rate`. `tts.save(path, text)` writes a mono 16-bit WAV and returns its duration. `tts.stream(text)` yields PCM chunks and can be used as a context manager to stop early.
+Inside that Python script, reuse `tts` across requests. Use `synth` for an array, `save` for a WAV, or `stream` for chunks as they are decoded:
 
-`tts.voices` lists the names loaded from `voices/`. Pass `voice="name"` to any speech method to select one. If `tts.supports_voice_cloning` is true, `tts.clone_voice("me", pcm)` accepts a short float32 mono voice prompt sampled at `tts.voice_prompt_sample_rate`.
+```python
+voice = tts.voices[0]
+pcm = tts.synth("Hello", voice=voice)  # 1-D float32 NumPy array
+seconds = tts.save("out.wav", "Hello", voice=voice)
+with tts.stream("A longer sentence.", voice=voice) as audio:
+    for chunk in audio:
+        print(chunk.shape)  # process each PCM chunk as it arrives
+```
+
+`tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early.
+
+`tts.voices` lists the names loaded from `voices/`. Pass `voice="name"` to any speech method to select one. If `tts.supports_voice_cloning` is true, `tts.clone_voice("me", voice_prompt_pcm)` accepts a short float32 mono voice prompt sampled at `tts.voice_prompt_sample_rate`.
 
 ## Command line
 
