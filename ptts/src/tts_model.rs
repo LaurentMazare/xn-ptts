@@ -531,8 +531,5 @@ pub fn prepare_text_prompt(text: &str) -> (String, usize) {
     if text.chars().last().is_some_and(|c| c.is_alphanumeric()) {
         text.push('.');
     }
-    if text.split_whitespace().count() < 5 {
-        text = format!("        {text}");
-    }
     (text, frames_after_eos)
 }
