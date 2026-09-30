@@ -276,6 +276,9 @@ fn resolve(defaults: &Defaults, opts: &SpeechOptions) -> Result<Defaults> {
 struct Voice<Q: BackendQ> {
     emb: Tensor<Q::T, Q::B>,
     null_emb: Option<Tensor<Q::T, Q::B>>,
+    /// Set for a voice that is a value of a summed LUT conditioning (see
+    /// [`TTSModel::set_sum_conditions`]), which has no prompt: `emb` is then empty and unused.
+    sum: Option<BTreeMap<String, String>>,
 }
 
 /// A loaded model, with the weight format fixed at compile time.
@@ -353,7 +356,7 @@ impl<Q: BackendQ> SynthOf<Q> {
             loader::load_voice_emb(path, model_ext.as_deref(), self.model.speaker_proj(), &dev)?
                 .to::<Q::T>()?;
         self.forget_primed(name);
-        self.voices.insert(name.to_string(), Voice { emb, null_emb: None });
+        self.voices.insert(name.to_string(), Voice { emb, null_emb: None, sum: None });
         Ok(())
     }
 
@@ -398,7 +401,7 @@ impl<Q: BackendQ> SynthOf<Q> {
             Some(enc.encode_audio(&pcm.zeros_like()?)?)
         };
         self.forget_primed(name);
-        self.voices.insert(name.to_string(), Voice { emb, null_emb });
+        self.voices.insert(name.to_string(), Voice { emb, null_emb, sum: None });
         Ok(())
     }
 
@@ -441,7 +444,7 @@ impl<Q: BackendQ> SynthOf<Q> {
             Some(null) => Some(to_tensor(null)?),
         };
         self.forget_primed(name);
-        self.voices.insert(name.to_string(), Voice { emb, null_emb });
+        self.voices.insert(name.to_string(), Voice { emb, null_emb, sum: None });
         Ok(())
     }
 
@@ -580,6 +583,24 @@ impl<Q: BackendQ> SynthOf<Q> {
             },
         };
 
+        if let Some((_, Voice { sum: Some(sum), .. })) = voice {
+            // A summed-LUT voice: nothing to prime, the value is added to every audio frame.
+            // The null branch gets each LUT's learnt padding, as training does for a dropped
+            // attribute.
+            let values = sum.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+            let mut state = self.model.init_flow_lm_state(1, seq_budget)?;
+            self.model.set_sum_conditions(&mut state, &values)?;
+            let cfg_state = match cfg_coef {
+                None => None,
+                Some(coef) => {
+                    let mut null_state = self.model.init_flow_lm_state(1, seq_budget)?;
+                    self.model.set_sum_conditions(&mut null_state, &Default::default())?;
+                    Some((coef, null_state))
+                }
+            };
+            return Ok((state, cfg_state));
+        }
+
         let Some((name, voice)) = voice else {
             let state = self.model.init_flow_lm_state(1, seq_budget)?;
             let cfg_state = match cfg_coef {
@@ -682,7 +703,8 @@ impl<Q: BackendQ> std::fmt::Debug for SynthOf<Q> {
 /// A fresh, independently-owned state at `seq_budget`, seeded with `prefix`'s filled positions.
 fn grow<Q: BackendQ>(prefix: &TTSState<Q>, seq_budget: usize) -> Result<TTSState<Q>> {
     let transformer_state = prefix.flow_lm_state.transformer_state.with_seq_budget(seq_budget)?;
-    Ok(TTSState { flow_lm_state: crate::flow_lm::FlowLMState { transformer_state } })
+    let extra_sum = prefix.flow_lm_state.extra_sum.clone();
+    Ok(TTSState { flow_lm_state: crate::flow_lm::FlowLMState { transformer_state, extra_sum } })
 }
 
 /// Split `text` into chunks and work out the budgets for each.
@@ -1407,6 +1429,18 @@ impl SynthBuilder {
             },
             normalize: self.normalize,
         };
+
+        // A model whose voice is a summed LUT (no speaker prompt) gets each of its values as a
+        // voice, named by the value. Only with a single summed LUT: with several, a voice would
+        // have to pick a value in each.
+        if let [lut] = synth.model.sum_luts() {
+            let empty = Tensor::zeros((1, 0, synth.cfg.flow_lm.d_model), &device)?;
+            for value in lut.values.iter() {
+                let sum = BTreeMap::from([(lut.name.clone(), value.clone())]);
+                let voice = Voice { emb: empty.clone(), null_emb: None, sum: Some(sum) };
+                synth.voices.insert(value.clone(), voice);
+            }
+        }
 
         for (name, path) in self.voices.iter() {
             synth.add_voice_file(name, path)?;
