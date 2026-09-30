@@ -40,7 +40,7 @@ use xn::{BackendQ, CPU, CpuDevice, Result, Tensor, TypedTensor, Unquantized};
 type RawState = StreamingTransformerState<f32, CpuDevice>;
 
 fn wrap_state<Q: BackendQ<T = f32, B = CpuDevice>>(raw: RawState) -> TTSState<Q> {
-    TTSState { flow_lm_state: FlowLMState { transformer_state: raw } }
+    TTSState { flow_lm_state: FlowLMState { transformer_state: raw, extra_sum: None } }
 }
 
 /// Slots a voice state already occupies: the voice prompt's frames. Every flow-LM layer

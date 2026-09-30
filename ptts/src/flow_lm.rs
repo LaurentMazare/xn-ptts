@@ -144,6 +144,10 @@ pub enum StepInput<'a, Q: BackendQ> {
 #[derive(Clone, Debug)]
 pub struct FlowLMState<Q: BackendQ> {
     pub transformer_state: StreamingTransformerState<Q::T, Q::B>,
+    /// Added to every audio frame on top of `num_speakers`: the per-state LUT conditionings
+    /// that `fuser.sum` lists, such as a fixed voice. Set by
+    /// [`crate::tts_model::TTSModel::set_sum_conditions`]; `None` adds nothing.
+    pub extra_sum: Option<Tensor<Q::T, Q::B>>,
 }
 
 impl<Q: BackendQ> FlowLM<Q> {
@@ -219,7 +223,7 @@ impl<Q: BackendQ> FlowLM<Q> {
 
     pub fn init_state(&self, batch_size: usize, sequence_length: usize) -> Result<FlowLMState<Q>> {
         let transformer_state = self.transformer.init_state(batch_size, sequence_length)?;
-        Ok(FlowLMState { transformer_state })
+        Ok(FlowLMState { transformer_state, extra_sum: None })
     }
 
     /// Run the backbone: concat text_embeddings + input, run transformer, strip prefix.
@@ -233,6 +237,10 @@ impl<Q: BackendQ> FlowLM<Q> {
         let input = match self.num_speakers.as_ref() {
             Some(ns) => input.broadcast_add(ns)?,
             None => input.clone(),
+        };
+        let input = match state.extra_sum.as_ref() {
+            Some(extra) => input.broadcast_add(extra)?,
+            None => input,
         };
         let input = Tensor::cat(&[text_embeddings, &input], 1)?;
         let out = self.transformer.forward(&input, &mut state.transformer_state)?;

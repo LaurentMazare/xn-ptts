@@ -1,3 +1,4 @@
+use crate::conditioners::LUTConditioner;
 use crate::flow_lm::{FlowLM, FlowLMConfig, FlowLMState};
 use crate::mimi::{MimiConfig, MimiDecoder, MimiDecoderState, MimiEncoder};
 use xn::nn::{Linear, var_builder::Path};
@@ -13,10 +14,13 @@ pub struct FuserConfig {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LutConditioner {
-    n_bins: usize,
-    dim: usize,
-    possible_values: Vec<String>,
-    tokenizer: String,
+    pub n_bins: usize,
+    pub dim: usize,
+    pub possible_values: Vec<String>,
+    pub tokenizer: String,
+    /// What an unknown value maps to in training (`''` is the padding slot). Informational.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -173,8 +177,19 @@ pub struct TTSModel<Q: BackendQ> {
     pub flow_lm: FlowLM<Q>,
     pub mimi: MimiDecoder<Unquantized<f32, Q::B>>,
     speaker_proj: Option<Linear<f32, Q::B>>,
+    sum_luts: Vec<SumLut<Q>>,
     lsd_decode_steps: usize,
     eos_threshold: f32,
+}
+
+/// A LUT conditioning summed into every audio frame whose value is chosen per state, e.g. a
+/// fixed voice (audium's `config/conditioner/tts_voice_lut.yaml`). These are the `fuser.sum`
+/// entries of `conditioners` other than `num_speakers`, which keeps its fixed-value path.
+pub struct SumLut<Q: BackendQ> {
+    pub name: String,
+    pub values: Vec<String>,
+    n_bins: usize,
+    cond: LUTConditioner<Q::T, Q::B>,
 }
 
 #[derive(Clone, Debug)]
@@ -191,11 +206,28 @@ impl<Q: BackendQ> TTSModel<Q> {
         let flow_lm = FlowLM::load(&vb.pp("flow_lm"), tokenizer, &cfg.flow_lm)?;
         let mimi = MimiDecoder::load(&vb.pp("mimi"), &cfg.mimi)?;
         let speaker_proj = crate::loader::load_speaker_proj(vb, cfg)?;
+        let mut sum_luts = vec![];
+        for cond in cfg.conditioners.iter() {
+            if cond.name == "num_speakers" || !cfg.fuser.sum.contains(&cond.name) {
+                continue;
+            }
+            let ConditionerInnerConfig::Lut { lut } = &cond.inner;
+            let vb = vb.pp(format!("flow_lm.condition_provider.conditioners.{}", cond.name));
+            let lut_cond =
+                LUTConditioner::load(&vb, lut.n_bins, None, lut.dim, cfg.flow_lm.d_model)?;
+            sum_luts.push(SumLut {
+                name: cond.name.clone(),
+                values: lut.possible_values.clone(),
+                n_bins: lut.n_bins,
+                cond: lut_cond,
+            });
+        }
 
         Ok(Self {
             flow_lm,
             mimi,
             speaker_proj,
+            sum_luts,
             lsd_decode_steps: cfg.lsd_decode_steps,
             eos_threshold: cfg.eos_threshold,
         })
@@ -214,6 +246,51 @@ impl<Q: BackendQ> TTSModel<Q> {
     /// speaker latents go through it in [`crate::loader::load_voice_emb`].
     pub fn speaker_proj(&self) -> Option<&Linear<f32, Q::B>> {
         self.speaker_proj.as_ref()
+    }
+
+    /// The per-state summed LUT conditionings, see [`SumLut`].
+    pub fn sum_luts(&self) -> &[SumLut<Q>] {
+        &self.sum_luts
+    }
+
+    /// Choose the value of every per-state summed LUT for `state`. A name mapped to
+    /// `Some(value)` embeds that value; a name that is absent or mapped to `None` gets the
+    /// learnt padding, which is what training feeds for a dropped attribute and so what a CFG
+    /// null state needs. Naming a LUT the model does not have, or a value it does not know, is
+    /// an error rather than a silent fall back to padding.
+    pub fn set_sum_conditions(
+        &self,
+        state: &mut TTSState<Q>,
+        values: &std::collections::HashMap<String, Option<String>>,
+    ) -> Result<()> {
+        for name in values.keys() {
+            if !self.sum_luts.iter().any(|lut| &lut.name == name) {
+                let known: Vec<_> = self.sum_luts.iter().map(|lut| lut.name.as_str()).collect();
+                xn::bail!("the model has no summed LUT conditioning '{name}', it has {known:?}")
+            }
+        }
+        let mut total: Option<Tensor<Q::T, Q::B>> = None;
+        for lut in self.sum_luts.iter() {
+            let id = match values.get(&lut.name).cloned().flatten() {
+                Some(value) => match lut.values.iter().position(|v| *v == value) {
+                    Some(index) => index as u32,
+                    None => xn::bail!(
+                        "unknown value '{value}' for '{}', expected one of {:?}",
+                        lut.name,
+                        lut.values
+                    ),
+                },
+                // Without a learnt padding, training's padding slot is `n_bins`.
+                None => lut.cond.learnt_padding_id().unwrap_or(lut.n_bins as u32),
+            };
+            let emb = lut.cond.embed_tokens(&[id])?;
+            total = Some(match total {
+                Some(total) => total.broadcast_add(&emb)?,
+                None => emb,
+            });
+        }
+        state.flow_lm_state.extra_sum = total;
+        Ok(())
     }
 
     /// Initialize flow LM state with the given sequence length budget.
@@ -276,6 +353,11 @@ impl<Q: BackendQ> TTSModel<Q> {
         state: &mut TTSState<Q>,
         audio_conditioning: &Tensor<Q::T, Q::B>,
     ) -> Result<()> {
+        // Nothing to prompt, e.g. a model conditioned on a summed voice with no voice prefix.
+        // Running the backbone on zero frames fails on CUDA (CUDA_ERROR_INVALID_VALUE).
+        if audio_conditioning.dims3()?.1 == 0 {
+            return Ok(());
+        }
         let dev = audio_conditioning.device();
         let empty_latents = Tensor::zeros((1, 0, self.flow_lm.ldim), dev)?;
         let text_embeddings = Tensor::cat(&[&self.empty_text()?, audio_conditioning], 1)?;
