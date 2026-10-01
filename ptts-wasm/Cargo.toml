@@ -20,6 +20,9 @@ serde_json = { workspace = true }
 # Not `rand` / `rand_distr`: the noise source is `ptts::flow_lm::NormalRng` now. `getrandom`
 # stays, because selecting its `wasm_js` backend is this crate's business, not the library's.
 getrandom = { workspace = true, features = ["wasm_js"] }
+# The `threads` build only: Web Workers for rayon, which xn's CPU pool then runs on.
+rayon = { version = "1", optional = true }
+wasm-bindgen-rayon = { version = "1.3", optional = true }
 
 [package.metadata.wasm-pack.profile.profiling]
 wasm-opt = false
@@ -27,3 +30,6 @@ wasm-opt = false
 [features]
 default = []
 webgpu = ["xn/webgpu"]
+# Generation on several CPU threads. Needs a nightly toolchain with std rebuilt for atomics,
+# and a page that is cross-origin isolated: see the `build-threads` target in the Makefile.
+threads = ["dep:rayon", "dep:wasm-bindgen-rayon"]

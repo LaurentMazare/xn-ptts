@@ -56,6 +56,15 @@ export interface LoadOptions {
   workerUrl?: string | URL;
   /** Where `phonon_tts_bg.wasm` is, when it is served from somewhere other than beside the worker. */
   wasmUrl?: string | URL;
+  /** The same for the threaded build, `wasm-threads/phonon_tts_bg.wasm`. */
+  threadsWasmUrl?: string | URL;
+  /**
+   * CPU threads to generate on, counting the worker that owns the model. Default `'auto'`:
+   * up to 4 on a desktop and 3 on a phone, never more than the device has cores. Threads
+   * need a cross-origin isolated page (see the README); elsewhere generation runs on one
+   * thread whatever this says, and {@link PhononTTS.threadsReason} says why.
+   */
+  threads?: number | 'auto';
 }
 
 export interface SpeechOptions {
@@ -105,6 +114,10 @@ export declare class PhononTTS {
   readonly sampleRate: number;
   /** SIMD features the wasm module was built with, e.g. `{ simd128: true }`. */
   readonly features: Record<string, boolean>;
+  /** CPU threads generation runs on, counting the worker that owns the model. */
+  readonly threads: number;
+  /** Why {@link PhononTTS.threads} is what it is, e.g. `'the page is not cross-origin isolated'`. */
+  readonly threadsReason: string;
   /** Voices this model can speak with: bundled ones and any added. */
   readonly voices: string[];
 

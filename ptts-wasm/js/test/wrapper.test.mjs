@@ -27,7 +27,11 @@ class FakeWorker {
     this.log.push(type);
     if (type === 'init') {
       this.init = msg.options;
-      return this.reply({ type: 'result', id, value: { sampleRate: 24000, features: {} } });
+      return this.reply({
+        type: 'result',
+        id,
+        value: { sampleRate: 24000, features: {}, threads: 4, threadsReason: 'default' },
+      });
     }
     if (type === 'add_voice') return this.reply({ type: 'result', id });
     if (type === 'cancel') return this.cancelled.add(id);
@@ -58,6 +62,22 @@ const { PhononTTS } = await import('../index.js');
 
 const MODEL = { weights: { q8: 'w' }, tokenizer: 't', voices: { alba: 'a', marius: 'm' } };
 const load = () => PhononTTS.load({ lang: 'en', model: MODEL, workerUrl: 'worker.js' });
+
+test('threads is checked before the worker starts, handed to it, and reported back', async () => {
+  FakeWorker.last = null;
+  for (const threads of [0, -1, 2.5, '4', null]) {
+    await assert.rejects(PhononTTS.load({ lang: 'en', model: MODEL, threads }), /threads must be/);
+  }
+  assert.equal(FakeWorker.last, null);
+  const tts = await PhononTTS.load({ lang: 'en', model: MODEL, threads: 2, workerUrl: 'worker.js' });
+  assert.equal(FakeWorker.last.init.threads, 2);
+  // What the worker says it got, not what was asked for.
+  assert.equal(tts.threads, 4);
+  assert.equal(tts.threadsReason, 'default');
+  tts.dispose();
+  await PhononTTS.load({ lang: 'en', model: MODEL, workerUrl: 'worker.js' });
+  assert.equal(FakeWorker.last.init.threads, 'auto');
+});
 
 test('lang is required', async () => {
   await assert.rejects(PhononTTS.load({ model: MODEL }), /lang is required/);

@@ -80,11 +80,11 @@ cargo run --release --features hf,accelerate --example bench -- \
 From `ptts-wasm/`:
 
 ```
-make build        # the phonon-tts npm package in pkg/: wasm-pack output in pkg/wasm/, plus js/
+make build        # the phonon-tts npm package in pkg/: wasm-pack output in pkg/wasm/ and pkg/wasm-threads/, plus js/
 make profiling    # same but --profiling (no wasm-opt)
 ```
 
-Requires `wasm-pack` (`cargo install wasm-pack`), node, and binaryen's `wasm-opt` 124 or later on `PATH`: wasm-pack otherwise downloads binaryen 117, and releases up to 123 abort on this module. Serve `pkg/` with any static server (e.g. `python3 -m http.server 8080`). The demo downloads model weights (~240 MB) from HuggingFace and caches them. Wasm SIMD flags (`+simd128,+relaxed-simd`) and `getrandom_backend="wasm_js"` come from `.cargo/config.toml`.
+Requires `wasm-pack` (`cargo install wasm-pack`), node, and binaryen's `wasm-opt` 124 or later on `PATH`: wasm-pack otherwise downloads binaryen 117, and releases up to 123 abort on this module. The threaded build (`pkg/wasm-threads/`, the `threads` feature) also needs the nightly pinned in the Makefile with `rust-src`, since wasm threads need std rebuilt with atomics: `make threads-toolchain` installs it. `js/worker.js` loads that build only on a cross-origin isolated page, and the single-threaded one otherwise; `js/threads.js` picks the thread count. Serve `pkg/` with any static server (e.g. `python3 -m http.server 8080`). The demo downloads model weights (~240 MB) from HuggingFace and caches them. Wasm SIMD flags (`+simd128,+relaxed-simd`) and `getrandom_backend="wasm_js"` come from `.cargo/config.toml`.
 
 ## Python build
 

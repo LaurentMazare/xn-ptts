@@ -34,6 +34,10 @@ export class PhononTTS {
   sampleRate;
   /** SIMD features the wasm module was built with, e.g. `{ simd128: true }`. */
   features;
+  /** CPU threads generation runs on, counting the worker that owns the model. */
+  threads;
+  /** Why `threads` is what it is, e.g. `'default'` or `'the page is not cross-origin isolated'`. */
+  threadsReason;
 
   /**
    * Download (or read from cache) a checkpoint and start it in a worker.
@@ -52,6 +56,8 @@ export class PhononTTS {
       onProgress,
       workerUrl,
       wasmUrl,
+      threadsWasmUrl,
+      threads = 'auto',
     } = options ?? {};
     // Required, as in every other frontend: the spoken forms of `@`, `+` and `=` differ per
     // language, so normalizing German text as English is worse than not normalizing at all.
@@ -60,6 +66,9 @@ export class PhononTTS {
     }
     if (quant !== 'f32' && quant !== 'q8') {
       throw new TypeError(`quant must be 'f32' or 'q8', got '${quant}'`);
+    }
+    if (threads !== 'auto' && !(Number.isInteger(threads) && threads >= 1)) {
+      throw new TypeError(`threads must be 'auto' or a positive integer, got ${JSON.stringify(threads)}`);
     }
     // Checked here rather than left to Rust: `load` is async and the error would otherwise
     // arrive after the weights had been downloaded. This mirrors `Rules::parse`, which trims
@@ -89,7 +98,7 @@ export class PhononTTS {
       : new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
     const tts = new PhononTTS(worker, model, defaultVoice);
     try {
-      const { sampleRate, features } = await tts.#request(
+      const { sampleRate, features, threads: threadsUsed, threadsReason } = await tts.#request(
         {
           type: 'init',
           options: {
@@ -100,12 +109,16 @@ export class PhononTTS {
             preload,
             cache,
             wasmUrl: wasmUrl ? resolveUrl(wasmUrl) : undefined,
+            threadsWasmUrl: threadsWasmUrl ? resolveUrl(threadsWasmUrl) : undefined,
+            threads,
           },
         },
         { onProgress },
       );
       tts.sampleRate = sampleRate;
       tts.features = features;
+      tts.threads = threadsUsed;
+      tts.threadsReason = threadsReason;
       return tts;
     } catch (e) {
       tts.dispose();

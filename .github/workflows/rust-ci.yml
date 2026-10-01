@@ -228,6 +228,10 @@ jobs:
           curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_124/binaryen-version_124-x86_64-linux.tar.gz \
             | tar xz -C "$RUNNER_TEMP" binaryen-version_124/bin/wasm-opt
           echo "$RUNNER_TEMP/binaryen-version_124/bin" >> "$GITHUB_PATH"
+      # The package's threaded build needs std rebuilt with atomics, so a pinned nightly with
+      # rust-src. The Makefile holds the version.
+      - name: Install the toolchain for the threaded build
+        run: make -C ptts-wasm threads-toolchain
       - name: Build the npm package
         working-directory: ptts-wasm
         env:

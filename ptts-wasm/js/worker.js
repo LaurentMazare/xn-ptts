@@ -5,8 +5,8 @@
 // below yields to the event loop between frames. That is what lets a `cancel` message land
 // mid-utterance.
 
-import init, { Model, cpu_features } from './wasm/phonon_tts.js';
 import { fetchBytes } from './fetch.js';
+import { chooseThreads } from './threads.js';
 
 let model = null;
 let settings = null;
@@ -28,10 +28,41 @@ const yieldToEventLoop = () =>
     channel.port2.postMessage(null);
   });
 
-async function handleInit(id, options) {
-  settings = options;
+/**
+ * Load the wasm build to run on, and start its threads.
+ *
+ * There are two builds. `wasm-threads/` runs generation on several threads, but its memory
+ * is shared, which a page can only create when it is cross-origin isolated; `wasm/` runs on
+ * this thread alone and loads anywhere. The threaded one is tried when the page allows it
+ * and more than one thread is wanted, and the single-threaded one otherwise or if that
+ * fails, so a page that cannot have threads still speaks.
+ *
+ * Both `import()`s name their file literally, which is what lets a bundler find and emit
+ * both builds.
+ */
+async function loadWasm(options) {
+  const choice = chooseThreads({
+    requested: options.threads,
+    isolated: self.crossOriginIsolated === true,
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    userAgent: navigator.userAgent,
+  });
+  let reason = choice.reason;
+  if (choice.threads > 1) {
+    try {
+      const wasm = await import('./wasm-threads/phonon_tts.js');
+      await wasm.default(options.threadsWasmUrl ? { module_or_path: options.threadsWasmUrl } : undefined);
+      const workers = choice.threads - 1;
+      // rayon's Web Workers first, then xn's CPU pool on them; both before any model loads.
+      await wasm.initThreadPool(workers);
+      return { wasm, threads: wasm.start_cpu_pool(workers), reason };
+    } catch (e) {
+      reason = `threads failed to start: ${e instanceof Error ? e.message : e}`;
+    }
+  }
+  const wasm = await import('./wasm/phonon_tts.js');
   try {
-    await init(options.wasmUrl ? { module_or_path: options.wasmUrl } : undefined);
+    await wasm.default(options.wasmUrl ? { module_or_path: options.wasmUrl } : undefined);
   } catch (e) {
     if (e instanceof WebAssembly.CompileError) {
       throw new Error(
@@ -40,6 +71,12 @@ async function handleInit(id, options) {
     }
     throw e;
   }
+  return { wasm, threads: 1, reason };
+}
+
+async function handleInit(id, options) {
+  settings = options;
+  const { wasm, threads, reason } = await loadWasm(options);
 
   const { model: spec, quant, cache } = options;
   const weightsUrl = spec.weights[quant];
@@ -51,10 +88,10 @@ async function handleInit(id, options) {
     fetchBytes(spec.tokenizer, { cache, onProgress: progress('tokenizer') }),
     spec.config ? fetchBytes(spec.config, { cache, onProgress: progress('config') }) : null,
   ]);
-  model = new Model(weights, tokenizer, config ?? undefined, quant, options.lang, options.rewrites);
+  model = new wasm.Model(weights, tokenizer, config ?? undefined, quant, options.lang, options.rewrites);
 
   for (const name of options.preload) await voiceIndex(name, progress(`voice:${name}`));
-  return { sampleRate: model.sample_rate(), features: cpu_features() };
+  return { sampleRate: model.sample_rate(), features: wasm.cpu_features(), threads, threadsReason: reason };
 }
 
 /** The index of voice `name`, fetching and registering it on first use. */

@@ -15,6 +15,7 @@
     },
     "./worker.js": "./worker.js",
     "./wasm/phonon_tts_bg.wasm": "./wasm/phonon_tts_bg.wasm",
+    "./wasm-threads/phonon_tts_bg.wasm": "./wasm-threads/phonon_tts_bg.wasm",
     "./package.json": "./package.json"
   },
   "files": [
@@ -24,10 +25,12 @@
     "fetch.js",
     "models.js",
     "wav.js",
+    "threads.js",
     "wasm/phonon_tts.js",
     "wasm/phonon_tts.d.ts",
     "wasm/phonon_tts_bg.wasm",
     "wasm/phonon_tts_bg.wasm.d.ts",
+    "wasm-threads/",
     "LICENSE-MIT",
     "LICENSE-APACHE"
   ],
