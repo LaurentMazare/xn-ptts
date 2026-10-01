@@ -708,8 +708,7 @@ fn plan_chunks<Q: BackendQ>(
         }
     };
     // Normalization runs first, on the whole input: it rewrites the characters
-    // the sentence splitter looks for, and `prepare_text_prompt` pads short
-    // text with leading spaces that normalization would collapse away.
+    // the sentence splitter looks for.
     let text = normalize.apply(text);
     let texts = split_into_best_sentences(tokenizer, &text, Some(max_tokens_per_chunk))?;
     let mut chunks = Vec::with_capacity(texts.len());
@@ -783,9 +782,7 @@ impl<Q: BackendQ> SessionOf<Q> {
     ///
     /// [`Self::stream`] and [`Self::say`] apply it themselves. Callers that
     /// tokenize by hand for [`Self::stream_tokens`] should run their text
-    /// through [`Normalize::apply`] first, before [`prepare_text_prompt`]:
-    /// normalization collapses runs of whitespace, including the padding
-    /// `prepare_text_prompt` adds to short text.
+    /// through [`Normalize::apply`] first, before [`prepare_text_prompt`].
     pub fn normalization(&self) -> Normalize {
         self.normalize
     }

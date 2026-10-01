@@ -196,6 +196,14 @@ jobs:
         env:
           RUSTFLAGS: -C target-feature=+simd128,+relaxed-simd
         run: cargo check -p ptts-wasm --target wasm32-unknown-unknown --all-targets
+      # The same with the `webgpu` feature. It did not compile for this target before `xn 0.2.6`,
+      # whose webgpu backend no longer asks wasm32 storage to be `Send + Sync`; `wgpu`'s browser
+      # backend holds a `RefCell` and is `!Sync` there. The feature builds fine for the host,
+      # which is why nothing noticed until this job checked the real target.
+      - name: Check the browser build with WebGPU
+        env:
+          RUSTFLAGS: -C target-feature=+simd128,+relaxed-simd
+        run: cargo check -p ptts-wasm --target wasm32-unknown-unknown --all-targets --features webgpu
       # The JS wrapper that `phonon-tts` ships around this build. Its tests need neither a
       # browser nor a model.
       #
@@ -208,17 +216,54 @@ jobs:
           node-version: "22"
       - name: Test the JS wrapper
         run: node --test ptts-wasm/js/test/*.test.mjs
-      # `ptts-wasm`'s `webgpu` feature is deliberately not checked here: it does not compile for
-      # this target, and has not since before this workflow. `xn 0.2.4`'s webgpu backend wants
-      # `Send + Sync` storage, while `wgpu`'s browser backend holds a `RefCell` and so is
-      # `!Sync` on wasm32 -- 48 errors, all of them that. The feature builds fine for the host,
-      # which is why nothing had noticed. Add the check here once `xn` is fixed.
+      # The release build itself, which the checks above do not reach: wasm-opt only runs in
+      # `make build`, and binaryen up to 123 aborts on this module. binaryen is pinned to the
+      # oldest release that works, 124, the floor `make build` checks for, so a module that
+      # needs a newer one fails here rather than for whoever builds the package next.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - name: Install binaryen
+        run: |
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_124/binaryen-version_124-x86_64-linux.tar.gz \
+            | tar xz -C "$RUNNER_TEMP" binaryen-version_124/bin/wasm-opt
+          echo "$RUNNER_TEMP/binaryen-version_124/bin" >> "$GITHUB_PATH"
+      - name: Build the npm package
+        working-directory: ptts-wasm
+        env:
+          RUSTFLAGS: -C target-feature=+simd128,+relaxed-simd
+        run: make build
+
+  coreml:
+    name: Core ML and the Swift package
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
+          targets: aarch64-apple-ios aarch64-apple-ios-sim
+          cache-key: coreml
+          audio-deps: "false"
+      # The Core ML runtime and the C interface only exist on Apple targets, so the Linux clippy
+      # job compiles them out and never sees most of their code.
+      - name: Clippy, macOS
+        run: cargo clippy -p ptts-coreml -p ptts-coreml-ffi --features ptts-coreml/gguf --all-targets -- -D warnings
+      - name: Clippy, iOS
+        run: cargo clippy -p ptts-coreml-ffi --target aarch64-apple-ios -- -D warnings
+      # What an app actually consumes: the framework for iPhone, simulator and Mac, and the
+      # Swift package compiled against it, in Swift 6 language mode.
+      - name: Framework and Swift package
+        run: |
+          ./ios/build-xcframework.sh
+          swift build --package-path ios/PhononTTS
 
   # One job to require in branch protection, instead of every matrix leg by name.
   ci-ok:
     name: CI
     if: always()
-    needs: [fmt, clippy, test, features, docs, wasm]
+    needs: [fmt, clippy, test, features, docs, wasm, coreml]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

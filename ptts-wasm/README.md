@@ -5,7 +5,7 @@ The browser build of [Pocket TTS](../ptts/), published to npm as [`phonon-tts`](
 ## Layout
 
 - `src/lib.rs`: the raw `wasm-bindgen` surface. It takes bytes that are already fetched and generates one 80 ms frame per call, because the browser has no threads to hand generation to. Text is normalized, split into sentence-aligned chunks and tokenized in Rust, with the same rules as `ptts::synth`. Voices can be `emb` embeddings, which are run through the model once when they are added, or the precomputed KV caches of `embeddings_v2/`.
-- `js/`: the package's public API. `index.js` exports `PhononTTS`, which runs the model in a worker (`worker.js`), downloads and caches its files (`fetch.js`, via the Cache API), and turns requests into async iterators. `models.js` says where the default checkpoint lives. `index.d.ts` holds the types. `test/` holds node tests for the wrapper's own logic.
+- `js/`: the package's public API. `index.js` exports `PhononTTS`, which runs the model in a worker (`worker.js`), downloads and caches its files (`fetch.js`, via the Cache API), and turns requests into async iterators. `models.js` holds the pinned URLs of Kyutai's published Pocket TTS checkpoint. `index.d.ts` holds the types. `test/` holds node tests for the wrapper's own logic.
 - `scripts/pack.mjs`: assembles the npm package around the wasm-pack output.
 - `www/index.html`: the demo page, built on the package the way a consumer would use it.
 
@@ -37,12 +37,12 @@ while (true) {
 
 ## Build
 
-Needs [wasm-pack](https://github.com/drager/wasm-pack) 0.12 or later, for `--no-pack` (`cargo install wasm-pack`), and node 22.7 or later, for module-syntax detection on the `.js` files under `js/`.
+Needs [wasm-pack](https://github.com/drager/wasm-pack) 0.12 or later, for `--no-pack` (`cargo install wasm-pack`), node 22.7 or later, for module-syntax detection on the `.js` files under `js/`, and [binaryen](https://github.com/WebAssembly/binaryen/releases)'s `wasm-opt` 124 or later on `PATH` (`brew install binaryen`). The `wasm-opt` that wasm-pack downloads by itself is too old for this module and aborts; `make profiling` skips it.
 
 ```bash
-make build    # the npm package, in pkg/
-make test     # the wrapper's tests: no browser, no model
-make serve    # build, then serve the demo from site/ on http://localhost:8080
+make build                               # the npm package, in pkg/
+make test                                # the wrapper's tests: no browser, no model
+make serve                               # build, then serve the demo from site/ on http://localhost:8080
 ```
 
 The page downloads the q8 weights (about 146 MB) from Hugging Face the first time, then loads them from the browser's cache.
@@ -51,10 +51,10 @@ The package version is not in `js/package.json`. `pack.mjs` stamps it from `work
 
 ## Before a release
 
-Check the default checkpoint in `js/models.js`. Its URLs are pinned to Hugging Face revisions, and the files are cached by URL, so changing a revision makes every user download again.
+Check the checkpoint URLs in `js/models.js`. They are pinned to Hugging Face revisions, and the files are cached by URL, so changing a revision makes every user of them download again.
 
 ## Known limits
 
 - The module needs WebAssembly Relaxed SIMD. `xn`'s quantized kernels call `f32x4_relaxed_madd` unconditionally, so a browser without it cannot compile the module, even for f32 weights.
 - No voice cloning: the Mimi encoder is not in the browser build.
-- The `webgpu` feature does not compile for `wasm32`. See the note in `.github/workflows/rust-ci.yml`.
+- The `webgpu` feature compiles for `wasm32`, and CI checks it, but nothing uses it yet: `Model` runs on the CPU.

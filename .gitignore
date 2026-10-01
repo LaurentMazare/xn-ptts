@@ -36,3 +36,7 @@ ptts-pyo3/python/ptts/*.dylib
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# SwiftPM build output.
+.build/
+.swiftpm/
