@@ -70,6 +70,16 @@ jobs:
         env:
           RUSTFLAGS: ${{ matrix.platform.rustflags }}
       - uses: ./.github/actions/test-wheel
+      # The wheel says `cp39-abi3`, and everything above tests it on PYTHON_VERSION. Load it
+      # on the floor it advertises too. One leg is enough to catch a limited-API slip, and
+      # x86_64 is the one to pick: numpy 2.1 dropped 3.9, so this is also the only job that
+      # resolves the older numpy a 3.9 user gets.
+      - if: matrix.platform.target == 'x86_64'
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.9'
+      - if: matrix.platform.target == 'x86_64'
+        uses: ./.github/actions/test-wheel
       - uses: actions/upload-artifact@v7
         with:
           name: wheels-manylinux-${{ matrix.platform.target }}
@@ -195,6 +205,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install dist/*.tar.gz pytest
+          python -m pip check
           cd ptts-pyo3 && python -m pytest -m "not checkpoint" -q
       - uses: actions/upload-artifact@v7
         with:
