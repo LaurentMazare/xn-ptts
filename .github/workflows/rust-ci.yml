@@ -196,6 +196,14 @@ jobs:
         env:
           RUSTFLAGS: -C target-feature=+simd128,+relaxed-simd
         run: cargo check -p ptts-wasm --target wasm32-unknown-unknown --all-targets
+      # The same with the `webgpu` feature. It did not compile for this target before `xn 0.2.6`,
+      # whose webgpu backend no longer asks wasm32 storage to be `Send + Sync`; `wgpu`'s browser
+      # backend holds a `RefCell` and is `!Sync` there. The feature builds fine for the host,
+      # which is why nothing noticed until this job checked the real target.
+      - name: Check the browser build with WebGPU
+        env:
+          RUSTFLAGS: -C target-feature=+simd128,+relaxed-simd
+        run: cargo check -p ptts-wasm --target wasm32-unknown-unknown --all-targets --features webgpu
       # The JS wrapper that `phonon-tts` ships around this build. Its tests need neither a
       # browser nor a model.
       #
@@ -208,11 +216,6 @@ jobs:
           node-version: "22"
       - name: Test the JS wrapper
         run: node --test ptts-wasm/js/test/*.test.mjs
-      # `ptts-wasm`'s `webgpu` feature is deliberately not checked here: it does not compile for
-      # this target, and has not since before this workflow. `xn 0.2.4`'s webgpu backend wants
-      # `Send + Sync` storage, while `wgpu`'s browser backend holds a `RefCell` and so is
-      # `!Sync` on wasm32 -- 48 errors, all of them that. The feature builds fine for the host,
-      # which is why nothing had noticed. Add the check here once `xn` is fixed.
 
   coreml:
     name: Core ML and the Swift package
