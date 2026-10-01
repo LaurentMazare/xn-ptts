@@ -6,14 +6,17 @@ export type Quant = 'f32' | 'q8';
 
 /** Where a checkpoint's files are. Relative URLs resolve against the page. */
 export interface ModelSpec {
-  /** Weights file per format: safetensors or GGUF. */
-  weights: Partial<Record<Quant, string>>;
+  /** Weights file per format: safetensors or GGUF. Only the `quant` being loaded is needed. */
+  weights: Partial<Record<Quant, string | URL>>;
   /** The checkpoint's `tokenizer.json`. */
-  tokenizer: string;
+  tokenizer: string | URL;
   /** Its `config.json`, or `null` for the original Pocket TTS architecture. */
-  config?: string | null;
-  /** Voice name to voice `.safetensors` file. Fetched on first use. */
-  voices: Record<string, string>;
+  config?: string | URL | null;
+  /**
+   * Voice name to voice `.safetensors` file. Fetched on first use. A model without any can
+   * still be loaded, but every request then needs a voice added with `addVoice` first.
+   */
+  voices?: Record<string, string | URL>;
   /** Voice used when a request names none. Defaults to the first of `voices`. */
   defaultVoice?: string;
 }

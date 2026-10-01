@@ -24,7 +24,7 @@ new Audio(URL.createObjectURL(wav)).play();
 
 `model` is required: it says where the checkpoint's files are, here a model folder served under `/model/`. See [The model](#the-model) below.
 
-The first `load` downloads the files, about 93 MB for a typical `q8` checkpoint. They are kept in the browser's Cache API, so later page loads start from disk.
+The first `load` downloads the files, whose size depends on the checkpoint. They are kept in the browser's Cache API, so later page loads start from disk.
 
 ## Streaming
 

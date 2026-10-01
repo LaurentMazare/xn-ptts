@@ -63,15 +63,18 @@ export class PhononTTS {
     // Required too. A default checkpoint would be one particular model's files, and loading
     // a model other than the one the caller has in mind gives plausible speech with nothing
     // to say it is the wrong model. `POCKET_TTS_MODEL` is there for whoever wants that one.
-    if (typeof model !== 'object' || model === null || typeof model.tokenizer !== 'string') {
+    if (typeof model !== 'object' || model === null || Array.isArray(model)) {
       throw new TypeError(
         "model is required: where the checkpoint's files are, e.g. " +
           "{ weights: { q8: '/model/model.q8.gguf' }, tokenizer: '/model/tokenizer.json', " +
           "config: '/model/config.json', voices: { default: '/model/voices/default.safetensors' } }",
       );
     }
+    if (!isUrl(model.tokenizer)) {
+      throw new TypeError("model.tokenizer is required: the URL of the checkpoint's tokenizer.json");
+    }
     // Checked before the worker starts, for the same reason as `rewrites` below.
-    if (typeof model.weights?.[quant] !== 'string') {
+    if (!isUrl(model.weights?.[quant])) {
       throw new TypeError(`model has no '${quant}' weights: set model.weights.${quant}, or pick another quant`);
     }
     // Checked here rather than left to Rust: `load` is async and the error would otherwise
@@ -334,6 +337,11 @@ export class PhononTTS {
  * An absolute URL for `url`. The worker resolves relative URLs against its own script, which
  * lives inside the package, so anything relative has to be made absolute against the page.
  */
+/** What `resolveUrl` takes: a URL string, relative to the page or absolute, or a `URL`. */
+function isUrl(url) {
+  return typeof url === 'string' || url instanceof URL;
+}
+
 function resolveUrl(url) {
   return globalThis.location ? new URL(url, globalThis.location.href).href : String(url);
 }
