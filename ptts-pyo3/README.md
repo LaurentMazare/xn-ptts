@@ -1,104 +1,50 @@
-# ptts
+# ptts for Python
 
-Text to 24 kHz speech, on device. Python bindings for [Pocket TTS][repo], a Rust runtime for
-the [`kyutai/pocket-tts`][model] model.
+Python bindings for the [Phonon Rust runtime](../README.md). For this preview, the package is built from this repository and reads the model package supplied by Gradium.
+
+Set `MODEL_DIR` as described in the [root README](../README.md#1-set-up). Then, from the repository root:
 
 ```bash
-uvx ptts --lang en "Hello world" -o out.wav   # nothing to install
-pip install ptts                              # or keep it around
-```
-
-```python
+uv run --project ptts-pyo3 --locked python - <<'PY'
+import os
 import ptts
 
-tts = ptts.TTS(lang="en")
+tts = ptts.TTS(lang="en", config=os.environ["MODEL_DIR"] + "/config.json", quant="q8")
+print(tts.voices)
 tts.save("out.wav", "Hello world")
+PY
 ```
 
-## Using it
+To use it from your own project, install it with `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Either one compiles the Rust code, so it needs Rust installed.
+
+`config` is the path to `config.json`. The package loads `model.q8.gguf`, `tokenizer.json` and every voice in `voices/` from the same directory, and downloads nothing. `quant="q8"` matches the weight format of `model.q8.gguf`.
+
+`lang` is required: `en`, `fr`, `de`, `es` or `pt` picks how numbers, symbols and abbreviations are spelled out; `none` uses the text as written.
+
+## Speech and voices
+
+Reuse `tts` across requests. Use `synth` for an array, `save` for a WAV, or `stream` for chunks as they are decoded:
 
 ```python
-import ptts
-
-tts = ptts.TTS(lang="en")                 # downloads the checkpoint on first use
-print(tts.voices)                         # ['alba', 'azelma', 'cosette', ...]
-
-pcm = tts.synth("Hello", voice="marius")  # 1-D float32 numpy array
-seconds = tts.save("out.wav", "Hello")    # straight to a mono 16-bit WAV
-
-for chunk in tts.stream("A longer piece of text."):
-    play(chunk)                           # audio as the decoder produces it
-```
-
-Streaming is cancellable — leave the block and the worker threads stop:
-
-```python
-with tts.stream(text) as audio:
+voice = tts.voices[0]
+pcm = tts.synth("Hello", voice=voice)  # 1-D float32 NumPy array
+seconds = tts.save("out.wav", "Hello", voice=voice)
+with tts.stream("A longer sentence.", voice=voice) as audio:
     for chunk in audio:
-        if user_interrupted():
-            break
+        print(chunk.shape)  # process each PCM chunk as it arrives
 ```
 
-Ctrl-C works during a generation, not only between them.
+`tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early.
 
-### Language
-
-`lang` is required and keyword-only. Text is normalized before it is tokenized, and the spoken
-forms of `@`, `+` and `=` differ per language, so there is nothing safe to default to:
-
-```python
-ptts.TTS(lang="en")     # en, fr, de, es, pt
-ptts.TTS(lang="none")   # hand the text to the tokenizer as written
-```
-
-### Voices
-
-Bundled voices come with the checkpoint. To clone one, pass about ten seconds of speech as
-float32 PCM at `tts.voice_prompt_sample_rate` — no transcript needed:
-
-```python
-tts.clone_voice("me", my_pcm)
-tts.save("out.wav", "Now in my voice.", voice="me")
-```
-
-### Choosing a checkpoint and a backend
-
-```python
-ptts.TTS(lang="en", config="kyutai/pocket-tts")   # a Hugging Face repo id
-ptts.TTS(lang="en", config="model/config.json")   # a local checkpoint
-ptts.TTS(lang="en", device="cuda")                # see ptts.available_devices()
-ptts.TTS(lang="en", quant="q8_0")                 # smaller and faster on CPU
-```
+`tts.voices` lists the names loaded from `voices/`, and the first one is used when no voice is given. Pass `voice="name"` to any speech method to select one.
 
 ## Command line
 
-The wheel installs a `ptts` command, so `uvx ptts` and `pipx run ptts` need no install step.
-`python -m ptts` runs the same thing.
+The package also provides the `ptts` command. From the repository root:
 
 ```bash
-ptts --lang en "hello world" -o out.wav
-ptts --lang en --list-voices
-ptts --lang fr "bonjour" -v marius -q q8_0 -o out.wav
-ptts --help
+uv run --project ptts-pyo3 --locked ptts --lang en --quant q8 \
+  --model "$MODEL_DIR/config.json" "Hello world" -o out.wav
 ```
 
-The first run downloads the checkpoint into the Hugging Face cache.
-
-## Errors
-
-Failures raise the exception their class calls for, so `except` can be specific:
-
-| Exception | Cause |
-|---|---|
-| `ValueError` | a bad argument — an unknown weight format, a mis-shaped array |
-| `LookupError` | an unknown voice, or a checkpoint file that is not there |
-| `NotImplementedError` | a backend this wheel was not built with, or cloning on a checkpoint without a speaker encoder |
-| `PermissionError` | a gated Hugging Face repo — the message says how to authenticate |
-| `RuntimeError` | anything else |
-
-## Types
-
-The package ships `py.typed` and complete stubs, so editors and `mypy` see the full API.
-
-[repo]: https://github.com/gradium-ai/xn-ptts
-[model]: https://huggingface.co/kyutai/pocket-tts
+`--voice` selects a loaded voice, and `--list-voices` prints the available names. Run with `--help` for the remaining options. The package ships type stubs and `py.typed`.

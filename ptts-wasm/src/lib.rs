@@ -290,7 +290,7 @@ impl Model {
 
     /// Normalize the whole text, split it into sentence-aligned chunks and tokenize each,
     /// exactly as `ptts::synth` does: normalization first, because it rewrites the characters
-    /// the splitter looks for and would collapse the padding `prepare_text_prompt` adds.
+    /// the splitter looks for.
     fn plan_chunks(&self, text: &str) -> Result<Vec<ChunkPlan>> {
         let frame_rate = self.cfg.mimi.frame_rate;
         let text = self.normalize.apply(text);

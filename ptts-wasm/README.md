@@ -1,93 +1,15 @@
-# wasm-pocket-tts
+# Pocket TTS in WebAssembly
 
-WebAssembly build of [Pocket TTS](../ptts/) — run text-to-speech directly in the browser.
+`ptts-wasm` exposes the Rust model as a low-level browser [`Model`](src/lib.rs). It accepts checkpoint weights, a matching `tokenizer.json`, an optional `config.json`, and a voice safetensors file as bytes supplied by the caller. It generates one 80 ms PCM frame per call.
 
-Try it online [here](https://laurentmazare.github.io/pocket-tts).
-
-## Prerequisites
-
-Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) 0.12 or later, for `--no-pack`, and Node 22.7 or later:
-
-```bash
-cargo install wasm-pack
-```
-
-## Build
-
-From the `ptts-wasm/` directory:
+Build it from this directory with [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) 0.12 or later and Node 22.7 or later:
 
 ```bash
 make build
 ```
 
-This runs `wasm-pack build` into `pkg/wasm/`, then `scripts/pack.mjs`, which assembles the
-`phonon-tts` npm package in `pkg/`. See [`js/README.md`](js/README.md) for using it.
+This runs `wasm-pack build` into `pkg/wasm/`, then `scripts/pack.mjs`, which assembles the `phonon-tts` npm package in `pkg/`. [`js/README.md`](js/README.md) covers using the package, including loading a checkpoint from your own URLs.
 
-`pkg/` is a package, not a site: it no longer holds the demo page, so the Run section below
-does not apply until `make demo` arrives with the demo itself.
+`Model` accepts `"f32"` or `"q8"` weights. Its required language argument is one of `"en"`, `"fr"`, `"de"`, `"es"`, `"pt"`, or `"none"`; an optional final argument selects text rewrite rules. `start_generation` splits and tokenizes text, `next_chunk` prompts each chunk, `generation_step` returns PCM frames, and `stop_generation` cancels a run. The build requires WebAssembly Relaxed SIMD support in the browser.
 
-## Run
-
-Serve the `pkg/` directory with any HTTP server, for example:
-
-```bash
-cd ptts-wasm/pkg
-python3 -m http.server 8080
-```
-
-Then open http://localhost:8080 in your browser. The page will download the
-model weights from HuggingFace on first use (~240 MB) and cache them for subsequent generations.
-
-## The JS API
-
-A browser has no threads to hand generation to, so the module generates one frame per call
-and the caller yields to the event loop between them. Long text is split into
-sentence-aligned chunks, and each chunk is prompted before its frames are generated, which
-makes the loop two levels deep:
-
-```js
-const model = new Model(modelWeights, tokenizerJson, configJson, quant, lang, rewrites);
-const voiceIndex = model.add_voice(voiceBytes);
-
-// Splits and tokenizes. Runs no model, and returns the number of chunks.
-model.start_generation(voiceIndex, text, temperature, seed);
-
-while (true) {
-  // Prompts the next chunk's text, or returns undefined once every chunk is done.
-  const numTokens = model.next_chunk();
-  if (numTokens === undefined) break;
-
-  while (true) {
-    // 80ms of mono PCM at model.sample_rate(), or undefined at the end of the chunk.
-    const pcm = model.generation_step();
-    if (!pcm) break;
-    // ... play or buffer pcm ...
-  }
-}
-```
-
-`model.stop_generation()` drops a generation in progress. An error thrown by `next_chunk` or
-`generation_step` also drops it, so a caller that swallows one cannot carry on and silently
-lose a sentence -- every later call reports the end instead.
-
-`configJson` is a checkpoint's `config.json`, or `undefined` for the original Pocket TTS
-architecture; `rewrites` may be omitted. See `Model::new` in `src/lib.rs` for `quant`, `lang`
-and what a supplied config does not change.
-
-### Incompatible with earlier builds
-
-`Model::new` and `start_generation` both took fewer arguments before, and the old positional
-calls now bind the wrong parameters at runtime rather than failing to build:
-
-| Before | Now |
-| --- | --- |
-| `new Model(weights, tokenizer, quant, lang, rewrites)` | `new Model(weights, tokenizer, configJson, quant, lang, rewrites)` |
-| `start_generation(voice, text, temperature)` -> token count | `start_generation(voice, text, temperature, seed)` -> chunk count |
-| `generation_step()` until `undefined` | `next_chunk()` per chunk, `generation_step()` within it |
-
-The seed was a hardcoded 42 and is now the caller's; one noise source covers every chunk, so
-a seed fixes the whole utterance.
-
-## Todo
-
-- Voice cloning.
+The included [`www/`](www/) demo currently fetches a Kyutai compatibility checkpoint. It does not load the separately supplied Gradium preview checkpoint. For a runnable preview with that checkpoint, use the [Rust or Python instructions](../README.md#1-set-up).

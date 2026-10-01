@@ -1,0 +1,17 @@
+[package]
+name = "ptts-coreml-ffi"
+version.workspace = true
+edition = "2024"
+description = "C interface to the Core ML Pocket TTS driver, which the PhononTTS Swift package wraps"
+repository.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Text preparation, normalization and the tokenizer come from ptts, so the iOS path speaks the
+# same prompt the other frontends do.
+ptts = { workspace = true, features = ["hf"] }
+ptts-coreml = { path = "../ptts-coreml" }
+serde_json = { workspace = true }

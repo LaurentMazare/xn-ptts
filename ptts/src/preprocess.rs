@@ -269,25 +269,12 @@ impl Normalize {
     /// Normalize `text`, or hand it back untouched when this is [`Self::OFF`].
     ///
     /// Borrows when off, so opting out costs no allocation per request.
-    ///
-    /// This has to run before `prepare_text_prompt`, which pads short text with leading spaces
-    /// that normalization would collapse away.
     pub fn apply<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
         match self.lang {
             None => std::borrow::Cow::Borrowed(text),
             Some(lang) => std::borrow::Cow::Owned(normalize_text(text, lang, self.rules)),
         }
     }
-}
-
-fn is_emoji(c: char) -> bool {
-    let c = c as u32;
-    matches!(c,
-        0x1F600..=0x1FAFF |
-        0x2600..=0x27BF |
-        // Flags (regional indicator symbols)
-        0x1F1E6..=0x1F1FF
-    )
 }
 
 /// Character sink that keeps the output free of the punctuation pile-ups the substitutions
@@ -304,8 +291,10 @@ impl StringAppender {
 
     fn push(&mut self, c: char) {
         if c == '.' || c == ',' {
-            while self.buffer.last().is_some_and(|l| l.is_whitespace() || l.is_ascii_punctuation())
-            {
+            // Quotes are kept: dropping a closing one would leave the opening one unbalanced.
+            while self.buffer.last().is_some_and(|&l| {
+                l.is_whitespace() || (l.is_ascii_punctuation() && l != '"' && l != '\'')
+            }) {
                 self.buffer.pop();
             }
         }
@@ -340,17 +329,79 @@ impl StringAppender {
     }
 }
 
+fn is_emoji(c: char) -> bool {
+    let c = c as u32;
+    matches!(c,
+        0x1F600..=0x1FAFF |
+        0x2600..=0x27BF |
+        // Flags (regional indicator symbols)
+        0x1F1E6..=0x1F1FF
+    )
+}
+
+/// Unicode characters that read as a double quotation mark: the curly and
+/// reversed variants, the low-9 ones sitting on the baseline (German/Czech
+/// opening quotes), double primes, dingbat and CJK corner quotes, and the
+/// fullwidth form.
+fn is_double_quote(c: char) -> bool {
+    matches!(
+        c,
+        '»' | '«'
+            | '“'
+            | '”'
+            | '„'
+            | '‟'
+            | '″'
+            | '‶'
+            | '⹂'
+            | '❝'
+            | '❞'
+            | '❠'
+            | '〝'
+            | '〞'
+            | '〟'
+            | '＂'
+    )
+}
+
+/// Unicode characters that read as a single quotation mark or apostrophe:
+/// the curly and reversed variants, the low-9 one sitting on the baseline,
+/// primes, dingbat quotes, the fullwidth form and the modifier letter and
+/// accent characters commonly typed in place of an apostrophe.
+fn is_single_quote(c: char) -> bool {
+    matches!(
+        c,
+        '‘' | '’'
+            | '‚'
+            | '‛'
+            | '′'
+            | '‵'
+            | '❛'
+            | '❜'
+            | '❟'
+            | '＇'
+            | 'ʼ'
+            | 'ʻ'
+            | 'ʹ'
+            | '´'
+            | '`'
+    )
+}
+
 /// Rewrite `input` into the character set the model was trained on.
 ///
 /// Typographic quotes, dashes, bullets, arrows and emoji are dropped or folded to their ASCII
-/// equivalents; `@`, `+` and `=` are spelled out in `lang`; `;`, `:` and parentheses become
-/// commas, which is how the model is asked to pause.
+/// equivalents; `@`, `+` and `=` are spelled out in `lang`; `;`, parentheses and a `:` with
+/// whitespace on either side become commas, which is how the model is asked to pause. A `:`
+/// between two non-space characters, as in `10:30`, is kept.
 pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
     let mut res = StringAppender::new();
-    for c in input.chars() {
+    let mut chars = input.chars().peekable();
+    let mut prev = None;
+    while let Some(c) = chars.next() {
         match c {
-            '“' | '”' | '"' => res.push_whitespace(),
-            '’' | '‘' => res.push('\''),
+            c if is_double_quote(c) => res.push('"'),
+            c if is_single_quote(c) => res.push('\''),
             '‐' | '‑' | '‒' | '―' => res.push('-'),
             // The two dashes below are not - (ascii 45) but similar unicode chars.
             '–' | '*' | '—' | '[' | ']' | '{' | '}' => res.push_whitespace(),
@@ -373,6 +424,11 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
                 res.push_str(lang.special_chars().equals);
                 res.push_whitespace();
             }
+            ':' if !prev.is_none_or(char::is_whitespace)
+                && !chars.peek().is_none_or(|c| c.is_whitespace()) =>
+            {
+                res.push(':')
+            }
             ';' | ':' | '(' | ')' => {
                 res.pop_whitespace();
                 res.push(',');
@@ -386,6 +442,7 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
                 }
             }
         }
+        prev = Some(c);
     }
     let text = res.into_string();
     if rules == Rules::NONE {
@@ -404,7 +461,7 @@ mod tests {
         let cases: &[(&str, &str)] = &[
             ("Hello, world!", "Hello, world!"),
             ("", ""),
-            ("“hello” world it's", "hello world it's"),
+            ("“hello” world it's", "\"hello\" world it's"),
             ("a‐b‑c‒d―e", "a-b-c-d-e"),
             ("a–b—c", "a b c"),
             ("foo (bar) [baz] {qux} *quux*", "foo, bar, baz qux quux"),
@@ -413,9 +470,13 @@ mod tests {
             ("user@host @home", "user at host at home"),
             ("café résumé 日本語", "café résumé 日本語"),
             ("hello 😀 flag 🇫🇷 sun ☀", "hello flag sun"),
-            // ';', ':' and '(' / ')' all collapse to ", " (comma + single space).
-            ("a;b:c", "a, b, c"),
-            ("time: 10:30", "time, 10, 30"),
+            // ';', '(' / ')' and a ':' next to whitespace collapse to ", " (comma + single
+            // space); a ':' between two non-space characters is kept.
+            ("a;b:c", "a, b:c"),
+            ("time: 10:30", "time, 10:30"),
+            ("a :b", "a, b"),
+            ("note:", "note,"),
+            (":start", ", start"),
             ("; leading", ", leading"),
             ("hello (world)", "hello, world,"),
             // Surrounding whitespace is absorbed into the comma replacement.
@@ -425,14 +486,17 @@ mod tests {
             ("a   b\t\tc\n\nd", "a b c d"),
             ("hello   ", "hello"),
             ("a • b • c", "a b c"),
-            ("“Hello”; please email user@host (now)… 🚀", "Hello, please email user at host, now."),
+            (
+                "“Hello”; please email user@host (now)… 🚀",
+                "\"Hello\", please email user at host, now.",
+            ),
             (
                 "Numbers: one, two, three, four, five. Special items: at sign, hash, dollar, percent.",
                 "Numbers, one, two, three, four, five. Special items, at sign, hash, dollar, percent.",
             ),
             (
                 "The conference will be held on Tuesday, March 15th at 3:30 PM.",
-                "The conference will be held on Tuesday, March 15th at 3, 30 PM.",
+                "The conference will be held on Tuesday, March 15th at 3:30 PM.",
             ),
         ];
         for (input, expected) in cases {
