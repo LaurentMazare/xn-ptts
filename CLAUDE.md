@@ -82,12 +82,12 @@ From `ptts-wasm/`:
 ```
 make build        # the phonon-tts npm package in pkg/: wasm-pack output in pkg/wasm/, plus js/
 make profiling    # same but --profiling (no wasm-opt)
-make demo         # pkg/ copied to site/phonon-tts/, plus www/index.html
-make serve        # make demo, then serve site/ on :8080
+make demo MODEL_DIR=/path/to/model   # pkg/ copied to site/phonon-tts/, www/index.html, the model folder as site/model/
+make serve MODEL_DIR=/path/to/model  # make demo, then serve site/ on :8080
 make test         # node --test js/test/*.test.mjs -- the wrapper's logic, no browser or model needed
 ```
 
-Requires `wasm-pack` 0.12 or later (`cargo install wasm-pack`), node 22.7 or later, and binaryen's `wasm-opt` 124 or later on `PATH`: wasm-pack otherwise downloads binaryen 117, and releases up to 123 abort on this module. `scripts/pack.mjs` assembles the package and stamps its version from `workspace.package.version`, so `js/package.json` deliberately has no `version`; it also derives what to copy from that file's `files` list. It deletes the `.gitignore` wasm-pack writes into `pkg/wasm/`: npm reads a subdirectory `.gitignore` as that directory's `.npmignore`, which would silently publish a package without its wasm. The demo downloads the q8 weights (~146 MB) from HuggingFace once and keeps them in the Cache API. Wasm SIMD flags (`+simd128,+relaxed-simd`) and `getrandom_backend="wasm_js"` come from `.cargo/config.toml`. `relaxed-simd` is required rather than an optimization: `xn`'s quantized kernels call `f32x4_relaxed_madd` unconditionally, so browsers without Relaxed SIMD cannot compile the module at all.
+Requires `wasm-pack` 0.12 or later (`cargo install wasm-pack`), node 22.7 or later, and binaryen's `wasm-opt` 124 or later on `PATH`: wasm-pack otherwise downloads binaryen 117, and releases up to 123 abort on this module. `scripts/pack.mjs` assembles the package and stamps its version from `workspace.package.version`, so `js/package.json` deliberately has no `version`; it also derives what to copy from that file's `files` list. It deletes the `.gitignore` wasm-pack writes into `pkg/wasm/`: npm reads a subdirectory `.gitignore` as that directory's `.npmignore`, which would silently publish a package without its wasm. `make demo` and `make serve` take `MODEL_DIR`, a model folder: it is linked into `site/model/`, and `scripts/demo-model.mjs` writes `site/model.json` describing its weights and voices, since a static server cannot list a directory for the page. Wasm SIMD flags (`+simd128,+relaxed-simd`) and `getrandom_backend="wasm_js"` come from `.cargo/config.toml`. `relaxed-simd` is required rather than an optimization: `xn`'s quantized kernels call `f32x4_relaxed_madd` unconditionally, so browsers without Relaxed SIMD cannot compile the module at all.
 
 Kyutai's published checkpoint URLs, pinned to HF revisions, are in `js/models.js`. Files are cached by URL, so bump those revisions together with the package version.
 

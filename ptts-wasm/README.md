@@ -42,10 +42,10 @@ Needs [wasm-pack](https://github.com/drager/wasm-pack) 0.12 or later, for `--no-
 ```bash
 make build                               # the npm package, in pkg/
 make test                                # the wrapper's tests: no browser, no model
-make serve                               # build, then serve the demo from site/ on http://localhost:8080
+make serve MODEL_DIR=/path/to/model      # build, then serve the demo from site/ on http://localhost:8080
 ```
 
-The page downloads the q8 weights (about 146 MB) from Hugging Face the first time, then loads them from the browser's cache.
+`MODEL_DIR` is a model folder holding `tokenizer.json`, `model.q8.gguf` or `model.safetensors`, an optional `config.json`, and voices under `voices/`. `make demo` links it into `site/model/` and writes `site/model.json` describing what is in it, since the page cannot list a directory over HTTP. The page offers the weight formats the folder has, downloads them the first time, then loads them from the browser's cache.
 
 The package version is not in `js/package.json`. `pack.mjs` stamps it from `workspace.package.version` in the top-level `Cargo.toml`, so npm, PyPI and crates.io stay on one version.
 

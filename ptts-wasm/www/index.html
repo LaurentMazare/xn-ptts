@@ -33,26 +33,23 @@
 </head>
 <body>
 
-<p class="subtitle"><a href="https://github.com/gradium-ai/xn-ptts" target="_blank">Phonon</a> running <a href="https://huggingface.co/kyutai/pocket-tts" target="_blank">Pocket TTS</a> in the browser via WebAssembly, with the <a href="https://www.npmjs.com/package/phonon-tts" target="_blank">phonon-tts</a> package</p>
+<p class="subtitle"><a href="https://github.com/gradium-ai/xn-ptts" target="_blank">Phonon</a> running in the browser via WebAssembly, with the <a href="https://www.npmjs.com/package/phonon-tts" target="_blank">phonon-tts</a> package</p>
 
 <div class="section">
   <label for="text">Text to speak</label>
-  <textarea id="text" rows="3">This is a test for the pocket text to speech system, showing great audio with only 100 million parameters.</textarea>
+  <textarea id="text" rows="3">This is a test of on-device text to speech, running entirely in your browser.</textarea>
 </div>
 
 <div class="controls">
   <div class="section">
     <label for="voice">Voice</label>
-    <select id="voice" disabled><option>alba</option></select>
+    <select id="voice" disabled><option>default</option></select>
   </div>
   <div class="section">
     <label for="quant">Quantization</label>
-    <select id="quant">
-      <option value="f32">f32</option>
-      <option value="q8" selected>q8</option>
-    </select>
+    <select id="quant"></select>
   </div>
-  <button id="load-btn">Load Weights (146MB)</button>
+  <button id="load-btn" disabled>Load Weights</button>
   <button id="generate-btn" style="display:none">Generate</button>
   <div class="slider-section">
     <label for="temperature">Temperature <span id="temp-value" class="slider-value">0.3</span></label>
@@ -82,13 +79,29 @@ tempSlider.addEventListener('input', () => {
   tempValue.textContent = tempSlider.value;
 });
 
-const QUANT_SIZE_MB = { f32: 240, q8: 146 };
+// `make demo` serves a model folder as `model/` and describes it in `model.json`: a static
+// server cannot list a directory, so the page cannot find the weights and voices itself.
+// Fetched before the module script below runs anything else, so the load button only
+// enables once the page knows what it would download.
+let demoModel = null;
 function updateLoadBtnLabel() {
-  const size = QUANT_SIZE_MB[quantSelect.value] ?? 240;
-  loadBtn.textContent = `Load Weights (${size}MB)`;
+  const bytes = demoModel?.sizes[quantSelect.value];
+  loadBtn.textContent = bytes ? `Load Weights (${Math.round(bytes / 1e6)} MB)` : 'Load Weights';
 }
 quantSelect.addEventListener('change', updateLoadBtnLabel);
-updateLoadBtnLabel();
+try {
+  const res = await fetch('model.json');
+  if (!res.ok) throw new Error(`model.json: HTTP ${res.status}`);
+  demoModel = await res.json();
+  const quants = Object.keys(demoModel.model.weights);
+  quantSelect.innerHTML = quants.map((q) => `<option value="${q}">${q}</option>`).join('');
+  quantSelect.value = quants.includes('q8') ? 'q8' : quants[0];
+  loadBtn.disabled = false;
+  updateLoadBtnLabel();
+} catch (e) {
+  statusEl.textContent =
+    `No model to load (${e.message}). Serve the page with: make serve MODEL_DIR=/path/to/model`;
+}
 
 function log(msg) {
   statusEl.textContent = msg;
@@ -227,7 +240,7 @@ async function loadWeights() {
   quantSelect.disabled = true;
   try {
     log('Downloading tokenizer and model...');
-    tts = await PhononTTS.load({ lang: LANG, quant: quantSelect.value, onProgress });
+    tts = await PhononTTS.load({ lang: LANG, quant: quantSelect.value, model: demoModel.model, onProgress });
   } catch (e) {
     log('Error: ' + e.message);
     loadBtn.disabled = false;
