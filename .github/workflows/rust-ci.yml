@@ -216,6 +216,23 @@ jobs:
           node-version: "22"
       - name: Test the JS wrapper
         run: node --test ptts-wasm/js/test/*.test.mjs
+      # The release build itself, which the checks above do not reach: wasm-opt only runs in
+      # `make build`, and binaryen up to 123 aborts on this module. binaryen is pinned to the
+      # oldest release that works, 124, the floor `make build` checks for, so a module that
+      # needs a newer one fails here rather than for whoever builds the package next.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - name: Install binaryen
+        run: |
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_124/binaryen-version_124-x86_64-linux.tar.gz \
+            | tar xz -C "$RUNNER_TEMP" binaryen-version_124/bin/wasm-opt
+          echo "$RUNNER_TEMP/binaryen-version_124/bin" >> "$GITHUB_PATH"
+      - name: Build the npm package
+        working-directory: ptts-wasm
+        env:
+          RUSTFLAGS: -C target-feature=+simd128,+relaxed-simd
+        run: make build
 
   coreml:
     name: Core ML and the Swift package

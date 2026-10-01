@@ -84,7 +84,7 @@ make build        # the phonon-tts npm package in pkg/: wasm-pack output in pkg/
 make profiling    # same but --profiling (no wasm-opt)
 ```
 
-Requires `wasm-pack` (`cargo install wasm-pack`), node, and binaryen's `wasm-opt` 133 or later on `PATH`: wasm-pack otherwise downloads binaryen 117, which aborts on this module. Serve `pkg/` with any static server (e.g. `python3 -m http.server 8080`). The demo downloads model weights (~240 MB) from HuggingFace and caches them. Wasm SIMD flags (`+simd128,+relaxed-simd`) and `getrandom_backend="wasm_js"` come from `.cargo/config.toml`.
+Requires `wasm-pack` (`cargo install wasm-pack`), node, and binaryen's `wasm-opt` 124 or later on `PATH`: wasm-pack otherwise downloads binaryen 117, and releases up to 123 abort on this module. Serve `pkg/` with any static server (e.g. `python3 -m http.server 8080`). The demo downloads model weights (~240 MB) from HuggingFace and caches them. Wasm SIMD flags (`+simd128,+relaxed-simd`) and `getrandom_backend="wasm_js"` come from `.cargo/config.toml`.
 
 ## Python build
 

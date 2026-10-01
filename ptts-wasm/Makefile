@@ -15,14 +15,15 @@ profiling:
 	node scripts/pack.mjs pkg
 
 # wasm-pack runs the first wasm-opt on PATH, and downloads binaryen 117 when there is none.
-# That one aborts on this module ("UNREACHABLE executed" in its interpreter), so the release
-# build needs a newer binaryen on PATH. 133 is the version this was checked with.
-WASM_OPT_MIN = 133
+# Releases up to 123 abort on this module ("UNREACHABLE executed" in their interpreter), so
+# the release build needs binaryen 124 or later on PATH. CI builds with exactly 124.
+WASM_OPT_MIN = 124
 check-wasm-opt:
 	@v=$$(wasm-opt --version 2>/dev/null | sed -n 's/^wasm-opt version \([0-9]*\).*/\1/p'); \
 	if [ -z "$$v" ] || [ "$$v" -lt $(WASM_OPT_MIN) ]; then \
 	  echo "make build needs binaryen's wasm-opt $(WASM_OPT_MIN) or later on PATH (found: $${v:-none})."; \
 	  echo "Install it with 'brew install binaryen', or from https://github.com/WebAssembly/binaryen/releases."; \
+	  echo "For an unoptimized local build without binaryen, run 'make profiling' instead."; \
 	  exit 1; \
 	fi
 
