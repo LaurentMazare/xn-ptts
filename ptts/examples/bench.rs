@@ -50,7 +50,7 @@ struct Args {
     #[arg(long)]
     threads: Option<usize>,
 
-    #[arg(long, short, default_value = "Hello, this is a test of the pocket TTS system.")]
+    #[arg(long, short, default_value = "Hello, this is a test of the Phonon TTS system.")]
     input: String,
 
     #[arg(long, default_value_t = 0.4)]
@@ -228,7 +228,7 @@ impl Bench<'_> {
         let load_ms = ms(t_load.elapsed());
 
         // Tokenize up front: the loop needs the tokens anyway, and the KV cache is sized from
-        // them. Long inputs are split into sentences, as `pocket_tts` does.
+        // them. Long inputs are split into sentences, as `ptts` does.
         let input = self.1.apply(&args.input);
         let chunks = ptts::tts_model::split_into_best_sentences(
             model.flow_lm.conditioner.tokenizer.as_deref().context("no tokenizer")?,

@@ -1,4 +1,4 @@
-// C interface to the Core ML Pocket TTS driver, which the PhononTTS Swift package wraps.
+// C interface to the Core ML Phonon driver, which the PhononTTS Swift package wraps.
 // Declared by hand: keep it in step with ../src/lib.rs, which documents each call in full.
 #ifndef PTTS_H
 #define PTTS_H

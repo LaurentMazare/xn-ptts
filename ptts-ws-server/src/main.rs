@@ -16,7 +16,7 @@ use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(name = "ptts-ws-server")]
-#[command(about = "WebSocket server for Pocket TTS")]
+#[command(about = "WebSocket server for Phonon")]
 struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     addr: String,

@@ -1614,7 +1614,7 @@ impl std::fmt::Debug for Session {
     }
 }
 
-/// A loaded Pocket TTS model, ready to synthesize speech.
+/// A loaded Phonon model, ready to synthesize speech.
 ///
 /// See the [module docs](self) for the short version. The weight format and
 /// device are chosen at load time by [`SynthBuilder`] and erased here.

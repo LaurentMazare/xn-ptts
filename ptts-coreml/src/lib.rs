@@ -1,4 +1,4 @@
-//! Run Pocket TTS through Core ML, with the flow LM on the Neural Engine.
+//! Run Phonon through Core ML, with the flow LM on the Neural Engine.
 //!
 //! This is the implementation behind the PhononTTS Swift package (`ios/PhononTTS`), which apps
 //! integrate; its API is not meant to be used directly and may change with the package.
