@@ -101,7 +101,7 @@ export declare class PhononTTS {
   static load(options: LoadOptions): Promise<PhononTTS>;
   private constructor();
 
-  /** Samples per second of the audio this model produces (24000 for Pocket TTS). */
+  /** Samples per second of the audio this model produces (24000 for Phonon). */
   readonly sampleRate: number;
   /** SIMD features the wasm module was built with, e.g. `{ simd128: true }`. */
   readonly features: Record<string, boolean>;

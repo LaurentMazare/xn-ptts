@@ -1,4 +1,4 @@
-//! Python bindings for Pocket TTS.
+//! Python bindings for Phonon.
 //!
 //! ```python
 //! import ptts
@@ -199,7 +199,7 @@ fn embedding_dims(arr: &PyReadonlyArrayDyn<'_, f32>) -> PyResult<(Vec<f32>, usiz
     Ok((arr.as_array().iter().copied().collect(), frames, dim))
 }
 
-/// A loaded Pocket TTS model.
+/// A loaded Phonon model.
 #[pyclass(name = "TTS", module = "ptts")]
 struct Tts {
     inner: Arc<Mutex<Synth>>,

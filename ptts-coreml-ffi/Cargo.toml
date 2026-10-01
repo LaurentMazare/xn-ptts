@@ -2,7 +2,7 @@
 name = "ptts-coreml-ffi"
 version.workspace = true
 edition = "2024"
-description = "C interface to the Core ML Pocket TTS driver, which the PhononTTS Swift package wraps"
+description = "C interface to the Core ML Phonon driver, which the PhononTTS Swift package wraps"
 repository.workspace = true
 license.workspace = true
 

@@ -1,4 +1,4 @@
-"""Pocket TTS: text to 24 kHz speech, on device.
+"""Phonon: text to 24 kHz speech, on device.
 
     import ptts
 

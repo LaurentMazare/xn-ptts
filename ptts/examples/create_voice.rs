@@ -8,7 +8,7 @@ use xn::Tensor;
 
 #[derive(Parser, Debug)]
 #[command(name = "create-voice")]
-#[command(about = "Generate some embedding files for Pocket TTS")]
+#[command(about = "Generate some embedding files for Phonon")]
 struct Args {
     #[arg(long)]
     config: String,
