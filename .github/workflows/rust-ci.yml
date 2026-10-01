@@ -203,7 +203,7 @@ jobs:
       # until the package itself lands, so loading its `.js` modules relies on module-syntax
       # detection, which is only on by default from Node 22.7. An older image would fail here
       # with `SyntaxError: Unexpected token 'export'`.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Test the JS wrapper
