@@ -1,4 +1,4 @@
-//! Pocket TTS: text to 24 kHz speech, on device.
+//! Phonon: text to 24 kHz speech, on device.
 //!
 //! Text is tokenized, a flow-matching language model turns the tokens into Mimi
 //! codec latents, and the Mimi decoder turns those into PCM. Generation is

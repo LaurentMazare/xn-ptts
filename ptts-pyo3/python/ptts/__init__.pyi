@@ -26,7 +26,7 @@ __all__ = [
 ]
 
 class TTS:
-    """A loaded Pocket TTS model.
+    """A loaded Phonon model.
 
     `config` is a Hugging Face repo id, a path to a local `config.json`, or `None` for the
     published checkpoint. Weights are downloaded on first use and cached.

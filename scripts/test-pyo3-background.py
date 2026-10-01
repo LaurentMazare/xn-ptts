@@ -46,7 +46,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--text",
-        default="Hello world, this is a test of the pocket text to speech model.",
+        default="Hello world, this is a test of the Phonon text to speech model.",
         help="Text to synthesize",
     )
     parser.add_argument(

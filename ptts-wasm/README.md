@@ -1,6 +1,6 @@
 # ptts-wasm
 
-The browser build of [Pocket TTS](../ptts/), published to npm as [`phonon-tts`](https://www.npmjs.com/package/phonon-tts). This README is about building and changing it. For using the package, see [`js/README.md`](js/README.md), which is also the README on npm.
+The browser build of [Phonon](../ptts/), published to npm as [`phonon-tts`](https://www.npmjs.com/package/phonon-tts). This README is about building and changing it. For using the package, see [`js/README.md`](js/README.md), which is also the README on npm.
 
 ## Layout
 

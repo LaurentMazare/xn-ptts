@@ -21,7 +21,7 @@ The commands below read only the files in `MODEL_DIR` and download nothing.
 With Rust, from the repository root (the first build takes a few minutes):
 
 ```bash
-cargo run --release -p ptts --example pocket_tts --features hf,audio -- \
+cargo run --release -p ptts --example ptts --features hf,audio -- \
   --lang en --dir "$MODEL_DIR" --quant q8 "Hello world" -o out.wav
 ```
 

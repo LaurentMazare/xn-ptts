@@ -11,7 +11,7 @@ resolver = "3"
 
 [workspace.package]
 version = "0.3.0"
-description = "Pocket TTS inference and serving using xn"
+description = "Phonon text-to-speech inference and serving using xn"
 repository = "https://github.com/LaurentMazare/xn-ptts"
 keywords = ["pytorch", "deep-learning", "machine-learning"]
 categories = ["science"]

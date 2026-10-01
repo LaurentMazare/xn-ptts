@@ -1,13 +1,13 @@
 //! Generation policy: how many frames to run, how much KV budget to reserve, and
 //! when to stop.
 //!
-//! These rules were inlined — as literals — in every frontend: the `pocket_tts`
+//! These rules were inlined — as literals — in every frontend: the `ptts`
 //! and `bench` examples, `ptts-pyo3` (twice), `ptts-wasm` and `ptts-ws-server`
 //! each carried their own copy of `((n / 3.0 + 2.0) * 12.5).ceil()` and their own
 //! EOS countdown loop. They are pure functions of the token count and the config,
 //! so they belong here, where they can be unit tested once.
 //!
-//! Every frontend is converted now. `pocket_tts`, `say`, `ptts-pyo3` and
+//! Every frontend is converted now. The `ptts` and `say` examples, `ptts-pyo3` and
 //! `ptts-ws-server` reach these through [`crate::synth`], which applies them on
 //! the caller's behalf; `bench` and `ptts-wasm` call them directly, because both
 //! drive [`crate::tts_model::TTSModel`] themselves — `bench` to attribute
@@ -106,7 +106,7 @@ mod tests {
         assert_eq!(seq_budget(40, 234), 40 + 512 + 234);
     }
 
-    /// Reference implementation, transcribed from `pocket_tts.rs` before the
+    /// Reference implementation, transcribed from `ptts.rs` before the
     /// refactor. `EosPolicy` must agree with it frame for frame.
     fn reference(eos_at: Option<usize>, frames_after_eos: usize, max_frames: usize) -> usize {
         let mut eos_countdown: Option<usize> = None;

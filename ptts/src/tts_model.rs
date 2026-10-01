@@ -74,7 +74,7 @@ pub struct TTSConfig {
     #[serde(default = "default_audio_prompt_min_duration")]
     pub audio_prompt_min_duration: f32,
     /// Maximum allowed duration in seconds for an audio prompt. Frontends that
-    /// trim long audio (e.g. the `pocket_tts` example) should trim to this
+    /// trim long audio (e.g. the `ptts` example) should trim to this
     /// value rather than a hardcoded 10s.
     #[serde(default = "default_audio_prompt_max_duration")]
     pub audio_prompt_max_duration: f32,

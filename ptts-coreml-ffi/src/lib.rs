@@ -1,4 +1,4 @@
-//! C interface over the Core ML Pocket TTS driver, which the PhononTTS Swift package wraps.
+//! C interface over the Core ML Phonon driver, which the PhononTTS Swift package wraps.
 //! Empty on non-Apple targets, so the workspace still builds there.
 //!
 //! `ptts_new` loads a model bundle, compiling it for the device first if it has not been; it is
