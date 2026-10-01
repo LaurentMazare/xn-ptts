@@ -1,31 +1,29 @@
 # ptts for Python
 
-Python bindings for the [Phonon Rust runtime](../README.md). For this preview, build the package from the repository and point it at the checkpoint supplied separately by Gradium.
+Python bindings for the [Phonon Rust runtime](../README.md). For this preview, the package is built from this repository and reads the model package supplied by Gradium.
 
-Set `MODEL_DIR` to the checkpoint directory described in the [root README](../README.md#run-the-preview-from-source). From the repository root:
+Set `MODEL_DIR` as described in the [root README](../README.md#1-set-up). Then, from the repository root:
 
 ```bash
-export MODEL_DIR=/absolute/path/to/checkpoint
 uv run --project ptts-pyo3 --locked python - <<'PY'
 import os
-from pathlib import Path
 import ptts
 
-model = Path(os.environ["MODEL_DIR"])
-quant = "q8" if not (model / "model.safetensors").is_file() else None
-tts = ptts.TTS(lang="en", config=str(model / "config.json"), quant=quant)
+tts = ptts.TTS(lang="en", config=os.environ["MODEL_DIR"] + "/config.json", quant="q8")
 print(tts.voices)
 tts.save("out.wav", "Hello world")
 PY
 ```
 
-The package loads `model.safetensors` when present, otherwise `model.q8.gguf`; a GGUF checkpoint needs the matching `quant=` value. It reads `tokenizer.json` and voice files from `voices/` next to `config.json`. Convert a supplied `tokenizer.model` as described in the root README before running. No model is downloaded when `config` names a local file.
+To use it from your own project, install it with `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Either one compiles the Rust code, so it needs Rust installed.
 
-`lang` is required: `en`, `fr`, `de`, `es`, or `pt` selects text normalization; `none` leaves text as written. Use a language the supplied checkpoint supports.
+`config` is the path to `config.json`. The package loads `model.q8.gguf`, `tokenizer.json` and every voice in `voices/` from the same directory, and downloads nothing. `quant="q8"` matches the weight format of `model.q8.gguf`.
+
+`lang` is required: `en`, `fr`, `de`, `es` or `pt` picks how numbers, symbols and abbreviations are spelled out; `none` uses the text as written.
 
 ## Speech and voices
 
-Inside that Python script, reuse `tts` across requests. Use `synth` for an array, `save` for a WAV, or `stream` for chunks as they are decoded:
+Reuse `tts` across requests. Use `synth` for an array, `save` for a WAV, or `stream` for chunks as they are decoded:
 
 ```python
 voice = tts.voices[0]
@@ -38,15 +36,15 @@ with tts.stream("A longer sentence.", voice=voice) as audio:
 
 `tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early.
 
-`tts.voices` lists the names loaded from `voices/`. Pass `voice="name"` to any speech method to select one. If `tts.supports_voice_cloning` is true, `tts.clone_voice("me", voice_prompt_pcm)` accepts a short float32 mono voice prompt sampled at `tts.voice_prompt_sample_rate`.
+`tts.voices` lists the names loaded from `voices/`, and the first one is used when no voice is given. Pass `voice="name"` to any speech method to select one.
 
 ## Command line
 
-The source-built package also provides the `ptts` command. From the repository root:
+The package also provides the `ptts` command. From the repository root:
 
 ```bash
-uv run --project ptts-pyo3 --locked ptts --lang en \
+uv run --project ptts-pyo3 --locked ptts --lang en --quant q8 \
   --model "$MODEL_DIR/config.json" "Hello world" -o out.wav
 ```
 
-Add `--quant q8` when the checkpoint uses `model.q8.gguf`. `--voice` selects a loaded voice, and `--list-voices` prints available names. Run with `--help` for the remaining options. The package ships type stubs and `py.typed`.
+`--voice` selects a loaded voice, and `--list-voices` prints the available names. Run with `--help` for the remaining options. The package ships type stubs and `py.typed`.

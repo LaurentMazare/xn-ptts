@@ -1,44 +1,51 @@
 # Phonon
 
-Phonon is Gradium's on-device text-to-speech runtime in Rust, with Python, WebSocket, and WebAssembly frontends. It builds on [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), developed by Kyutai, and can load compatible checkpoints. This preview uses a checkpoint supplied separately by Gradium; the model files are not in this repository.
+Phonon is Gradium's on-device text-to-speech runtime, written in Rust, with Python bindings. It builds on [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), developed by Kyutai. This preview pairs the code in this repository with a model package supplied by Gradium; the model is not in this repository.
 
 [![Rust CI](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml)
 
-## Run the preview from source
+## 1. Set up
 
-From the repository root, set `MODEL_DIR` to the supplied checkpoint directory. It must contain:
+You need [Rust](https://rustup.rs) for both paths, and [uv](https://docs.astral.sh/uv/) for Python.
 
-```text
-config.json
-model.safetensors              # or model.q8.gguf
-tokenizer.json
-voices/                        # at least one .safetensors voice file
-```
-
-The config, weights, tokenizer, and voice files must belong to the same checkpoint. If the supplied files contain `tokenizer.model` instead of `tokenizer.json`, run `uv run --script scripts/convert-tokenizer.py "$MODEL_DIR/tokenizer.model"` once. The Rust example selects the first available voice unless you pass `--voice <name>`.
+Point `MODEL_DIR` at the model folder, the one holding `config.json`, `model.q8.gguf`, `tokenizer.json` and `voices/default.safetensors`:
 
 ```bash
-export MODEL_DIR=/absolute/path/to/checkpoint
-cargo run --release -p ptts --example pocket_tts --features hf,audio -- \
-  --lang en --dir "$MODEL_DIR" "Hello world" -o out.wav
+export MODEL_DIR=/path/to/model
 ```
 
-This command uses `model.safetensors`. If your checkpoint contains `model.q8.gguf` instead, add `--weights model.q8.gguf --quant q8` after `--dir "$MODEL_DIR"`. It reads the checkpoint locally; it does not download Kyutai's model. Choose `--lang en`, `fr`, `de`, `es`, or `pt` for text normalization, or `none` to pass text through unchanged. The normalization choice does not establish which languages the supplied checkpoint supports.
+The commands below read only the files in `MODEL_DIR` and download nothing.
 
-## Integrate from Rust
+## 2. Run it
 
-Use the crate from this checkout as a path dependency; replace the path with your checkout location:
+With Rust, from the repository root (the first build takes a few minutes):
+
+```bash
+cargo run --release -p ptts --example pocket_tts --features hf,audio -- \
+  --lang en --dir "$MODEL_DIR" --quant q8 "Hello world" -o out.wav
+```
+
+With Python, from the repository root (the first run builds the package, a few minutes):
+
+```bash
+uv run --project ptts-pyo3 --locked ptts --lang en \
+  --model "$MODEL_DIR/config.json" --quant q8 "Hello world" -o out.wav
+```
+
+`--quant q8` runs the model in q8, the format `model.q8.gguf` is stored in. Without it the weights are expanded to f32, which is slower and uses more memory; the Rust and Python examples below set q8 too. `--lang` is required. It picks how numbers, symbols and abbreviations are spelled out before synthesis: `en`, `fr`, `de`, `es` or `pt`, or `none` to use the text as written.
+
+## 3. Use it from Rust
+
+Add the crate from your checkout as a path dependency:
 
 ```toml
 [dependencies]
-ptts = { path = "/absolute/path/to/xn-ptts/ptts", features = ["hf"] }
+ptts = { path = "/path/to/xn-ptts/ptts", features = ["hf"] }
 serde_json = "1"
 ```
 
-This example reads the supplied config and tokenizer, selects the available weight format, and registers one matching voice:
-
 ```rust
-use std::{env, fs, io, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 use ptts::preprocess::{Lang, Normalize};
 use ptts::synth::{Quant, Synth};
 use ptts::tts_model::TTSConfig;
@@ -46,60 +53,40 @@ use ptts::tts_model::TTSConfig;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = PathBuf::from(env::var("MODEL_DIR")?);
     let config: TTSConfig = serde_json::from_slice(&fs::read(dir.join("config.json"))?)?;
-    let (weights, quant) = if dir.join("model.safetensors").is_file() {
-        (dir.join("model.safetensors"), Quant::F32)
-    } else {
-        (dir.join("model.q8.gguf"), Quant::Q80)
-    };
-    let voice = fs::read_dir(dir.join("voices"))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .find(|path| path.extension().is_some_and(|ext| ext == "safetensors"))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no voice file"))?;
-
-    let tts = Synth::builder(config, weights, Normalize::for_lang(Lang::En))
+    let tts = Synth::builder(config, dir.join("model.q8.gguf"), Normalize::for_lang(Lang::En))
         .tokenizer_file(dir.join("tokenizer.json"))
-        .quant(quant)
-        .add_voice("preview", voice)
+        .quant(Quant::Q80)
+        .add_voice("default", dir.join("voices/default.safetensors"))
         .build()?;
+
     let pcm = tts.say("Hello world")?;
     ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate() as u32)?;
     Ok(())
 }
 ```
 
-`Synth::stream` yields audio chunks as they are decoded. See the [`pocket_tts` example](ptts/examples/pocket_tts.rs) for checkpoint loading and the [API docs](https://docs.rs/ptts) for other `Synth` options. The `audio` feature adds audio-file voice prompts; backend features are `cuda`, `vulkan`, `metal`, `webgpu`, and `accelerate`. Quantized GGUF weights run on CPU.
+Load the model once and reuse it. `tts.say` returns the whole waveform as mono `f32` samples at `tts.sample_rate()`. `tts.stream(text)?` is an iterator of `Result<Vec<f32>>` chunks, yielded as they are generated, for playback that starts before the sentence is finished. Build with `--release`: a debug build is far too slow for realtime.
 
-## Python from the checkout
+## 4. Use it from Python
 
-With [uv](https://docs.astral.sh/uv/) installed, run the Python package directly from this repository:
+Install the package from your checkout into your project. This compiles the Rust code, so it needs Rust installed:
 
 ```bash
-uv run --project ptts-pyo3 --locked python - <<'PY'
+uv add /path/to/xn-ptts/ptts-pyo3      # or: pip install /path/to/xn-ptts/ptts-pyo3
+```
+
+```python
 import os
-from pathlib import Path
 import ptts
 
-model = Path(os.environ["MODEL_DIR"])
-quant = "q8" if not (model / "model.safetensors").is_file() else None
-tts = ptts.TTS(lang="en", config=str(model / "config.json"), quant=quant)
-tts.save("out.wav", "Hello world")
-PY
+model = os.environ["MODEL_DIR"]
+tts = ptts.TTS(lang="en", config=f"{model}/config.json", quant="q8")
+
+tts.save("out.wav", "Hello world")    # write a 16-bit WAV
+pcm = tts.synth("Hello world")        # float32 NumPy array at tts.sample_rate
+with tts.stream("A longer sentence, played as it is generated.") as audio:
+    for chunk in audio:
+        ...                           # each chunk is a float32 NumPy array
 ```
 
-See the [Python README](ptts-pyo3/README.md) for streaming, voices, and the source-built command line.
-
-## Other interfaces
-
-The WebSocket server accepts the same local checkpoint layout:
-
-```bash
-cargo run --release -p ptts-ws-server -- --lang en --config "$MODEL_DIR/config.json"
-```
-
-It serves `/speech/tts` and requires a system `libopus` to build. For `model.q8.gguf`, add `--quant q8`. The wire format is defined in [`protocol.rs`](ptts-ws-server/src/protocol.rs).
-
-The [WebAssembly crate](ptts-wasm/README.md) exposes a frame-by-frame browser API. Its included demo is wired to a Kyutai compatibility checkpoint, so it is not the entry point for this preview checkpoint.
-
-## Development
-
-`cargo fmt --all -- --check` and `cargo test -p ptts --features hf,audio` cover the core crate. [Rust CI](.github/workflows/rust-ci.yml) checks the workspace, optional features, docs, and WebAssembly build.
+Load the model once and reuse it. The [Python README](ptts-pyo3/README.md) covers voices and the remaining options.
