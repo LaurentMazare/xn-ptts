@@ -68,8 +68,9 @@ demo: check-model-dir build
 	ln -s "$(abspath $(MODEL_DIR))" site/model
 	node scripts/demo-model.mjs site/model > site/model.json
 
+# Cross-origin isolated, so the demo runs on the threaded build.
 serve: demo
-	python3 -m http.server -d site 8080
+	node scripts/serve.mjs site 8080
 
 # Checked before the build, so a missing folder fails in a second rather than after it.
 check-model-dir:
