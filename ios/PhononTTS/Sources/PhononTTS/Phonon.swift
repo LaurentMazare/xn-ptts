@@ -29,19 +29,12 @@ public struct SpeechStats: Sendable {
     public let timeToFirstAudio: Duration
     /// Codec frames produced, 80 ms each.
     public let frames: Int
-    /// Wall time per frame: the median, the mean and the slowest.
-    public let medianFrame: Duration
-    public let meanFrame: Duration
-    public let slowestFrame: Duration
 
     init(_ r: PttsResult) {
-        audioSeconds = Double(r.pcm_len) / Phonon.sampleRate
-        realtimeFactor = r.rtf
+        audioSeconds = Double(r.samples) / Phonon.sampleRate
+        realtimeFactor = r.total_ms > 0 ? audioSeconds * 1000 / r.total_ms : 0
         timeToFirstAudio = .milliseconds(r.ttfa_ms)
         frames = Int(r.frames)
-        medianFrame = .milliseconds(r.per_frame_ms)
-        meanFrame = .milliseconds(r.mean_frame_ms)
-        slowestFrame = .milliseconds(r.max_frame_ms)
     }
 }
 
@@ -50,19 +43,19 @@ public struct PhononError: Error, CustomStringConvertible, Sendable {
     public init(description: String) { self.description = description }
 }
 
-/// Text to speech with Pocket TTS, on the Neural Engine.
-///
-/// Load once and keep it: loading reads ~400 MB of models and, on the first launch after an
-/// install or a model update, compiles them for this device (about 10 s on an iPhone 16 Pro). Speaking is then
-/// much faster than real time, and audio is delivered as it is generated.
-///
-/// Calls are serialized: an instance speaks one utterance at a time, and concurrent calls wait
-/// their turn. All methods may be called from any thread or task.
 /// A C pointer, vouched for: it is only ever used on the instance's serial queue.
 private struct Pointer<P>: @unchecked Sendable {
     let p: P
 }
 
+/// Text to speech with Phonon, on the Neural Engine.
+///
+/// Load once and keep it: loading reads ~400 MB of models and, on the first launch after an
+/// install or a model update, compiles them for this device (about 10 s on an iPhone 16 Pro).
+/// Speaking is then much faster than real time, and audio is delivered as it is generated.
+///
+/// Calls are serialized: an instance speaks one utterance at a time, and concurrent calls wait
+/// their turn. All methods may be called from any thread or task.
 public final class Phonon: @unchecked Sendable {
     /// Every sample is mono Float32 at this rate.
     public static let sampleRate: Double = 24_000

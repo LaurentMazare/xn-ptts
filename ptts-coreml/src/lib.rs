@@ -13,13 +13,11 @@
 //! field: specification version 9, program version 1, a single `main` function with opset
 //! `CoreML8`, and `const` ops that carry their value in `attributes["val"]` rather than as an
 //! input binding.
-pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/coreml_proto.rs"));
-}
 pub mod blob;
 pub mod mil;
 pub mod package;
 pub mod phonon;
+pub mod proto;
 #[cfg(target_vendor = "apple")]
 pub mod run;
 pub mod weights;

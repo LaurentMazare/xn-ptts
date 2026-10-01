@@ -641,8 +641,6 @@ impl Builder {
                 r#type: Some(spec::feature_type::Type::MultiArrayType(spec::ArrayFeatureType {
                     shape: shape.iter().map(|&d| d as i64).collect(),
                     data_type: dt.array(),
-                    default_optional_value: None,
-                    shape_flexibility: None,
                 })),
             }),
         };
@@ -655,7 +653,6 @@ impl Builder {
                     .map(|(name, dt, shape)| feature(name, *dt, shape))
                     .collect(),
                 output: outputs.iter().map(|v| feature(&v.name, v.dtype, &v.shape)).collect(),
-                ..Default::default()
             }),
             is_updatable: false,
             r#type: Some(spec::model::Type::MlProgram(m::Program {

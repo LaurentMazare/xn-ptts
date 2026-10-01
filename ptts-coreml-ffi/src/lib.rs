@@ -1,22 +1,23 @@
-//! C ABI over the CoreML Pocket TTS driver, for an iOS app.
+//! C interface over the Core ML Pocket TTS driver, which the PhononTTS Swift package wraps.
+//! Empty on non-Apple targets, so the workspace still builds there.
 //!
-//! Empty on other targets, so the workspace still builds there.
-//!
-//! `ptts_prepare` compiles the bundled graphs once per install; `ptts_new` loads them, which is
-//! the expensive part; `ptts_speak` may then be called repeatedly, streaming each frame's audio
-//! to a callback as it is decoded. Every pointer handed out stays valid until the next call on
-//! the same handle or `ptts_free`.
+//! `ptts_new` loads a model bundle, compiling it for the device first if it has not been; it is
+//! the expensive call. `ptts_speak` may then be called repeatedly, streaming each frame's audio
+//! to a callback as it is decoded.
 //!
 //! Only the platform glue lives here: text preparation, normalization and tokenization are
-//! `ptts`'s, and generation is `ptts_coreml`'s.
+//! `ptts`'s, and generation is `ptts_coreml`'s. `include/ptts.h` declares this interface by
+//! hand, so any change to a signature or to `PttsResult` has to be made there too.
 #![cfg(target_vendor = "apple")]
 
 use ptts::Tokenizer;
 use ptts::preprocess::Normalize;
 use ptts_coreml::Weights;
 use ptts_coreml::phonon::driver::{Config, Phonon};
-use ptts_coreml::run::{Compute, Model};
+use ptts_coreml::run::Compute;
+use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_void};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
 /// Where the flow LM runs.
@@ -28,37 +29,47 @@ pub struct PttsHandle {
     tokenizer: ptts::tok::Tok,
     normalize: Normalize,
     dir: PathBuf,
+    voices: Vec<String>,
     /// The voice names as NUL-separated bytes, so `ptts_voices` can hand out a borrowed pointer.
     voice_blob: Vec<u8>,
-    /// The last utterance's PCM, owned here so `PttsResult::pcm` stays valid until the next call.
-    audio: Vec<f32>,
     last_error: Option<CString>,
 }
 
-/// One utterance's audio and timings. `pcm` is 24 kHz mono, owned by the handle.
+/// One utterance's timings. The audio itself went to the callback.
 #[repr(C)]
 pub struct PttsResult {
-    pub pcm: *const f32,
-    pub pcm_len: usize,
-    pub sample_rate: u32,
     pub frames: u32,
-    pub total_ms: f64,
+    /// 24 kHz samples delivered.
+    pub samples: usize,
+    /// From the call to the first audio being delivered.
     pub ttfa_ms: f64,
-    pub per_frame_ms: f64,
-    /// A median hides the slow frames that set the realtime factor, so the mean and the slowest.
-    pub mean_frame_ms: f64,
-    pub max_frame_ms: f64,
-    pub rtf: f64,
+    pub total_ms: f64,
 }
 
 /// Called once per decoded frame with its PCM, on the generating thread. Return false to stop
 /// speaking: generation ends there and `ptts_speak` returns normally with what was produced.
 pub type PttsFrameFn = extern "C" fn(*const f32, usize, *mut c_void) -> bool;
 
-static GLOBAL_ERROR: std::sync::Mutex<Option<CString>> = std::sync::Mutex::new(None);
+thread_local! {
+    /// The last `ptts_new` failure on this thread. Thread-local, so a failure elsewhere cannot
+    /// free the string a caller is still reading.
+    static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
+}
 
-fn set_global_error(e: &str) {
-    *GLOBAL_ERROR.lock().unwrap() = CString::new(e).ok();
+fn c_string(e: &str) -> CString {
+    CString::new(e.replace('\0', " ")).expect("NULs were replaced")
+}
+
+/// Run `f`, turning a panic into an error: unwinding across the C interface aborts the app.
+fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|p| {
+        let msg = p
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown".into());
+        Err(format!("internal error: {msg}"))
+    })
 }
 
 fn voice_names(dir: &Path) -> Result<Vec<String>, String> {
@@ -72,28 +83,28 @@ fn voice_names(dir: &Path) -> Result<Vec<String>, String> {
     Ok(v)
 }
 
+/// A voice as the exporter writes it: an `emb` tensor of `[1, T, D]` or `[T, D]`.
 fn load_voice(dir: &Path, name: &str) -> Result<(Vec<f32>, usize), String> {
     let w = Weights::open(&dir.join("voices").join(format!("{name}.safetensors")))?;
-    let (shape, data) = w.get(w.names().first().ok_or("empty voice file")?)?;
+    let (shape, data) = w.get("emb").map_err(|_| format!("voice {name} has no `emb` tensor"))?;
     let t = if shape.len() == 3 { shape[1] } else { shape[0] };
     Ok((data.to_vec(), t))
 }
 
 fn open(dir: &Path, unit: u32, lang: &str) -> Result<PttsHandle, String> {
+    let flow_unit = match unit {
+        PTTS_UNIT_ANE => Compute::CpuAndNeuralEngine,
+        PTTS_UNIT_CPU => Compute::CpuOnly,
+        u => return Err(format!("unknown compute unit {u}")),
+    };
     let meta: serde_json::Value = serde_json::from_slice(
         &std::fs::read(dir.join("bundle.json")).map_err(|e| format!("bundle.json: {e}"))?,
     )
     .map_err(|e| format!("bundle.json: {e}"))?;
-    let int = |k: &str| {
-        meta[k].as_u64().map(|v| v as usize).ok_or_else(|| format!("bundle.json has no {k}"))
-    };
-    let float = |k: &str| {
-        meta[k].as_f64().map(|v| v as f32).ok_or_else(|| format!("bundle.json has no {k}"))
-    };
-    let dims = &meta["dims"];
-    let dim = |k: &str| {
-        dims[k].as_u64().map(|v| v as usize).ok_or_else(|| format!("bundle.json has no dims.{k}"))
-    };
+    let get =
+        |v: &serde_json::Value, k: &str| v[k].as_f64().ok_or(format!("bundle.json has no {k}"));
+    let int = |k: &str| get(&meta, k).map(|v| v as usize);
+    let dim = |k: &str| get(&meta["dims"], k).map(|v| v as usize);
     let cfg = Config {
         dims: ptts_coreml::phonon::flow_lm::Dims {
             d: dim("d")?,
@@ -108,14 +119,10 @@ fn open(dir: &Path, unit: u32, lang: &str) -> Result<PttsHandle, String> {
         prefill_len: int("prefill_len")?,
         mimi_window: int("mimi_window")?,
         max_frames: int("max_frames")?,
-        eos_threshold: float("eos_threshold")?,
-        temperature: float("temperature")?,
+        eos_threshold: get(&meta, "eos_threshold")? as f32,
+        temperature: get(&meta, "temperature")? as f32,
         seed: 0,
-        flow_unit: if unit == PTTS_UNIT_ANE {
-            Compute::CpuAndNeuralEngine
-        } else {
-            Compute::CpuOnly
-        },
+        flow_unit,
     };
     let voices = voice_names(dir)?;
     let (voice, vlen) = load_voice(dir, voices.first().ok_or("no voices in the bundle")?)?;
@@ -132,18 +139,10 @@ fn open(dir: &Path, unit: u32, lang: &str) -> Result<PttsHandle, String> {
         tokenizer,
         normalize,
         dir: dir.to_path_buf(),
+        voices,
         voice_blob,
-        audio: Vec::new(),
         last_error: None,
     })
-}
-
-fn median(mut v: Vec<f64>) -> f64 {
-    if v.is_empty() {
-        return 0.0;
-    }
-    v.sort_by(f64::total_cmp);
-    v[v.len() / 2]
 }
 
 /// Mimi's frame rate, for the per-chunk frame budget.
@@ -192,70 +191,36 @@ fn speak(
 ) -> Result<PttsResult, String> {
     let start = std::time::Instant::now();
     let chunks = plan(h, text)?;
-    let mut audio = Vec::new();
-    let (mut ms, mut ttfa) = (Vec::new(), None);
+    let (mut frames, mut samples, mut ttfa) = (0, 0, None);
+    let mut pcm_buf = Vec::new();
     for (tokens, frames_after_eos) in chunks {
         let budget = ptts::plan::frame_budget(tokens.len(), FRAME_RATE);
         let t = h.phonon.generate(&tokens, frames_after_eos, budget, &mut |pcm: &[f32]| {
-            // CoreML has been seen to hand back a stray non-finite sample; silence it rather
+            // Core ML has been seen to hand back a stray non-finite sample; silence it rather
             // than send it to the speaker.
-            let from = audio.len();
-            audio.extend(pcm.iter().map(|v| if v.is_finite() { *v } else { 0.0 }));
-            sink(&audio[from..])
+            pcm_buf.clear();
+            pcm_buf.extend(pcm.iter().map(|v| if v.is_finite() { *v } else { 0.0 }));
+            sink(&pcm_buf)
         })?;
         ttfa.get_or_insert(start.elapsed() - t.total + t.ttfa);
-        ms.extend(t.frames.iter().map(|d| d.as_secs_f64() * 1e3));
+        frames += t.frames;
+        samples += t.samples;
         if t.stopped {
             break;
         }
     }
-    h.audio = audio;
-    let total_ms = start.elapsed().as_secs_f64() * 1e3;
     Ok(PttsResult {
-        pcm: h.audio.as_ptr(),
-        pcm_len: h.audio.len(),
-        sample_rate: 24_000,
-        frames: ms.len() as u32,
-        total_ms,
+        frames: frames as u32,
+        samples,
         ttfa_ms: ttfa.unwrap_or_default().as_secs_f64() * 1e3,
-        mean_frame_ms: ms.iter().sum::<f64>() / ms.len().max(1) as f64,
-        max_frame_ms: ms.iter().copied().fold(0.0, f64::max),
-        per_frame_ms: median(ms),
-        rtf: h.audio.len() as f64 / 24.0 / total_ms,
+        total_ms: start.elapsed().as_secs_f64() * 1e3,
     })
 }
 
-/// Compile the bundle's graphs if they are not compiled yet: about 10 s on an iPhone 16 Pro, once per
-/// install, and kept beside the packages. `ptts_new` does this itself when needed; calling it
-/// first lets an app show that it is happening. Returns 1 if it compiled anything, 0 if nothing
-/// needed doing, -1 on error.
-///
-/// # Safety
-/// `dir` must be a NUL-terminated UTF-8 path.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ptts_prepare(dir: *const c_char) -> i32 {
-    let Ok(dir) = unsafe { CStr::from_ptr(dir) }.to_str().map(PathBuf::from) else { return -1 };
-    let run = || -> Result<bool, String> {
-        let mut did = false;
-        for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-            let p = e.map_err(|e| e.to_string())?.path();
-            if p.extension().is_some_and(|x| x == "mlpackage") {
-                did |= Model::precompile(&p, &p.with_extension("mlmodelc"))?;
-            }
-        }
-        Ok(did)
-    };
-    match run() {
-        Ok(did) => i32::from(did),
-        Err(e) => {
-            set_global_error(&e);
-            -1
-        }
-    }
-}
-
 /// Load a bundle for `unit` (`PTTS_UNIT_ANE` or `PTTS_UNIT_CPU`), normalizing text as `lang`
-/// (`en`, `fr`, `de`, `es`, `pt`, or `none`). Null on failure; see `ptts_last_error(NULL)`.
+/// (`en`, `fr`, `de`, `es`, `pt`, or `none`), and compiling the models for this device first if
+/// they have not been (about 10 s on an iPhone 16 Pro, once per install). Null on failure; then
+/// `ptts_last_error(NULL)`, on the same thread, says why.
 ///
 /// # Safety
 /// `dir` and `lang` must be NUL-terminated UTF-8.
@@ -267,10 +232,10 @@ pub unsafe extern "C" fn ptts_new(
 ) -> *mut PttsHandle {
     let dir = unsafe { CStr::from_ptr(dir) }.to_string_lossy().to_string();
     let lang = unsafe { CStr::from_ptr(lang) }.to_string_lossy().to_string();
-    match open(Path::new(&dir), unit, &lang) {
+    match guarded(|| open(Path::new(&dir), unit, &lang)) {
         Ok(h) => Box::into_raw(Box::new(h)),
         Err(e) => {
-            set_global_error(&e);
+            LAST_ERROR.with(|l| *l.borrow_mut() = Some(c_string(&e)));
             std::ptr::null_mut()
         }
     }
@@ -292,13 +257,14 @@ pub unsafe extern "C" fn ptts_speak(
 ) -> bool {
     let h = unsafe { &mut *h };
     let text = unsafe { CStr::from_ptr(text) }.to_string_lossy().to_string();
-    match speak(h, &text, &mut |pcm: &[f32]| cb(pcm.as_ptr(), pcm.len(), user)) {
+    let r = guarded(|| speak(h, &text, &mut |pcm: &[f32]| cb(pcm.as_ptr(), pcm.len(), user)));
+    match r {
         Ok(r) => {
             unsafe { *out = r };
             true
         }
         Err(e) => {
-            h.last_error = CString::new(e).ok();
+            h.last_error = Some(c_string(&e));
             false
         }
     }
@@ -313,7 +279,7 @@ pub unsafe extern "C" fn ptts_voices(h: *const PttsHandle) -> *const c_char {
     unsafe { (*h).voice_blob.as_ptr() as *const c_char }
 }
 
-/// Switch speaker. Returns false on failure; see `ptts_last_error`.
+/// Switch to one of `ptts_voices`. Returns false on failure; see `ptts_last_error`.
 ///
 /// # Safety
 /// `h` must come from `ptts_new`; `name` must be NUL-terminated UTF-8.
@@ -321,25 +287,32 @@ pub unsafe extern "C" fn ptts_voices(h: *const PttsHandle) -> *const c_char {
 pub unsafe extern "C" fn ptts_set_voice(h: *mut PttsHandle, name: *const c_char) -> bool {
     let h = unsafe { &mut *h };
     let name = unsafe { CStr::from_ptr(name) }.to_string_lossy().to_string();
-    match load_voice(&h.dir, &name).and_then(|(v, n)| h.phonon.set_voice(v, n)) {
+    let r = guarded(|| {
+        if !h.voices.contains(&name) {
+            return Err(format!("no voice named {name:?}"));
+        }
+        let (voice, vlen) = load_voice(&h.dir, &name)?;
+        h.phonon.set_voice(voice, vlen)
+    });
+    match r {
         Ok(()) => true,
         Err(e) => {
-            h.last_error = CString::new(e).ok();
+            h.last_error = Some(c_string(&e));
             false
         }
     }
 }
 
-/// The last error on `h`, or the last construction error when `h` is null. Borrowed until the
-/// next failing call.
+/// The last error on `h`, or, when `h` is null, the last `ptts_new` failure on this thread.
+/// Borrowed until the next failing call.
 ///
 /// # Safety
 /// `h` must be null or come from `ptts_new`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ptts_last_error(h: *const PttsHandle) -> *const c_char {
     if h.is_null() {
-        // The CString is kept in the static, so the pointer outlives the guard.
-        return GLOBAL_ERROR.lock().unwrap().as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+        // The string lives in this thread's slot until the next failure on this thread.
+        return LAST_ERROR.with(|l| l.borrow().as_ref().map_or(std::ptr::null(), |c| c.as_ptr()));
     }
     unsafe { (*h).last_error.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()) }
 }

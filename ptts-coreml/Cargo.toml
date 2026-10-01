@@ -34,7 +34,3 @@ objc2-core-ml = { version = "0.3", features = [
 
 [features]
 gguf = ["dep:xn"]
-
-[build-dependencies]
-prost-build = "0.13"
-protoc-bin-vendored = "3"

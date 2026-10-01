@@ -32,7 +32,7 @@ half = { workspace = true }
 hf-hub = { workspace = true }
 # For the `export_coreml` example: the Core ML graph builder, and hashing the files it writes.
 ptts-coreml = { path = "../ptts-coreml", features = ["gguf"] }
-sha2 = "0.10"
+sha2 = { workspace = true }
 tracing-chrome = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]

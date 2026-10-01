@@ -33,8 +33,8 @@ pub struct Config {
 
 /// How one utterance went.
 pub struct Timings {
-    /// Wall time per frame: the flow step, plus waiting for the previous frame's audio.
-    pub frames: Vec<Duration>,
+    /// Frames generated.
+    pub frames: usize,
     /// From the start of the text prefill to the first frame's audio being delivered.
     pub ttfa: Duration,
     pub total: Duration,
@@ -400,7 +400,7 @@ impl Phonon {
         let (il, wt_ns, cfg) = (&self.il, &self.wt_ns, &self.cfg);
         let pos0 = self.vlen + tokens.len();
         let mut lat = self.bos.clone();
-        let (mut frames, mut samples, mut ttfa) = (Vec::new(), 0usize, None);
+        let (mut frames, mut samples, mut ttfa) = (0usize, 0usize, None);
         let stopped = std::cell::Cell::new(false);
 
         std::thread::scope(|scope| -> Result<(), String> {
@@ -431,7 +431,6 @@ impl Phonon {
             let mut countdown: Option<usize> = None;
             for i in 0..max_frames.min(cfg.max_frames) {
                 let noise: Vec<f32> = (0..cfg.dims.ldim).map(|_| rng.sample(distr)).collect();
-                let fstart = Instant::now();
                 // input_linear + num_speakers on the host: 32x768, microseconds, and it is what
                 // lets one graph serve both prefill and decode.
                 let mut emb = wt_ns.clone();
@@ -445,7 +444,7 @@ impl Phonon {
                 if i > 0 && !deliver(pcm_rx.recv().map_err(|_| "mimi worker died")??) {
                     break;
                 }
-                frames.push(fstart.elapsed());
+                frames += 1;
                 if eos > cfg.eos_threshold && countdown.is_none() {
                     countdown = Some(frames_after_eos);
                 }
