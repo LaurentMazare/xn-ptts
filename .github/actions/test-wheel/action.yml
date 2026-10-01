@@ -7,11 +7,11 @@ runs:
     - shell: bash
       run: |
         python -m pip install --upgrade pip
-        # Let pip choose the wheel, rather than globbing `dist/*.whl`: `--find-interpreter`
-        # builds one wheel per interpreter it finds in the manylinux image, and handing pip
-        # a cp310 wheel on a 3.14 runner is an error, not a skip. `--no-index` keeps it to
-        # what this job built, and `--no-deps` is what lets `--no-index` work at all -- pip
-        # cannot resolve `numpy` from an index it has been told not to use.
+        # Let pip choose the wheel rather than globbing `dist/*.whl`, so a `dist/` that ever
+        # holds more than the one abi3 wheel still installs the one this runner can use.
+        # `--no-index` keeps it to what this job built, and `--no-deps` is what lets
+        # `--no-index` work at all -- pip cannot resolve `numpy` from an index it has been
+        # told not to use.
         python -m pip install --find-links dist --no-index --no-deps ptts
         # The dependencies that `--no-deps` just skipped, and the test runner.
         python -m pip install pytest numpy
