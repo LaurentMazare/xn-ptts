@@ -1,15 +1,60 @@
-# Pocket TTS in WebAssembly
+# ptts-wasm
 
-`ptts-wasm` exposes the Rust model as a low-level browser [`Model`](src/lib.rs). It accepts checkpoint weights, a matching `tokenizer.json`, an optional `config.json`, and a voice safetensors file as bytes supplied by the caller. It generates one 80 ms PCM frame per call.
+The browser build of [Pocket TTS](../ptts/), published to npm as [`phonon-tts`](https://www.npmjs.com/package/phonon-tts). This README is about building and changing it. For using the package, see [`js/README.md`](js/README.md), which is also the README on npm.
 
-Build it from this directory with [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) 0.12 or later, Node 22.7 or later, and [binaryen](https://github.com/WebAssembly/binaryen/releases)'s `wasm-opt` 124 or later on `PATH` (`brew install binaryen`). The `wasm-opt` that wasm-pack downloads by itself is too old for this module and aborts:
+## Layout
 
-```bash
-make build
+- `src/lib.rs`: the raw `wasm-bindgen` surface. It takes bytes that are already fetched and generates one 80 ms frame per call, because the browser has no threads to hand generation to. Text is normalized, split into sentence-aligned chunks and tokenized in Rust, with the same rules as `ptts::synth`. Voices can be `emb` embeddings, which are run through the model once when they are added, or the precomputed KV caches of `embeddings_v2/`.
+- `js/`: the package's public API. `index.js` exports `PhononTTS`, which runs the model in a worker (`worker.js`), downloads and caches its files (`fetch.js`, via the Cache API), and turns requests into async iterators. `models.js` holds the pinned URLs of Kyutai's published Pocket TTS checkpoint. `index.d.ts` holds the types. `test/` holds node tests for the wrapper's own logic.
+- `scripts/pack.mjs`: assembles the npm package around the wasm-pack output.
+- `www/index.html`: the demo page, built on the package the way a consumer would use it.
+
+### Driving `src/lib.rs` directly
+
+`js/worker.js` is the only caller, and this is the loop it runs. Text is split in Rust, so prompting is per chunk and generation is per frame, which makes it two levels deep:
+
+```js
+const model = new Model(modelWeights, tokenizerJson, configJson, quant, lang, rewrites);
+const voiceIndex = model.add_voice(voiceBytes);
+
+// Splits and tokenizes. Runs no model, and returns the number of chunks.
+model.start_generation(voiceIndex, text, temperature, seed);
+
+while (true) {
+  // Prompts the next chunk's text, or returns undefined once every chunk is done.
+  if (model.next_chunk() === undefined) break;
+
+  while (true) {
+    // 80ms of mono PCM at model.sample_rate(), or undefined at the end of the chunk.
+    const pcm = model.generation_step();
+    if (!pcm) break;
+    // ... play or buffer pcm ...
+  }
+}
 ```
 
-This runs `wasm-pack build` into `pkg/wasm/`, then `scripts/pack.mjs`, which assembles the `phonon-tts` npm package in `pkg/`. [`js/README.md`](js/README.md) covers using the package, including loading a checkpoint from your own URLs.
+`stop_generation()` drops a generation in progress. An error thrown by `next_chunk` or `generation_step` also drops it, so a caller that swallows one cannot carry on and silently lose a sentence -- every later call reports the end instead. One noise source covers every chunk, so `seed` fixes the whole utterance. See the rustdoc on `Model::new` for `quant`, `lang` and what a supplied `config.json` does not change.
 
-`Model` accepts `"f32"` or `"q8"` weights. Its required language argument is one of `"en"`, `"fr"`, `"de"`, `"es"`, `"pt"`, or `"none"`; an optional final argument selects text rewrite rules. `start_generation` splits and tokenizes text, `next_chunk` prompts each chunk, `generation_step` returns PCM frames, and `stop_generation` cancels a run. The build requires WebAssembly Relaxed SIMD support in the browser.
+## Build
 
-The included [`www/`](www/) demo currently fetches a Kyutai compatibility checkpoint. It does not load the separately supplied Gradium preview checkpoint. For a runnable preview with that checkpoint, use the [Rust or Python instructions](../README.md#1-set-up).
+Needs [wasm-pack](https://github.com/drager/wasm-pack) 0.12 or later, for `--no-pack` (`cargo install wasm-pack`), node 22.7 or later, for module-syntax detection on the `.js` files under `js/`, and [binaryen](https://github.com/WebAssembly/binaryen/releases)'s `wasm-opt` 124 or later on `PATH` (`brew install binaryen`). The `wasm-opt` that wasm-pack downloads by itself is too old for this module and aborts; `make profiling` skips it.
+
+```bash
+make build                               # the npm package, in pkg/
+make test                                # the wrapper's tests: no browser, no model
+make serve MODEL_DIR=/path/to/model      # build, then serve the demo from site/ on http://localhost:8080
+```
+
+`MODEL_DIR` is a model folder holding `tokenizer.json`, `model.q8.gguf` or `model.safetensors`, an optional `config.json`, and voices under `voices/`. `make demo` links it into `site/model/` and writes `site/model.json` describing what is in it, since the page cannot list a directory over HTTP. The page offers the weight formats the folder has, downloads them the first time, then loads them from the browser's cache.
+
+The package version is not in `js/package.json`. `pack.mjs` stamps it from `workspace.package.version` in the top-level `Cargo.toml`, so npm, PyPI and crates.io stay on one version.
+
+## Before a release
+
+Check the checkpoint URLs in `js/models.js`. They are pinned to Hugging Face revisions, and the files are cached by URL, so changing a revision makes every user of them download again.
+
+## Known limits
+
+- The module needs WebAssembly Relaxed SIMD. `xn`'s quantized kernels call `f32x4_relaxed_madd` unconditionally, so a browser without it cannot compile the module, even for f32 weights.
+- No voice cloning: the Mimi encoder is not in the browser build.
+- The `webgpu` feature compiles for `wasm32`, and CI checks it, but nothing uses it yet: `Model` runs on the CPU.
