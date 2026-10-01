@@ -116,14 +116,16 @@ The [package README](ios/PhononTTS/README.md) covers downloading the models inst
 
 ## 6. Use it in the browser
 
-The `phonon-tts` JavaScript package runs the model in the page, compiled to WebAssembly, on the CPU in a Web Worker. Build it from the repository, which needs Rust with the `wasm32-unknown-unknown` target, [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/), Node 22.7 or later, and [binaryen](https://github.com/WebAssembly/binaryen/releases) 124 or later:
+The `phonon-tts` JavaScript package runs the model in the page, compiled to WebAssembly, on the CPU in a Web Worker. Build it from the repository, which needs Rust with the `wasm32-unknown-unknown` target, [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/), Node 22.7 or later, [binaryen](https://github.com/WebAssembly/binaryen/releases) 124 or later, and a pinned nightly toolchain for the package's multithreaded build, which `make threads-toolchain` installs:
 
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install wasm-pack
 brew install binaryen           # or a release from GitHub: distribution packages are often older than 124
 
-cd ptts-wasm && make build      # the package, in ptts-wasm/pkg
+cd ptts-wasm
+make threads-toolchain          # once
+make build                      # the package, in ptts-wasm/pkg
 cd pkg && npm pack              # and as a tarball, phonon-tts-<version>.tgz
 ```
 
@@ -155,3 +157,12 @@ const wav = await tts.synthWav('Hello world');   // or a whole WAV Blob
 ```
 
 Load the model once and reuse it. The first load downloads the model files and keeps them in the browser's Cache API, which needs the page served over `https://` or from `localhost`. Files are cached by URL, so when you replace the model, serve it under a new path (say `/model-v2/`) or call `clearCache()` first; otherwise the browser keeps using the old files. The browser needs WebAssembly Relaxed SIMD; this was tested in current Chrome. Bundlers such as Vite pick up the package's worker and wasm with no configuration. The [package README](ptts-wasm/js/README.md) covers streaming playback, voices and the remaining options.
+
+Generation runs on 3 CPU threads when the page is served with these two headers, and on one thread otherwise. Pass `threads` to `load` to choose another number:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+With them, the page can only load cross-origin files that opt in through CORS, which matters if the model is served from another origin. `tts.threads` says how many threads it got, and `tts.threadsReason` why.
