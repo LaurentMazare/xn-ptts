@@ -6,7 +6,7 @@ Phonon is Gradium's on-device text-to-speech runtime, written in Rust, with Pyth
 
 ## 1. Set up
 
-You need [Rust](https://rustup.rs) for both paths, and [uv](https://docs.astral.sh/uv/) for Python.
+You need [Rust](https://rustup.rs) for every path, and [uv](https://docs.astral.sh/uv/) for Python.
 
 Point `MODEL_DIR` at the model folder, the one holding `config.json`, `model.q8.gguf`, `tokenizer.json` and `voices/default.safetensors`:
 
@@ -121,16 +121,19 @@ The `phonon-tts` JavaScript package runs the model in the page, compiled to WebA
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install wasm-pack
-brew install binaryen
+brew install binaryen           # or a release from GitHub: distribution packages are often older than 124
 
 cd ptts-wasm && make build      # the package, in ptts-wasm/pkg
+cd pkg && npm pack              # and as a tarball, phonon-tts-<version>.tgz
 ```
 
-Install it into your web app, and serve the model folder with the app's static files, here under `/model/`:
+Install the tarball into your web app, and serve the model folder with the app's static files, here under `/model/`:
 
 ```bash
-npm install /path/to/xn-ptts/ptts-wasm/pkg
+npm install /path/to/xn-ptts/ptts-wasm/pkg/phonon-tts-*.tgz
 ```
+
+Install the tarball rather than the `pkg` folder: npm links a folder instead of copying it, and Vite's dev server refuses to serve files from outside the app.
 
 ```js
 import { PhononTTS } from 'phonon-tts';
@@ -151,4 +154,4 @@ for await (const pcm of tts.stream('Hello from the browser.')) {
 const wav = await tts.synthWav('Hello world');   // or a whole WAV Blob
 ```
 
-Load the model once and reuse it. The first load downloads the model files and keeps them in the browser's Cache API, which needs the page served over `https://` or from `localhost`. The browser needs WebAssembly Relaxed SIMD, which current Chrome has. Bundlers such as Vite pick up the package's worker and wasm with no configuration. The [package README](ptts-wasm/js/README.md) covers streaming playback, voices and the remaining options.
+Load the model once and reuse it. The first load downloads the model files and keeps them in the browser's Cache API, which needs the page served over `https://` or from `localhost`. Files are cached by URL, so when you replace the model, serve it under a new path (say `/model-v2/`) or call `clearCache()` first; otherwise the browser keeps using the old files. The browser needs WebAssembly Relaxed SIMD; this was tested in current Chrome. Bundlers such as Vite pick up the package's worker and wasm with no configuration. The [package README](ptts-wasm/js/README.md) covers streaming playback, voices and the remaining options.
