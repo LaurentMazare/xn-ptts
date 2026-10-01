@@ -61,7 +61,7 @@ stopButton.onclick = () => controller.abort();
 | `cache` | `true` | keep downloads in the Cache API |
 | `onProgress` | | `({ file, loaded, total, cached }) => void`, for a progress bar |
 | `model` | `DEFAULT_MODEL` | another checkpoint, see below |
-| `threads` | `'auto'` | CPU threads to generate on, or `'auto'`: up to 4 on a desktop and 3 on a phone. Needs a cross-origin isolated page, see [Threads](#threads) |
+| `threads` | `'auto'` | CPU threads to generate on, or `'auto'` for 3. Needs a cross-origin isolated page, see [Threads](#threads) |
 | `workerUrl`, `wasmUrl`, `threadsWasmUrl` | beside `index.js` | for setups that serve the package's files from elsewhere |
 
 ### Instance
@@ -124,7 +124,7 @@ Cross-Origin-Embedder-Policy: require-corp
 
 With them, the page can only load cross-origin resources that opt in, through CORS or a `Cross-Origin-Resource-Policy` header. That includes the model files, if they are served from another origin.
 
-The package ships two wasm builds and picks one when it loads: the threaded build on an isolated page, the single-threaded one elsewhere, or if threads fail to start. Both produce the same audio. `tts.threads` says how many threads it got, and `tts.threadsReason` why. Pass `threads: 1` to stay on one thread, or a number to choose; `'auto'` uses up to 4 on a desktop and 3 on a phone, since past a few threads handing out the work costs more than it saves, and a thread on a phone's efficiency core slows the rest down.
+The package ships two wasm builds and picks one when it loads: the threaded build on an isolated page, the single-threaded one elsewhere, or if threads fail to start. Both produce the same audio. `tts.threads` says how many threads it got, and `tts.threadsReason` why. `'auto'` uses 3 threads, or fewer on a device with fewer cores: past a few threads, handing out the work costs more than it saves, and a thread that lands on an efficiency core slows the rest down. Pass `threads: 1` to stay on one thread, or a number of your own for devices you know better.
 
 This build speaks with ready-made voices only. Cloning a voice from an audio sample needs the Mimi encoder, which is not in the browser build. Create a voice file with the `create_voice` tool from the [repository](https://github.com/gradium-ai/xn-ptts), then load it with `addVoice`.
 

@@ -60,7 +60,7 @@ export interface LoadOptions {
   threadsWasmUrl?: string | URL;
   /**
    * CPU threads to generate on, counting the worker that owns the model. Default `'auto'`:
-   * up to 4 on a desktop and 3 on a phone, never more than the device has cores. Threads
+   * 3, or fewer if the device has fewer cores. Threads
    * need a cross-origin isolated page (see the README); elsewhere generation runs on one
    * thread whatever this says, and {@link PhononTTS.threadsReason} says why.
    */

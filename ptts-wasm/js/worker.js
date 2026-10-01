@@ -45,7 +45,6 @@ async function loadWasm(options) {
     requested: options.threads,
     isolated: self.crossOriginIsolated === true,
     hardwareConcurrency: navigator.hardwareConcurrency,
-    userAgent: navigator.userAgent,
   });
   let reason = choice.reason;
   if (choice.threads > 1) {
