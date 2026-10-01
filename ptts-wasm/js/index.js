@@ -30,7 +30,7 @@ export class PhononTTS {
   /** Why the instance stopped, when it was not `dispose()`: the worker's crash. */
   #failure = null;
 
-  /** Samples per second of the audio this model produces (24000 for Pocket TTS). */
+  /** Samples per second of the audio this model produces (24000 for Phonon). */
   sampleRate;
   /** SIMD features the wasm module was built with, e.g. `{ simd128: true }`. */
   features;

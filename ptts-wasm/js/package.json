@@ -1,6 +1,6 @@
 {
   "name": "phonon-tts",
-  "description": "On-device text-to-speech in the browser: Pocket TTS compiled to WebAssembly, streaming 24 kHz speech from a worker.",
+  "description": "On-device text-to-speech in the browser: Phonon compiled to WebAssembly, streaming 24 kHz speech from a worker.",
   "type": "module",
   "main": "./index.js",
   "types": "./index.d.ts",

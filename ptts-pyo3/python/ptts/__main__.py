@@ -20,7 +20,7 @@ def _parser() -> argparse.ArgumentParser:
         # Usage lines should name the spelling the reader actually typed. argparse's own
         # default gets `__main__.py` for `python -m ptts`, which names nothing runnable.
         prog="python -m ptts" if sys.argv[0].endswith("__main__.py") else "ptts",
-        description="Generate speech from text using Pocket TTS.",
+        description="Generate speech from text using Phonon.",
     )
     p.add_argument("text", nargs="?", help="text to synthesize")
     p.add_argument("-o", "--output", default="out.wav", help="output WAV path (default: out.wav)")

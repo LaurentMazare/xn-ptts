@@ -5,7 +5,7 @@
 //! the voices, and a `bundle.json` describing it all with every file's size and SHA-256.
 //!
 //! ```bash
-//! cargo run --release -p ptts --example export_coreml -- out/pocket-tts-coreml
+//! cargo run --release -p ptts --example export_coreml -- out/phonon-coreml
 //! cargo run --release -p ptts --example export_coreml -- --dir path/to/checkpoint out/models
 //! ```
 //!

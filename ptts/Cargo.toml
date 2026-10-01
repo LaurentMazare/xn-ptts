@@ -63,7 +63,7 @@ name = "say"
 required-features = ["hf"]
 
 [[example]]
-name = "pocket_tts"
+name = "ptts"
 required-features = ["hf", "audio"]
 
 [[example]]

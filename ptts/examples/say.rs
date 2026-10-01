@@ -10,7 +10,7 @@ mod model_helpers;
 use ptts::preprocess::{Lang, Normalize};
 
 fn main() -> anyhow::Result<()> {
-    let text = std::env::args().nth(1).unwrap_or_else(|| "Hello from Pocket TTS.".to_string());
+    let text = std::env::args().nth(1).unwrap_or_else(|| "Hello from Phonon.".to_string());
 
     // `ptts` reads the files it is handed; finding them is the frontend's job,
     // and for the examples `model_helpers` is where that knowledge lives.
