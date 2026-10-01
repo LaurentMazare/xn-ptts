@@ -7,7 +7,7 @@
 
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 
 const root = resolve(process.argv[2] ?? '.');
 const port = Number(process.argv[3] ?? 8080);
@@ -22,10 +22,17 @@ const TYPES = {
 createServer((req, res) => {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
-  const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+  let path;
+  try {
+    path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+  } catch {
+    // A malformed escape, which would otherwise throw out of the handler and stop the server.
+    return res.writeHead(400).end();
+  }
   let file = normalize(join(root, path));
-  // `normalize` resolves `..`, so this keeps every request inside `root`.
-  if (!file.startsWith(root)) return res.writeHead(403).end();
+  // `normalize` resolves `..`, including an escaped `..%2f`. Comparing against `root` plus a
+  // separator keeps the result inside `root`, not in a sibling whose name starts the same.
+  if (file !== root && !file.startsWith(root + sep)) return res.writeHead(403).end();
   try {
     if (statSync(file).isDirectory()) file = join(file, 'index.html');
     const { size } = statSync(file);

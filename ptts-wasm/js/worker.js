@@ -57,6 +57,8 @@ async function loadWasm(options) {
       await wasm.initThreadPool(workers);
       return { wasm, threads: wasm.start_cpu_pool(workers), reason };
     } catch (e) {
+      // The threaded module stays loaded, with its shared memory and whatever Web Workers
+      // it had started: wasm has no way to unload it. It is only reached when threads fail.
       reason = `threads failed to start: ${e instanceof Error ? e.message : e}`;
     }
   }

@@ -35,10 +35,12 @@ const manifest = JSON.parse(readFileSync(join(js, 'package.json'), 'utf8'));
 const { name, ...rest } = manifest;
 writeFileSync(join(out, 'package.json'), JSON.stringify({ name, version, ...rest }, null, 2) + '\n');
 
-// Everything `files` names outside wasm/ and the licences comes from js/, so the copy list
-// and the publish list cannot drift apart. A module added to one but not the other would
-// otherwise ship a package missing a file, and nothing here would say so.
-const fromJs = manifest.files.filter((f) => !f.startsWith('wasm') && !f.startsWith('LICENSE'));
+// Everything `files` names outside the two wasm builds and the licences comes from js/, so
+// the copy list and the publish list cannot drift apart. A module added to one but not the
+// other would otherwise ship a package missing a file, and nothing here would say so.
+const fromJs = manifest.files.filter(
+  (f) => !f.startsWith('wasm/') && !f.startsWith('wasm-threads/') && !f.startsWith('LICENSE'),
+);
 for (const file of [...fromJs, 'README.md']) {
   copyFileSync(join(js, file), join(out, file));
 }

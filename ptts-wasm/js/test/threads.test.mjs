@@ -25,7 +25,17 @@ test('auto: capped on a desktop, lower on a phone, never more than the cores', (
     reason: 'phone default',
   });
   assert.equal(chooseThreads({ isolated: true, hardwareConcurrency: 2, userAgent: DESKTOP }).threads, 2);
-  assert.equal(chooseThreads({ isolated: true, hardwareConcurrency: undefined, userAgent: DESKTOP }).threads, 1);
+});
+
+test('one thread, with its own reason, when the browser reports one core or none', () => {
+  for (const hardwareConcurrency of [undefined, 0, 1]) {
+    for (const requested of ['auto', 6]) {
+      assert.deepEqual(chooseThreads({ requested, isolated: true, hardwareConcurrency, userAgent: DESKTOP }), {
+        threads: 1,
+        reason: 'the browser reports one core or none',
+      });
+    }
+  }
 });
 
 test('a requested count is honoured up to the number of cores', () => {

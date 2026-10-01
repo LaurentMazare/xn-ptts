@@ -15,6 +15,8 @@ export const MAX_THREADS = 4;
 /** Threads in all on a phone: two workers plus the one that owns the model. */
 export const MOBILE_THREADS = 3;
 
+// iPads on iPadOS 13 and later send a desktop Mac user agent, so they fall under the desktop
+// cap, which their cores can take.
 const MOBILE = /Android|iPhone|iPad|Mobile/;
 
 /**
@@ -30,7 +32,8 @@ const MOBILE = /Android|iPhone|iPad|Mobile/;
 export function chooseThreads({ requested = 'auto', isolated, hardwareConcurrency, userAgent = '' }) {
   if (requested === 1) return { threads: 1, reason: 'requested' };
   if (!isolated) return { threads: 1, reason: 'the page is not cross-origin isolated' };
-  const cores = Math.max(1, hardwareConcurrency || 1);
+  if (!(hardwareConcurrency > 1)) return { threads: 1, reason: 'the browser reports one core or none' };
+  const cores = hardwareConcurrency;
   if (requested !== 'auto') return { threads: Math.min(requested, cores), reason: 'requested' };
   if (MOBILE.test(userAgent)) return { threads: Math.min(MOBILE_THREADS, cores), reason: 'phone default' };
   return { threads: Math.min(MAX_THREADS, cores), reason: 'default' };
