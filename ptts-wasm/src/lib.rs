@@ -1,8 +1,9 @@
 //! The raw WebAssembly surface of the browser build.
 //!
 //! This is what `wasm-bindgen` exports, and it is deliberately low level: it takes bytes the
-//! caller has already fetched and it generates one frame per call, because a browser has no
-//! threads to hand generation to and must yield to its event loop between frames. A
+//! caller has already fetched and it generates one frame per call, because the worker it runs
+//! in must yield to its event loop between frames to hear a cancel. The `threads` build
+//! splits the work inside a frame across Web Workers; see `start_cpu_pool`. A
 //! JavaScript wrapper -- the `phonon-tts` npm package, added later in this stack -- runs it
 //! in a worker and handles downloads, caching and voices by name. Most callers want that,
 //! not this.
@@ -492,4 +493,52 @@ pub fn cpu_features() -> js_sys::Object {
     set("simd128", xn::with_simd128());
     set("f16c", xn::with_f16c());
     obj
+}
+
+// ---- threads ----
+//
+// Only in the `threads` build. It is a separate module because wasm threads need shared
+// memory, which needs std rebuilt with atomics and a page that is cross-origin isolated, and
+// a page that is not would fail to load it at all. The JS side picks this build only when
+// the page can run it, and the single-threaded one otherwise.
+//
+// Two steps, from the worker that owns the `Model`, before it loads one:
+// `initThreadPool(workers)` gives rayon its Web Workers, then `start_cpu_pool(workers)`
+// parks xn's CPU pool on them. A rayon fork/join wakes a parked Web Worker per operator,
+// which costs more than most of a frame's operators take; xn's pool workers spin between
+// operators instead, so a dispatch is cheap and small operators are worth splitting.
+
+#[cfg(feature = "threads")]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
+/// Iterations a pool worker spins before parking: long enough to bridge the gaps between
+/// operators inside a frame, short enough that an idle page stops burning its cores soon
+/// after an utterance ends.
+#[cfg(feature = "threads")]
+const POOL_SPIN_BUDGET: u32 = 4_000_000;
+
+/// The smallest operator, in multiply-adds, that the pool splits across its workers. Below
+/// it, handing work out costs more than doing it on one thread.
+#[cfg(feature = "threads")]
+const MIN_PARALLEL_WORK: usize = 256 << 10;
+
+/// Runs xn's CPU pool on `workers` of rayon's Web Workers, for good: they never return, so
+/// nothing else may go through rayon afterwards. Call it once, after `initThreadPool` and
+/// before loading a model, from a worker rather than the page, since a dispatch can block.
+/// Returns how many threads now share the work: the workers plus the calling one.
+#[cfg(feature = "threads")]
+#[wasm_bindgen]
+pub fn start_cpu_pool(workers: usize) -> usize {
+    if workers == 0 {
+        return 1;
+    }
+    // A worker rayon cannot schedule would never take a job, and the first dispatch would
+    // wait for it forever.
+    let workers = workers.min(rayon::current_num_threads());
+    let size = xn::threadpool::start_pool_with(
+        xn::threadpool::PoolConfig { workers, spin_budget: Some(POOL_SPIN_BUDGET) },
+        |job| rayon::spawn(job),
+    );
+    xn::threadpool::set_min_parallel_work(MIN_PARALLEL_WORK);
+    size
 }

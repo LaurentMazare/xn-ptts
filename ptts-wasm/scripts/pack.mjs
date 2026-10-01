@@ -1,12 +1,12 @@
 // Assemble the `phonon-tts` npm package in `<out>` (default `pkg/`), around the wasm-pack
-// output already in `<out>/wasm/`.
+// output already in `<out>/wasm/`, and in `<out>/wasm-threads/` when the threaded build ran.
 //
 // The version is not in `js/package.json`: it is stamped here from the workspace
 // `Cargo.toml`, so the npm package, the PyPI wheel and the crate cannot drift apart.
 //
 // Usage: node scripts/pack.mjs [out]
 
-import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,10 +35,12 @@ const manifest = JSON.parse(readFileSync(join(js, 'package.json'), 'utf8'));
 const { name, ...rest } = manifest;
 writeFileSync(join(out, 'package.json'), JSON.stringify({ name, version, ...rest }, null, 2) + '\n');
 
-// Everything `files` names outside wasm/ and the licences comes from js/, so the copy list
-// and the publish list cannot drift apart. A module added to one but not the other would
-// otherwise ship a package missing a file, and nothing here would say so.
-const fromJs = manifest.files.filter((f) => !f.startsWith('wasm/') && !f.startsWith('LICENSE'));
+// Everything `files` names outside the two wasm builds and the licences comes from js/, so
+// the copy list and the publish list cannot drift apart. A module added to one but not the
+// other would otherwise ship a package missing a file, and nothing here would say so.
+const fromJs = manifest.files.filter(
+  (f) => !f.startsWith('wasm/') && !f.startsWith('wasm-threads/') && !f.startsWith('LICENSE'),
+);
 for (const file of [...fromJs, 'README.md']) {
   copyFileSync(join(js, file), join(out, file));
 }
@@ -50,5 +52,30 @@ for (const file of ['LICENSE-MIT', 'LICENSE-APACHE']) {
 // subdirectory as that directory's .npmignore, and one there overrides `files`: left in
 // place, it would publish a package with no wasm in it.
 rmSync(join(out, 'wasm', '.gitignore'), { force: true });
+
+// The threaded build, when there is one. `make profiling` builds without it, and the worker
+// then runs single threaded.
+const threads = join(out, 'wasm-threads');
+if (existsSync(join(threads, 'phonon_tts_bg.wasm'))) {
+  rmSync(join(threads, '.gitignore'), { force: true });
+  // wasm-bindgen-rayon's worker helper imports the module it belongs to as `'../../..'`,
+  // which a bundler resolves through a package.json and a browser resolves to a directory,
+  // so it works for neither here. Point it at the module file itself.
+  const snippets = join(threads, 'snippets');
+  const helpers = readdirSync(snippets)
+    .filter((d) => d.startsWith('wasm-bindgen-rayon-'))
+    .map((d) => join(snippets, d, 'src', 'workerHelpers.js'));
+  if (helpers.length !== 1) {
+    console.error(`expected one wasm-bindgen-rayon worker helper in ${snippets}, found ${helpers.length}`);
+    process.exit(1);
+  }
+  const before = readFileSync(helpers[0], 'utf8');
+  const after = before.replace("import('../../..')", "import('../../../phonon_tts.js')");
+  if (!after.includes("import('../../../phonon_tts.js')")) {
+    console.error(`${helpers[0]} no longer imports '../../..': check wasm-bindgen-rayon's worker helper`);
+    process.exit(1);
+  }
+  writeFileSync(helpers[0], after);
+}
 
 console.log(`phonon-tts@${version} assembled in ${out}`);

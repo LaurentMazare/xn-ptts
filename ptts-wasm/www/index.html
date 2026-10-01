@@ -255,7 +255,7 @@ async function loadWeights() {
   voiceSelect.disabled = false;
   loadBtn.style.display = 'none';
   btn.style.display = '';
-  log(`Ready! Enter text and click Generate.\n${formatFeatures(tts.features)}`);
+  log(`Ready! Enter text and click Generate.\n${formatFeatures(tts.features)}\nThreads: ${tts.threads} (${tts.threadsReason})`);
 }
 
 async function generate() {

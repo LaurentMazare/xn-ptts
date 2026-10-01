@@ -71,7 +71,8 @@ stopButton.onclick = () => controller.abort();
 | `voices` | the default voice | voices to fetch during `load`. Others are fetched the first time they are used. |
 | `cache` | `true` | keep downloads in the Cache API |
 | `onProgress` | | `({ file, loaded, total, cached }) => void`, for a progress bar |
-| `workerUrl`, `wasmUrl` | beside `index.js` | for setups that serve the package's files from elsewhere |
+| `threads` | `'auto'` | CPU threads to generate on, or `'auto'` for 3. Needs a cross-origin isolated page, see [Threads](#threads) |
+| `workerUrl`, `wasmUrl`, `threadsWasmUrl` | beside `index.js` | for setups that serve the package's files from elsewhere |
 
 ### Instance
 
@@ -81,6 +82,7 @@ stopButton.onclick = () => controller.abort();
 - `tts.voices`: the names you can pass as `voice`: the keys of `model.voices`, plus any added with `addVoice`.
 - `tts.addVoice(name, source)` registers a voice from a URL, `Blob` or bytes of a voice `.safetensors` file.
 - `tts.sampleRate`: 24000.
+- `tts.threads`: the CPU threads generation runs on, and `tts.threadsReason` why that many.
 - `tts.dispose()` stops the worker and frees the model's memory.
 
 `temperature` defaults to `0.3` and `seed` to `42`. The same text, voice, temperature and seed always give the same audio.
@@ -129,7 +131,20 @@ Requirements:
 - A browser with WebAssembly SIMD and Relaxed SIMD, and module workers. Tested in Chrome and Firefox. A browser without Relaxed SIMD cannot load the module, and `load` rejects with an error saying so.
 - A secure context (`https://` or `localhost`) for caching. Elsewhere it still works, but downloads again on every load.
 
-Generation runs on one CPU thread. How close to real time it gets depends on the device, and `q8` is noticeably faster than `f32`.
+How close to real time it gets depends on the device and on [threads](#threads), and `q8` is noticeably faster than `f32`.
+
+## Threads
+
+Generation runs on several CPU threads when the page is [cross-origin isolated](https://developer.mozilla.org/docs/Web/API/Window/crossOriginIsolated), and on one otherwise. Isolation is what makes the shared memory wasm threads need available, and a page gets it by being served with these two headers:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+With them, the page can only load cross-origin resources that opt in, through CORS or a `Cross-Origin-Resource-Policy` header. That includes the model files, if they are served from another origin.
+
+The package ships two wasm builds and picks one when it loads: the threaded build on an isolated page, the single-threaded one elsewhere, or if threads fail to start. Both produce the same audio. `tts.threads` says how many threads it got, and `tts.threadsReason` why. `'auto'` uses 3 threads, or fewer on a device with fewer cores: past a few threads, handing out the work costs more than it saves, and a thread that lands on an efficiency core slows the rest down. Pass `threads: 1` to stay on one thread, or a number of your own for devices you know better.
 
 This build speaks with ready-made voices only. Cloning a voice from an audio sample needs the Mimi encoder, which is not in the browser build. Create a voice file with the `create_voice` tool from the [repository](https://github.com/gradium-ai/xn-ptts), then load it with `addVoice`.
 
