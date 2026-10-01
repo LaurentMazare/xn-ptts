@@ -8,13 +8,11 @@ Phonon is Gradium's on-device text-to-speech runtime, written in Rust, with Pyth
 
 You need [Rust](https://rustup.rs) for every path, and [uv](https://docs.astral.sh/uv/) for Python.
 
-Unzip the supplied model package and point `MODEL_DIR` at its inner folder, the one holding `config.json`, `model.q8.gguf`, `tokenizer.json` and `voices/`. The supplied voices are `Freya`, `Harper`, `Sterling` and `Toby`:
+Point `MODEL_DIR` at the model folder, the one holding `config.json`, `model.q8.gguf`, `tokenizer.json` and `voices/`:
 
 ```bash
 export MODEL_DIR=/path/to/model
 ```
-
-The Rust and Python commands load the local model files without downloading model weights. Initial builds may fetch dependencies. The browser example serves those files over HTTP and caches them.
 
 ## 2. Run it
 
