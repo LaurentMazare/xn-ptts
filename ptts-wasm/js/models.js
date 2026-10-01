@@ -1,10 +1,9 @@
-// Where the default checkpoint's files live.
+// Where Kyutai's published Pocket TTS checkpoint lives, for callers who pass it as `model`.
+// Nothing loads it by default: `PhononTTS.load` requires a `model`.
 //
 // Every URL names a pinned revision rather than `main`: the files are cached by URL, and a
 // published package version has to keep loading the checkpoint it was tested with even after
 // the repo moves on. Bump the revisions and the package version together.
-//
-// TODO: point this at the public Phonon repo once the weights are published there.
 
 const HF = 'https://huggingface.co';
 const F32_REPO = `${HF}/kyutai/pocket-tts-without-voice-cloning/resolve/8843db76457a91db32077edf8dfcd1c0e3e755fd`;
@@ -13,7 +12,7 @@ const Q8_REPO = `${HF}/lmz/pocket-tts-without-voice-cloning-q8/resolve/c2d23606a
 const VOICES = ['alba', 'marius', 'javert', 'jean', 'fantine', 'cosette', 'eponine', 'azelma'];
 
 /** @type {import('./index.js').ModelSpec} */
-export const DEFAULT_MODEL = Object.freeze({
+export const POCKET_TTS_MODEL = Object.freeze({
   weights: Object.freeze({
     f32: `${F32_REPO}/tts_b6369a24.safetensors`,
     q8: `${Q8_REPO}/tts_b6369a24.gguf`,

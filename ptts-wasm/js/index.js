@@ -4,10 +4,9 @@
 // generating never blocks the page; this file only posts requests to it and turns its
 // replies into promises and async iterators.
 
-import { DEFAULT_MODEL } from './models.js';
 import { concatPcm, encodeWav } from './wav.js';
 
-export { DEFAULT_MODEL } from './models.js';
+export { POCKET_TTS_MODEL } from './models.js';
 export { clearCache } from './fetch.js';
 export { encodeWav, concatPcm } from './wav.js';
 
@@ -46,7 +45,7 @@ export class PhononTTS {
       lang,
       rewrites,
       quant = 'q8',
-      model = DEFAULT_MODEL,
+      model,
       voices,
       cache = true,
       onProgress,
@@ -60,6 +59,23 @@ export class PhononTTS {
     }
     if (quant !== 'f32' && quant !== 'q8') {
       throw new TypeError(`quant must be 'f32' or 'q8', got '${quant}'`);
+    }
+    // Required too. A default checkpoint would be one particular model's files, and loading
+    // a model other than the one the caller has in mind gives plausible speech with nothing
+    // to say it is the wrong model. `POCKET_TTS_MODEL` is there for whoever wants that one.
+    if (typeof model !== 'object' || model === null || Array.isArray(model)) {
+      throw new TypeError(
+        "model is required: where the checkpoint's files are, e.g. " +
+          "{ weights: { q8: '/model/model.q8.gguf' }, tokenizer: '/model/tokenizer.json', " +
+          "config: '/model/config.json', voices: { default: '/model/voices/default.safetensors' } }",
+      );
+    }
+    if (!isUrl(model.tokenizer)) {
+      throw new TypeError("model.tokenizer is required: the URL of the checkpoint's tokenizer.json");
+    }
+    // Checked before the worker starts, for the same reason as `rewrites` below.
+    if (!isUrl(model.weights?.[quant])) {
+      throw new TypeError(`model has no '${quant}' weights: set model.weights.${quant}, or pick another quant`);
     }
     // Checked here rather than left to Rust: `load` is async and the error would otherwise
     // arrive after the weights had been downloaded. This mirrors `Rules::parse`, which trims
@@ -321,6 +337,11 @@ export class PhononTTS {
  * An absolute URL for `url`. The worker resolves relative URLs against its own script, which
  * lives inside the package, so anything relative has to be made absolute against the page.
  */
+/** What `resolveUrl` takes: a URL string, relative to the page or absolute, or a `URL`. */
+function isUrl(url) {
+  return typeof url === 'string' || url instanceof URL;
+}
+
 function resolveUrl(url) {
   return globalThis.location ? new URL(url, globalThis.location.href).href : String(url);
 }

@@ -59,6 +59,27 @@ const { PhononTTS } = await import('../index.js');
 const MODEL = { weights: { q8: 'w' }, tokenizer: 't', voices: { alba: 'a', marius: 'm' } };
 const load = () => PhononTTS.load({ lang: 'en', model: MODEL, workerUrl: 'worker.js' });
 
+test('model is required, with weights for the quant being loaded', async () => {
+  FakeWorker.last = null;
+  await assert.rejects(PhononTTS.load({ lang: 'en' }), /model is required/);
+  await assert.rejects(PhononTTS.load({ lang: 'en', model: [] }), /model is required/);
+  await assert.rejects(PhononTTS.load({ lang: 'en', model: { weights: { q8: 'w' } } }), /model\.tokenizer is required/);
+  await assert.rejects(PhononTTS.load({ lang: 'en', model: MODEL, quant: 'f32' }), /no 'f32' weights/);
+  // All of them fail before a worker exists, so nothing has been downloaded.
+  assert.equal(FakeWorker.last, null);
+});
+
+test('model files may be URL objects, as workerUrl and wasmUrl may', async () => {
+  const model = {
+    weights: { q8: new URL('https://example.com/m/model.q8.gguf') },
+    tokenizer: new URL('https://example.com/m/tokenizer.json'),
+    voices: { v: new URL('https://example.com/m/v.safetensors') },
+  };
+  await PhononTTS.load({ lang: 'en', model, workerUrl: 'worker.js' });
+  assert.equal(FakeWorker.last.init.model.tokenizer, 'https://example.com/m/tokenizer.json');
+  assert.equal(FakeWorker.last.init.model.weights.q8, 'https://example.com/m/model.q8.gguf');
+});
+
 test('lang is required', async () => {
   await assert.rejects(PhononTTS.load({ model: MODEL }), /lang is required/);
   await assert.rejects(PhononTTS.load({ lang: 'xx', model: MODEL }), /lang is required/);
