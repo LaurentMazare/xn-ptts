@@ -6,15 +6,16 @@ Phonon is Gradium's on-device text-to-speech runtime, written in Rust, with Pyth
 
 ## 1. Set up
 
-You need [Rust](https://rustup.rs) for both paths, and [uv](https://docs.astral.sh/uv/) for Python. Clone this repository and unpack the model package next to it:
+You need [Rust](https://rustup.rs) for both paths, and [uv](https://docs.astral.sh/uv/) for Python. Clone this repository, unpack the model package next to it, and change into the repository:
 
 ```bash
 git clone https://github.com/gradium-ai/xn-ptts
-cd xn-ptts
 
 unzip /path/to/phonon-7e71a02d.200.zip
 tar xzf phonon-7e71a02d.200/phonon-7e71a02d.200-gradium.tar.gz
 export MODEL_DIR="$PWD/phonon-7e71a02d.200-gradium"
+
+cd xn-ptts
 ```
 
 `MODEL_DIR` now holds `config.json`, `model.q8.gguf`, `tokenizer.json` and `voices/default.safetensors`. The commands below read only these files and download nothing.
@@ -25,7 +26,7 @@ With Rust, from the repository root (the first build takes a few minutes):
 
 ```bash
 cargo run --release -p ptts --example pocket_tts --features hf,audio -- \
-  --lang en --dir "$MODEL_DIR" "Hello world" -o out.wav
+  --lang en --dir "$MODEL_DIR" --quant q8 "Hello world" -o out.wav
 ```
 
 With Python, from the repository root (the first run builds the package, a few minutes):
@@ -35,7 +36,7 @@ uv run --project ptts-pyo3 --locked ptts --lang en \
   --model "$MODEL_DIR/config.json" --quant q8 "Hello world" -o out.wav
 ```
 
-`--lang` is required. It picks how numbers, symbols and abbreviations are spelled out before synthesis: `en`, `fr`, `de`, `es` or `pt`, or `none` to use the text as written.
+`--quant q8` runs the model in q8, the format `model.q8.gguf` is stored in. Without it the weights are expanded to f32, which is slower and uses more memory; the Rust and Python examples below set q8 too. `--lang` is required. It picks how numbers, symbols and abbreviations are spelled out before synthesis: `en`, `fr`, `de`, `es` or `pt`, or `none` to use the text as written.
 
 ## 3. Use it from Rust
 
@@ -68,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Load the model once and reuse it. `tts.say` returns the whole waveform as mono `f32` samples at `tts.sample_rate()`. `tts.stream` returns an iterator of chunks as they are generated, for playback that starts before the sentence is finished. Build with `--release`: a debug build is far too slow for realtime.
+Load the model once and reuse it. `tts.say` returns the whole waveform as mono `f32` samples at `tts.sample_rate()`. `tts.stream(text)?` is an iterator of `Result<Vec<f32>>` chunks, yielded as they are generated, for playback that starts before the sentence is finished. Build with `--release`: a debug build is far too slow for realtime.
 
 ## 4. Use it from Python
 
