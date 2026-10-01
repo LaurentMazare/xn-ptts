@@ -214,11 +214,36 @@ jobs:
       # `!Sync` on wasm32 -- 48 errors, all of them that. The feature builds fine for the host,
       # which is why nothing had noticed. Add the check here once `xn` is fixed.
 
+  coreml:
+    name: Core ML and the Swift package
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
+          targets: aarch64-apple-ios aarch64-apple-ios-sim
+          cache-key: coreml
+          audio-deps: "false"
+      # The Core ML runtime and the C interface only exist on Apple targets, so the Linux clippy
+      # job compiles them out and never sees most of their code.
+      - name: Clippy, macOS
+        run: cargo clippy -p ptts-coreml -p ptts-coreml-ffi --features ptts-coreml/gguf --all-targets -- -D warnings
+      - name: Clippy, iOS
+        run: cargo clippy -p ptts-coreml-ffi --target aarch64-apple-ios -- -D warnings
+      # What an app actually consumes: the framework for iPhone, simulator and Mac, and the
+      # Swift package compiled against it, in Swift 6 language mode.
+      - name: Framework and Swift package
+        run: |
+          ./ios/build-xcframework.sh
+          swift build --package-path ios/PhononTTS
+
   # One job to require in branch protection, instead of every matrix leg by name.
   ci-ok:
     name: CI
     if: always()
-    needs: [fmt, clippy, test, features, docs, wasm]
+    needs: [fmt, clippy, test, features, docs, wasm, coreml]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

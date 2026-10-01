@@ -4,18 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Workspace layout
 
-Cargo workspace (resolver "3", edition 2024) with four members:
+Cargo workspace (resolver "3", edition 2024) with six members:
 
 - `ptts/` — core TTS library. Pure Rust, depends on the `xn` tensor/nn crate. Examples live under `ptts/examples/`: `say` (shortest end-to-end call) and `bench` (benchmark harness) require the `hf` feature for the tokenizer, `pocket_tts` (full CLI) requires `hf` and `audio`, `create_voice` (voice embeddings from audio samples) requires `audio`, and `quantize` (safetensors → GGUF converter that selectively quantizes `flow_lm.transformer.layers.*` weights) requires nothing. `model_helpers.rs` is not an example — it is a shared module each example pulls in with `#[path = "..."] mod`, so `autoexamples = false` and every example is listed explicitly in `Cargo.toml`.
 - `ptts-pyo3/` — PyO3 bindings exposing `TTS` to Python. Built with maturin in a mixed layout: `python/ptts/` is the package (`__init__.py`, `__init__.pyi` stubs, `py.typed`, `__main__.py`) and the cdylib lands inside it as `ptts._ptts`, so a pure-Rust layout's lack of anywhere to put `py.typed` is not a problem. `tests/` is a pytest suite that needs no weights except where marked `checkpoint`; run it against a built wheel, not the source tree. Has its own `pyproject.toml` and `uv.lock`.
 - `ptts-wasm/` — browser build via `wasm-bindgen` / `wasm-pack`. Ships a demo in `ptts-wasm/www/` (`index.html` + `worker.js`).
 - `ptts-ws-server/` — WebSocket streaming server (`axum` + `kaudio`). Needs a system libopus through `kaudio` → `libopus_sys`, which is why CI installs it on Linux and macOS and skips this crate on Windows.
+- `ptts-coreml/` — CoreML backend, Apple only: the flow LM and Mimi emitted from Rust as ML Program graphs (`mil.rs`, `package.rs`, `blob.rs`, `phonon/flow_lm.rs`, `phonon/mimi.rs`), exported once per checkpoint by `ptts/examples/export_coreml.rs` (sizes from the checkpoint's config, so any single-flow-step Pocket TTS checkpoint works), and driven by `phonon/driver.rs`. The flow LM runs on the Neural Engine, which needs fully static shapes, no CoreML `state` and fp16; its KV cache is a host-managed ring in IOSurface buffers. Mimi stays f32 on the CPU, decoded on a worker thread overlapped with the next flow step. The part of the Core ML protobuf schema it writes is hand-written as `prost` messages in `src/proto.rs`, so there is no codegen or `protoc` in the build.
+- `ptts-coreml-ffi/` — C interface over `ptts-coreml` (empty on non-Apple targets), using `ptts` for text preparation, normalization and the tokenizer. It is what `ios/PhononTTS/`, the Swift package apps integrate (its README is the user guide), wraps, as `PhononCore.xcframework` built by `ios/build-xcframework.sh`. There is no app in the repo: measuring on a device needs a local app on the package.
 
 Shared dependency versions (notably `xn`) and the workspace version live in the top-level `Cargo.toml`. Bumping the release version means editing `workspace.package.version` and the `ptts` workspace dep.
 
 ## Build / test / lint
 
-CI (`.github/workflows/rust-ci.yml`) is the source of truth. Seven jobs, gated behind one
+CI (`.github/workflows/rust-ci.yml`) is the source of truth. Eight jobs, gated behind one
 required check called `CI`:
 
 | Job | What it covers |
@@ -26,6 +28,7 @@ required check called `CI`:
 | `features` | every combination of `hf`/`audio`, plus `vulkan` and `webgpu` |
 | `docs` | `cargo doc` on nightly with `--cfg docsrs` exactly as docs.rs builds it, then again on stable |
 | `wasm` | `ptts-wasm` for `wasm32-unknown-unknown` with the SIMD flags real builds use |
+| `coreml` | macOS only: clippy on `ptts-coreml` and `ptts-coreml-ffi` for macOS and iOS, then `ios/build-xcframework.sh` and `swift build` of the `PhononTTS` package |
 
 `.github/actions/setup-rust` is a composite action holding the parts every job shares: the
 toolchain, the cache, and the platform quirks below.

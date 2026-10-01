@@ -90,3 +90,26 @@ with tts.stream("A longer sentence, played as it is generated.") as audio:
 ```
 
 Load the model once and reuse it. The [Python README](ptts-pyo3/README.md) covers voices and the remaining options.
+
+## 5. Use it in an iOS or macOS app
+
+The `PhononTTS` Swift package runs the model on the device through Core ML, with its transformer on the Apple Neural Engine: about 12 times faster than realtime on an iPhone 16 Pro, with first audio in under 40 ms. It needs iOS 18 or macOS 15, and Xcode.
+
+Build the package's compiled core and convert the model to Core ML, both from the repository root:
+
+```bash
+./ios/build-xcframework.sh
+cargo run --release -p ptts --example export_coreml -- --dir "$MODEL_DIR" phonon-coreml
+```
+
+Then add `ios/PhononTTS` to your Xcode project as a local package, add the `phonon-coreml` folder to your app as a folder reference named `Models`, and speak:
+
+```swift
+import PhononTTS
+
+let models = try PhononModels.install(bundled: Bundle.main.url(forResource: "Models", withExtension: nil)!)
+let tts = try await Phonon.load(models: models, language: .english)
+try await PhononPlayer().play(tts.stream("Hello world"))
+```
+
+The [package README](ios/PhononTTS/README.md) covers downloading the models instead of bundling them, voices, and the rest of the API.
