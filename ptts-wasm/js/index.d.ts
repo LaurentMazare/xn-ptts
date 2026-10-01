@@ -45,8 +45,11 @@ export interface LoadOptions {
   rewrites?: string;
   /** Default `'q8'`. */
   quant?: Quant;
-  /** Default {@link DEFAULT_MODEL}. */
-  model?: ModelSpec;
+  /**
+   * Required. Where the checkpoint's files are. There is no default: pass the model you
+   * mean, or {@link POCKET_TTS_MODEL} for Kyutai's published Pocket TTS checkpoint.
+   */
+  model: ModelSpec;
   /** Voices to fetch up front. Default: just the default voice; others load on first use. */
   voices?: string[];
   /** Keep downloads in the Cache API, so the model is fetched once per browser. Default `true`. */
@@ -126,8 +129,8 @@ export declare class PhononTTS {
   dispose(): void;
 }
 
-/** The checkpoint {@link PhononTTS.load} uses when given no `model`. */
-export declare const DEFAULT_MODEL: Readonly<ModelSpec>;
+/** Kyutai's published Pocket TTS checkpoint, on Hugging Face. Pass it as `model` to use it. */
+export declare const POCKET_TTS_MODEL: Readonly<ModelSpec>;
 
 /** Delete every file this package has cached. Resolves to whether there was anything. */
 export declare function clearCache(): Promise<boolean>;

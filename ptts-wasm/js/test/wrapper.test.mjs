@@ -59,6 +59,15 @@ const { PhononTTS } = await import('../index.js');
 const MODEL = { weights: { q8: 'w' }, tokenizer: 't', voices: { alba: 'a', marius: 'm' } };
 const load = () => PhononTTS.load({ lang: 'en', model: MODEL, workerUrl: 'worker.js' });
 
+test('model is required, with weights for the quant being loaded', async () => {
+  FakeWorker.last = null;
+  await assert.rejects(PhononTTS.load({ lang: 'en' }), /model is required/);
+  await assert.rejects(PhononTTS.load({ lang: 'en', model: { weights: { q8: 'w' } } }), /model is required/);
+  await assert.rejects(PhononTTS.load({ lang: 'en', model: MODEL, quant: 'f32' }), /no 'f32' weights/);
+  // All three fail before a worker exists, so nothing has been downloaded.
+  assert.equal(FakeWorker.last, null);
+});
+
 test('lang is required', async () => {
   await assert.rejects(PhononTTS.load({ model: MODEL }), /lang is required/);
   await assert.rejects(PhononTTS.load({ lang: 'xx', model: MODEL }), /lang is required/);

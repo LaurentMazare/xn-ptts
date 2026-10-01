@@ -4,10 +4,9 @@
 // generating never blocks the page; this file only posts requests to it and turns its
 // replies into promises and async iterators.
 
-import { DEFAULT_MODEL } from './models.js';
 import { concatPcm, encodeWav } from './wav.js';
 
-export { DEFAULT_MODEL } from './models.js';
+export { POCKET_TTS_MODEL } from './models.js';
 export { clearCache } from './fetch.js';
 export { encodeWav, concatPcm } from './wav.js';
 
@@ -46,7 +45,7 @@ export class PhononTTS {
       lang,
       rewrites,
       quant = 'q8',
-      model = DEFAULT_MODEL,
+      model,
       voices,
       cache = true,
       onProgress,
@@ -60,6 +59,20 @@ export class PhononTTS {
     }
     if (quant !== 'f32' && quant !== 'q8') {
       throw new TypeError(`quant must be 'f32' or 'q8', got '${quant}'`);
+    }
+    // Required too. A default checkpoint would be one particular model's files, and loading
+    // a model other than the one the caller has in mind gives plausible speech with nothing
+    // to say it is the wrong model. `POCKET_TTS_MODEL` is there for whoever wants that one.
+    if (typeof model !== 'object' || model === null || typeof model.tokenizer !== 'string') {
+      throw new TypeError(
+        "model is required: where the checkpoint's files are, e.g. " +
+          "{ weights: { q8: '/model/model.q8.gguf' }, tokenizer: '/model/tokenizer.json', " +
+          "config: '/model/config.json', voices: { default: '/model/voices/default.safetensors' } }",
+      );
+    }
+    // Checked before the worker starts, for the same reason as `rewrites` below.
+    if (typeof model.weights?.[quant] !== 'string') {
+      throw new TypeError(`model has no '${quant}' weights: set model.weights.${quant}, or pick another quant`);
     }
     // Checked here rather than left to Rust: `load` is async and the error would otherwise
     // arrive after the weights had been downloaded. This mirrors `Rules::parse`, which trims
