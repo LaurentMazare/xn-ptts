@@ -1,6 +1,8 @@
 [workspace]
 members = [
   "ptts",
+  "ptts-coreml",
+  "ptts-coreml-ffi",
   "ptts-pyo3",
   "ptts-wasm",
   "ptts-ws-server",

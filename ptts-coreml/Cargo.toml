@@ -1,0 +1,40 @@
+[package]
+name = "ptts-coreml"
+version.workspace = true
+edition = "2024"
+description = "Run Pocket TTS through CoreML, on the Neural Engine, with graphs emitted from Rust"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+prost = "0.13"
+serde_json = { workspace = true }
+uuid = { workspace = true }
+half = { workspace = true }
+safetensors = { workspace = true }
+# The same generator and distribution the xn reference uses, so both see the same noise.
+rand = { workspace = true, features = ["std_rng"] }
+rand_distr = { workspace = true }
+# Only for reading GGUF weights when exporting graphs; an app that ships prebuilt packages
+# does not need it.
+xn = { workspace = true, optional = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-core-video = { version = "0.3", features = ["CVPixelBuffer", "CVBuffer", "CVImageBuffer", "CVReturn"] }
+objc2-core-foundation = "0.3"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError", "NSDictionary", "NSArray", "NSValue"] }
+objc2-core-ml = { version = "0.3", features = [
+  "objc2-core-video", "block2",
+  "MLModel", "MLModelConfiguration", "MLModelDescription", "MLMultiArray",
+  "MLFeatureProvider", "MLFeatureValue", "MLFeatureDescription", "MLDictionaryFeatureProvider",
+  "MLPredictionOptions", "MLModel_MLModelCompilation",
+] }
+
+[features]
+gguf = ["dep:xn"]
+
+[build-dependencies]
+prost-build = "0.13"
+protoc-bin-vendored = "3"
