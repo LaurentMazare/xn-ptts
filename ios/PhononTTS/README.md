@@ -14,14 +14,26 @@ let player = try PhononPlayer()
 try await player.play(tts.stream("Hello! This is running entirely on the phone."))
 ```
 
-## What you receive
+## What you need besides this package
 
-This is a preview. Alongside this package you receive two things that are not in the source:
+Two things that are not in the source, both built from a checkout of this repository with Rust
+installed, or used as supplied if you were given them:
 
 - **`PhononCore.xcframework`**, the compiled core the package wraps, for iPhone, the iOS
-  simulator and Apple-silicon Macs.
-- **The Phonon model directory**, about 430 MB: three Core ML packages, the voices, the tokenizer
-  and a `bundle.json` describing them.
+  simulator and Apple-silicon Macs. From the repository root:
+
+  ```bash
+  ./ios/build-xcframework.sh
+  ```
+
+  It lands in `ios/PhononTTS/PhononCore.xcframework`, where the package expects it.
+- **The model, converted to Core ML**: about 430 MB of Core ML packages, voices, tokenizer and a
+  `bundle.json` describing them. Convert the model folder you were given, the one with
+  `config.json` and `model.q8.gguf`:
+
+  ```bash
+  cargo run --release -p ptts --example export_coreml -- --dir "$MODEL_DIR" phonon-coreml
+  ```
 
 ## Requirements
 
@@ -34,7 +46,7 @@ times slower than on a device.
 
 ## 1. Add the package
 
-Put `PhononCore.xcframework` inside the `PhononTTS` folder, next to `Package.swift`. Then in
+With `PhononCore.xcframework` inside the `PhononTTS` folder, next to `Package.swift`, in
 Xcode choose *File, Add Package Dependencies, Add Local*, select the `PhononTTS` folder, and add
 the `PhononTTS` library to your app target. Or from another `Package.swift`:
 
