@@ -8,13 +8,10 @@ Phonon is Gradium's on-device text-to-speech runtime, written in Rust, with Pyth
 
 You need [Rust](https://rustup.rs) for both paths, and [uv](https://docs.astral.sh/uv/) for Python.
 
-Unpack the model package you received, outside this repository. It unpacks to a folder holding `config.json`, `model.q8.gguf`, `tokenizer.json` and `voices/default.safetensors`. Point `MODEL_DIR` at that folder, then clone this repository:
+Point `MODEL_DIR` at the model folder, the one holding `config.json`, `model.q8.gguf`, `tokenizer.json` and `voices/default.safetensors`:
 
 ```bash
-export MODEL_DIR=/path/to/unpacked/model
-
-git clone https://github.com/gradium-ai/xn-ptts
-cd xn-ptts
+export MODEL_DIR=/path/to/model
 ```
 
 The commands below read only the files in `MODEL_DIR` and download nothing.
