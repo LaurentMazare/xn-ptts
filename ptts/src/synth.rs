@@ -103,7 +103,6 @@ impl std::str::FromStr for DeviceKind {
     type Err = crate::Error;
 
     fn from_str(name: &str) -> crate::Result<Self> {
-        // Trimmed and in any case, as `Normalize` and `Rules` take theirs.
         match name.trim().to_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
             "cpu" => Ok(Self::Cpu),
@@ -174,7 +173,6 @@ impl std::str::FromStr for Quant {
     type Err = crate::Error;
 
     fn from_str(name: &str) -> crate::Result<Self> {
-        // Trimmed and in any case, as `Normalize` and `Rules` take theirs.
         match name.trim().to_lowercase().as_str() {
             "f32" | "none" => Ok(Self::F32),
             "q8" | "q8_0" => Ok(Self::Q80),

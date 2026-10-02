@@ -55,7 +55,7 @@ impl std::str::FromStr for Lang {
     type Err = crate::Error;
 
     fn from_str(s: &str) -> crate::Result<Self> {
-        match s.to_lowercase().as_str() {
+        match s.trim().to_lowercase().as_str() {
             "en" => Ok(Lang::En),
             "fr" => Ok(Lang::Fr),
             "de" => Ok(Lang::De),
@@ -168,7 +168,7 @@ impl std::str::FromStr for Normalize {
     type Err = crate::Error;
 
     fn from_str(s: &str) -> crate::Result<Self> {
-        match s.to_lowercase().as_str() {
+        match s.trim().to_lowercase().as_str() {
             "none" | "off" => Ok(Self::OFF),
             other => other.parse().map(Self::for_lang),
         }
@@ -427,6 +427,8 @@ mod tests {
             assert_eq!(norm.as_str().parse::<Normalize>().unwrap(), norm);
         }
         assert_eq!("EN".parse::<Normalize>().unwrap(), Normalize::for_lang(Lang::En));
+        assert_eq!(" en ".parse::<Normalize>().unwrap(), Normalize::for_lang(Lang::En));
+        assert_eq!(" Off ".parse::<Normalize>().unwrap(), Normalize::OFF);
         assert_eq!("none".parse::<Normalize>().unwrap(), Normalize::OFF);
         assert_eq!("off".parse::<Normalize>().unwrap(), Normalize::OFF);
         assert_eq!(Normalize::OFF.as_str().parse::<Normalize>().unwrap(), Normalize::OFF);
