@@ -10,9 +10,9 @@
 #     platform needs one wheel and not one per interpreter. Hence no `--find-interpreter`,
 #     no free-threaded wheels and no Python matrix: `python-version` only has to build it.
 #     `sdist-fallback` compiles the sdist on the interpreters abi3 cannot serve instead.
-#   - wheels build `--strip`. `[profile.release]` keeps `debug = true`, which is right for
-#     profiling, but on Linux it lands inside the `.so` and pushed the published wheel to
-#     41 MB against 3.9 MB elsewhere, within sight of PyPI's 100 MB per-file limit.
+#   - wheels build `--strip`. The release profile carries no debug info, but `--strip` keeps
+#     it that way if it ever does: on Linux debug info lands inside the `.so`, and it once
+#     pushed the published wheel to 41 MB against 3.9 MB elsewhere.
 #   - every job deletes `.cargo/config.toml` first, and sets `RUSTFLAGS` itself. That file
 #     pins `target-cpu=native`, which in a published wheel means "whatever CPU the runner
 #     happened to have" -- a wheel that faults with SIGILL on someone's older machine.
