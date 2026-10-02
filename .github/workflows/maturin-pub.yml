@@ -4,11 +4,15 @@
 # file's name*. Renaming this file silently breaks releasing; change it on PyPI first.
 #
 # Close to `maturin generate-ci github -m ptts-pyo3/Cargo.toml`, but regenerating would undo
-# four things:
+# five things:
 #
 #   - `ptts-pyo3` builds an abi3 extension (see the comment on its `pyo3` dependency), so a
 #     platform needs one wheel and not one per interpreter. Hence no `--find-interpreter`,
-#     no free-threaded jobs and no Python matrix: `python-version` only has to build it.
+#     no free-threaded wheels and no Python matrix: `python-version` only has to build it.
+#     `sdist-fallback` compiles the sdist on the interpreters abi3 cannot serve instead.
+#   - wheels build `--strip`. `[profile.release]` keeps `debug = true`, which is right for
+#     profiling, but on Linux it lands inside the `.so` and pushed the published wheel to
+#     41 MB against 3.9 MB elsewhere, within sight of PyPI's 100 MB per-file limit.
 #   - every job deletes `.cargo/config.toml` first, and sets `RUSTFLAGS` itself. That file
 #     pins `target-cpu=native`, which in a published wheel means "whatever CPU the runner
 #     happened to have" -- a wheel that faults with SIGILL on someone's older machine.
@@ -201,7 +205,8 @@ jobs:
         # free-threaded CPython and PyPy, since the wheels are abi3 -- and to compile at all
         # it has to carry a workspace that `ptts-wasm` and `ptts-ws-server` are not in.
         # Nothing but building it finds that out, so this does, on every run. No RUSTFLAGS:
-        # a source build should be tested the way someone will actually get it.
+        # a source build should be tested the way someone will actually get it. This leg builds
+        # on PYTHON_VERSION; `sdist-fallback` is what covers the interpreters named above.
         run: |
           python -m pip install --upgrade pip
           python -m pip install dist/*.tar.gz pytest
@@ -238,6 +243,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install dist/*.tar.gz pytest
+          python -m pip check
           cd ptts-pyo3 && python -m pytest -m "not checkpoint" -q
 
   release:
