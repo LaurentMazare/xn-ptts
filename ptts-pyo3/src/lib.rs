@@ -332,20 +332,20 @@ impl Tts {
         // absent one.
         let normalize = match lang {
             None => Normalize::OFF,
-            Some(lang) => Normalize::parse(lang).py()?,
+            Some(lang) => lang.parse::<Normalize>().py()?,
         };
         let rules = match rewrites {
             None => Rules::ALL,
-            Some(rewrites) => Rules::parse(rewrites).py()?,
+            Some(rewrites) => rewrites.parse::<Rules>().py()?,
         };
         let normalize = normalize.with_rules(rules);
         let device = match device {
             None => DeviceKind::Auto,
-            Some(name) => DeviceKind::parse(name).py()?,
+            Some(name) => name.parse::<DeviceKind>().py()?,
         };
         let quant = match quant {
             None => Quant::F32,
-            Some(name) => Quant::parse(name).py()?,
+            Some(name) => name.parse::<Quant>().py()?,
         };
         // Both checks happen before resolve() downloads anything; `SynthBuilder`
         // would catch them, but only once the checkpoint is on disk.
@@ -400,7 +400,7 @@ impl Tts {
 
     /// Sample rate of the audio this model produces, in Hz.
     #[getter]
-    fn sample_rate(&self) -> PyResult<usize> {
+    fn sample_rate(&self) -> PyResult<u32> {
         Ok(self.lock()?.sample_rate())
     }
 
@@ -424,7 +424,7 @@ impl Tts {
 
     /// Sample rate `clone_voice` expects its PCM in, in Hz.
     #[getter]
-    fn voice_prompt_sample_rate(&self) -> PyResult<usize> {
+    fn voice_prompt_sample_rate(&self) -> PyResult<u32> {
         Ok(self.lock()?.voice_prompt_sample_rate())
     }
 
@@ -470,7 +470,7 @@ impl Tts {
         let sample_rate = stream.sample_rate();
         let pcm = drain(py, stream)?;
         let seconds = pcm.len() as f64 / sample_rate as f64;
-        py.detach(|| ptts::wav::write_wav_file(&path, &pcm, sample_rate as u32).py())?;
+        py.detach(|| ptts::wav::write_wav_file(&path, &pcm, sample_rate).py())?;
         Ok(seconds)
     }
 
@@ -613,7 +613,7 @@ struct AudioStream {
 impl AudioStream {
     /// Sample rate of the chunks, in Hz.
     #[getter]
-    fn sample_rate(&self) -> PyResult<usize> {
+    fn sample_rate(&self) -> PyResult<u32> {
         match self.inner.lock().map_err(|_| poisoned())?.as_ref() {
             Some(stream) => Ok(stream.sample_rate()),
             None => Err(pyo3::exceptions::PyValueError::new_err("this stream is closed")),

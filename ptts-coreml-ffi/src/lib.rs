@@ -120,7 +120,7 @@ fn open(dir: &Path, unit: u32, lang: &str) -> Result<PttsHandle, String> {
     let voices = voice_names(dir);
     let (voice, vlen) = load_voice(dir, voices.first().ok_or("no voices in the bundle")?)?;
     let tokenizer = ptts::tok::Tok::open(&dir.join("tokenizer.json")).map_err(|e| e.to_string())?;
-    let normalize = Normalize::parse(lang).map_err(|e| e.to_string())?;
+    let normalize = lang.parse::<Normalize>().map_err(|e| e.to_string())?;
     let mut voice_blob = Vec::new();
     for v in &voices {
         voice_blob.extend_from_slice(v.as_bytes());

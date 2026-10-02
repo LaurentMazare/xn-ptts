@@ -135,17 +135,8 @@ impl Normalize {
         self.rules
     }
 
-    /// Parse what the frontends' `--lang` flag accepts: a language code, or `none` / `off`. The
-    /// rules are a flag of their own, see [`Rules::parse`].
-    pub fn parse(s: &str) -> crate::Result<Self> {
-        match s.to_lowercase().as_str() {
-            "none" | "off" => Ok(Self::OFF),
-            other => other.parse().map(Self::for_lang),
-        }
-    }
-
-    /// The language half of this policy, round-tripping through [`Self::parse`]. The rules are
-    /// not part of it, since they parse from a flag of their own: see [`Rules::parse`].
+    /// The language half of this policy, round-tripping through its `FromStr`. The rules are
+    /// not part of it, since they parse from a flag of their own: see [`Rules`].
     pub fn as_str(self) -> &'static str {
         match self.lang {
             Some(lang) => lang.as_str(),
@@ -160,6 +151,26 @@ impl Normalize {
         match self.lang {
             None => std::borrow::Cow::Borrowed(text),
             Some(lang) => std::borrow::Cow::Owned(normalize_text(text, lang, self.rules)),
+        }
+    }
+}
+
+/// Normalizes as `lang`, with every rewrite rule: what [`Normalize::for_lang`] makes.
+impl From<Lang> for Normalize {
+    fn from(lang: Lang) -> Self {
+        Self::for_lang(lang)
+    }
+}
+
+/// Parse what the frontends' `--lang` flag accepts: a language code, or `none` / `off`. The
+/// rules are a flag of their own, see [`Rules`].
+impl std::str::FromStr for Normalize {
+    type Err = crate::Error;
+
+    fn from_str(s: &str) -> crate::Result<Self> {
+        match s.to_lowercase().as_str() {
+            "none" | "off" => Ok(Self::OFF),
+            other => other.parse().map(Self::for_lang),
         }
     }
 }
@@ -411,14 +422,15 @@ mod tests {
     fn normalize_parses_and_round_trips() {
         for lang in [Lang::En, Lang::Fr, Lang::De, Lang::Es, Lang::Pt] {
             let norm = Normalize::for_lang(lang);
-            assert_eq!(Normalize::parse(lang.as_str()).unwrap(), norm);
-            assert_eq!(Normalize::parse(norm.as_str()).unwrap(), norm);
+            assert_eq!(Normalize::from(lang), norm);
+            assert_eq!(lang.as_str().parse::<Normalize>().unwrap(), norm);
+            assert_eq!(norm.as_str().parse::<Normalize>().unwrap(), norm);
         }
-        assert_eq!(Normalize::parse("EN").unwrap(), Normalize::for_lang(Lang::En));
-        assert_eq!(Normalize::parse("none").unwrap(), Normalize::OFF);
-        assert_eq!(Normalize::parse("off").unwrap(), Normalize::OFF);
-        assert_eq!(Normalize::parse(Normalize::OFF.as_str()).unwrap(), Normalize::OFF);
-        let err = Normalize::parse("klingon").unwrap_err();
+        assert_eq!("EN".parse::<Normalize>().unwrap(), Normalize::for_lang(Lang::En));
+        assert_eq!("none".parse::<Normalize>().unwrap(), Normalize::OFF);
+        assert_eq!("off".parse::<Normalize>().unwrap(), Normalize::OFF);
+        assert_eq!(Normalize::OFF.as_str().parse::<Normalize>().unwrap(), Normalize::OFF);
+        let err = "klingon".parse::<Normalize>().unwrap_err();
         assert!(matches!(err, crate::Error::InvalidArgument(_)), "{err:?}");
         let msg = err.to_string();
         assert!(msg.contains("klingon"), "{msg}");

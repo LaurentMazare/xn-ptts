@@ -143,17 +143,17 @@ pub fn resample(pcm: Vec<f32>, sr_in: usize, sr_out: usize) -> Result<Vec<f32>> 
 /// Pair with `voice_prompt_sample_rate`:
 ///
 /// ```no_run
-/// # fn main() -> xn::Result<()> {
+/// # fn main() -> ptts::Result<()> {
 /// # let mut tts: ptts::synth::Synth = todo!();
 /// let pcm = ptts::audio::load_mono_at("voice.wav".as_ref(), tts.voice_prompt_sample_rate())?;
 /// tts.add_voice_from_pcm("mine", &pcm)?;
 /// # Ok(())
 /// # }
 /// ```
-pub fn load_mono_at(path: &std::path::Path, sample_rate: usize) -> Result<Vec<f32>> {
+pub fn load_mono_at(path: &std::path::Path, sample_rate: u32) -> Result<Vec<f32>> {
     let (pcm, file_rate) = decode_file(path)?;
     tracing::info!(?path, samples = pcm.len(), rate = file_rate, "decoded audio");
-    resample(pcm, file_rate as usize, sample_rate)
+    resample(pcm, file_rate as usize, sample_rate as usize)
 }
 
 #[cfg(test)]

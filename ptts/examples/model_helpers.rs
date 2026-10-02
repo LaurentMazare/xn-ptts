@@ -166,7 +166,7 @@ impl Checkpoint {
     ///
     /// The bundled voices are deliberately not registered here: see
     /// [`Self::register_voices`].
-    pub fn builder(&self, normalize: Normalize) -> SynthBuilder {
+    pub fn builder(&self, normalize: impl Into<Normalize>) -> SynthBuilder {
         let mut builder = SynthBuilder::new(self.config.clone(), &self.weights, normalize);
         if let Some(tokenizer) = self.tokenizer.as_ref() {
             builder = builder.tokenizer_file(tokenizer);

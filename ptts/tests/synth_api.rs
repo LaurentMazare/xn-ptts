@@ -39,7 +39,7 @@ fn quant_parses_every_spelling_the_clis_accept() {
         ("q4k", Quant::Q4k),
     ];
     for (name, expected) in cases {
-        assert_eq!(Quant::parse(name).unwrap(), expected, "parsing {name}");
+        assert_eq!(name.parse::<Quant>().unwrap(), expected, "parsing {name}");
     }
 }
 
@@ -58,13 +58,14 @@ fn quant_round_trips_through_its_canonical_name() {
         Quant::Q41,
         Quant::Q4k,
     ] {
-        assert_eq!(Quant::parse(quant.as_str()).unwrap(), quant);
+        assert_eq!(quant.as_str().parse::<Quant>().unwrap(), quant);
     }
+    assert_eq!("Q8_0".parse::<Quant>().unwrap(), Quant::Q80, "any case");
 }
 
 #[test]
 fn unknown_quant_lists_the_valid_ones() {
-    let err = Quant::parse("q3k").unwrap_err();
+    let err = "q3k".parse::<Quant>().unwrap_err();
     assert!(matches!(err, Error::InvalidArgument(_)), "{err:?}");
     let err = err.to_string();
     assert!(err.contains("q3k"), "{err}");
@@ -73,12 +74,13 @@ fn unknown_quant_lists_the_valid_ones() {
 
 #[test]
 fn device_parses_and_rejects_unknown_names() {
-    assert_eq!(DeviceKind::parse("auto").unwrap(), DeviceKind::Auto);
-    assert_eq!(DeviceKind::parse("cpu").unwrap(), DeviceKind::Cpu);
-    assert_eq!(DeviceKind::parse("cuda").unwrap(), DeviceKind::Cuda);
-    assert_eq!(DeviceKind::parse("vulkan").unwrap(), DeviceKind::Vulkan);
-    assert_eq!(DeviceKind::parse("metal").unwrap(), DeviceKind::Metal);
-    let err = DeviceKind::parse("tpu").unwrap_err();
+    assert_eq!("auto".parse::<DeviceKind>().unwrap(), DeviceKind::Auto);
+    assert_eq!("cpu".parse::<DeviceKind>().unwrap(), DeviceKind::Cpu);
+    assert_eq!(" CPU ".parse::<DeviceKind>().unwrap(), DeviceKind::Cpu, "trimmed, any case");
+    assert_eq!("cuda".parse::<DeviceKind>().unwrap(), DeviceKind::Cuda);
+    assert_eq!("vulkan".parse::<DeviceKind>().unwrap(), DeviceKind::Vulkan);
+    assert_eq!("metal".parse::<DeviceKind>().unwrap(), DeviceKind::Metal);
+    let err = "tpu".parse::<DeviceKind>().unwrap_err();
     assert!(matches!(err, Error::InvalidArgument(_)), "{err:?}");
     assert!(err.to_string().contains("tpu"), "{err}");
 }
@@ -189,8 +191,8 @@ fn a_frontend_on_xn_result_still_compiles() {
     // The compatibility bridge: `?` on this crate inside a function returning `xn::Result` is
     // what every existing frontend does, and it has to keep working.
     fn _frontend() -> xn::Result<()> {
-        let _ = Quant::parse("q8_0")?;
-        let _ = DeviceKind::parse("cpu")?;
+        let _ = "q8_0".parse::<Quant>()?;
+        let _ = "cpu".parse::<DeviceKind>()?;
         Ok(())
     }
 }

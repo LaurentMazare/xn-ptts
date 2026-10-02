@@ -9,21 +9,21 @@
 //! [`synth::Synth`] is the whole pipeline behind one call:
 //!
 //! ```no_run
-//! # fn main() -> xn::Result<()> {
-//! use ptts::preprocess::{Lang, Normalize};
+//! # fn main() -> ptts::Result<()> {
+//! use ptts::preprocess::Lang;
 //! use ptts::synth::Synth;
 //! use ptts::tts_model::TTSConfig;
 //!
 //! let tts = Synth::builder(
 //!     TTSConfig::v202601(),
 //!     "model/model.safetensors",
-//!     Normalize::for_lang(Lang::En),
+//!     Lang::En,
 //! )
 //! .tokenizer_file("model/tokenizer.json")
 //! .add_voice("alba", "model/voices/alba.safetensors")
 //! .build()?;
 //! let pcm = tts.say("Hello world")?;
-//! ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate() as u32)?;
+//! ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate())?;
 //! # Ok(())
 //! # }
 //! ```

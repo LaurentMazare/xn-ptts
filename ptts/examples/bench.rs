@@ -318,7 +318,7 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
     // Parsed before the weights are read, so a bad --lang does not cost a model load.
-    let normalize = Normalize::parse(&args.lang)?.with_rules(Rules::parse(&args.rewrites)?);
+    let normalize = args.lang.parse::<Normalize>()?.with_rules(args.rewrites.parse::<Rules>()?);
     if let Some(threads) = args.threads {
         // Must happen before the first tensor op, since it sets the size of rayon's global pool.
         xn::set_num_threads(threads);

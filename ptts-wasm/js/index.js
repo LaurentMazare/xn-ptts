@@ -13,7 +13,7 @@ export { encodeWav, concatPcm } from './wav.js';
 const LANGS = ['en', 'fr', 'de', 'es', 'pt', 'none'];
 /** Rewrite rules the Rust side knows, beyond the whole-string values below. */
 const RULES = ['numbers'];
-/** Values `Rules::parse` accepts only as the entire string, never inside a list. */
+/** Values `Rules`'s `FromStr` accepts only as the entire string, never inside a list. */
 const WHOLE_RULES = ['all', 'none', 'off'];
 
 /** The seed Rust and Python use when none is given, so the same request gives the same audio. */
@@ -90,7 +90,7 @@ export class PhononTTS {
       throw new TypeError(`model has no '${quant}' weights: set model.weights.${quant}, or pick another quant`);
     }
     // Checked here rather than left to Rust: `load` is async and the error would otherwise
-    // arrive after the weights had been downloaded. This mirrors `Rules::parse`, which trims
+    // arrive after the weights had been downloaded. This mirrors `Rules`'s `FromStr`, which trims
     // and lowercases the whole string, takes `all`, `none` and `off` only on their own, and
     // otherwise reads a comma-separated list of rule names. Accepting anything it rejects
     // would put the error back after the download, which is what this check is here to avoid.

@@ -103,15 +103,15 @@ async fn main() -> Result<()> {
 }
 
 async fn build_app_state(args: &Args) -> Result<model::AppState> {
-    let device = DeviceKind::parse(&args.device)?;
+    let device = args.device.parse::<DeviceKind>()?;
     let quant = match args.quant.as_deref() {
         None => Quant::F32,
-        Some(name) => Quant::parse(name)?,
+        Some(name) => name.parse::<Quant>()?,
     };
     // Both checks happen before `load_ptts` downloads anything: `SynthBuilder`
     // would catch them, but only after the checkpoint is on disk.
     quant.check_device(device)?;
-    let normalize = Normalize::parse(&args.lang)?.with_rules(Rules::parse(&args.rewrites)?);
+    let normalize = args.lang.parse::<Normalize>()?.with_rules(args.rewrites.parse::<Rules>()?);
     let unavailable = match device {
         DeviceKind::Cuda if !cfg!(feature = "cuda") => Some("cuda"),
         DeviceKind::Vulkan if !cfg!(feature = "vulkan") => Some("vulkan"),
