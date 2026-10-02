@@ -6,10 +6,9 @@
 # repository gradium-ai/xn-ptts, workflow `npm-publish.yml`. npm records provenance for
 # packages published this way on its own.
 #
-# That setting only exists for a package that is already on the registry, so the very first
-# version has to be published by hand with a token: `make build && cd pkg && npm publish
-# --access public`. Until that is done, a `v*` tag publishes the wheels and fails here, which
-# leaves PyPI and npm on different versions.
+# That setting only exists for a package that is already on the registry. `phonon-tts` is, as a
+# placeholder version, so it can be configured before the first real release. Until it is, a
+# `v*` tag publishes the wheels and fails here, leaving PyPI and npm on different versions.
 name: npm
 
 on:
@@ -66,6 +65,19 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
+      # `make build` runs wasm-opt, and binaryen up to 123 aborts on this module. 124 is the
+      # oldest release that works, and the floor the Makefile checks for. Pinned to the same
+      # version the `wasm` job in rust-ci.yml uses, so the package is optimized by the binary
+      # it was tested with.
+      - name: Install binaryen
+        run: |
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_124/binaryen-version_124-x86_64-linux.tar.gz \
+            | tar xz -C "$RUNNER_TEMP" binaryen-version_124/bin/wasm-opt
+          echo "$RUNNER_TEMP/binaryen-version_124/bin" >> "$GITHUB_PATH"
+      # The package ships a threaded build as well, which needs std rebuilt with atomics and
+      # so a pinned nightly with rust-src. The Makefile holds the version.
+      - name: Install the toolchain for the threaded build
+        run: make -C ptts-wasm threads-toolchain
 
       - name: Test the JS wrapper
         run: node --test ptts-wasm/js/test/*.test.mjs
