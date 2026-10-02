@@ -92,6 +92,25 @@ pub struct TTSConfig {
     /// this dedicated `MimiConfig` rather than the main `mimi` codec.
     #[serde(default)]
     pub speaker_mimi: Option<SpeakerMimiConfig>,
+    /// Voices shipped with the checkpoint, registered by [`crate::synth::SynthBuilder`] in this
+    /// order, the first being the default. Empty for a checkpoint that ships none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voices: Vec<BundledVoice>,
+}
+
+/// A voice shipped with a checkpoint: values for its summed LUT conditionings, a prefix tensor
+/// in the weights file, or both.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct BundledVoice {
+    pub name: String,
+    /// Summed LUT values this voice selects, by conditioning name, e.g. `voice_name`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub conditions: std::collections::BTreeMap<String, String>,
+    /// Name of the voice's prefix tensor in the weights file, conventionally
+    /// `voices.<name>.speaker_wavs` for speaker-Mimi latents (run through the speaker
+    /// projection) or `voices.<name>.emb` for a projected embedding. `None` for no prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
 }
 
 impl TTSConfig {
@@ -148,6 +167,7 @@ impl TTSConfig {
             audio_prompt_max_duration: 10.0,
             cfg_null_audio_empty: false,
             speaker_mimi: None,
+            voices: vec![],
         }
     }
 
@@ -313,6 +333,16 @@ impl<Q: BackendQ> TTSModel<Q> {
         state: &mut TTSState<Q>,
         values: &std::collections::HashMap<String, Option<String>>,
     ) -> Result<()> {
+        state.flow_lm_state.extra_sum = self.sum_conditions(values)?;
+        Ok(())
+    }
+
+    /// The `[1, 1, d_model]` term [`Self::set_sum_conditions`] stores for `values`, or `None`
+    /// when it adds nothing; it fails as that does on a name or value the model does not have.
+    pub fn sum_conditions(
+        &self,
+        values: &std::collections::HashMap<String, Option<String>>,
+    ) -> Result<Option<Tensor<Q::T, Q::B>>> {
         for name in values.keys() {
             if !self.sum_luts.iter().any(|lut| &lut.name == name) {
                 let known: Vec<_> = self.sum_luts.iter().map(|lut| lut.name.as_str()).collect();
@@ -332,8 +362,7 @@ impl<Q: BackendQ> TTSModel<Q> {
                 None => emb,
             });
         }
-        state.flow_lm_state.extra_sum = total;
-        Ok(())
+        Ok(total)
     }
 
     /// Initialize flow LM state with the given sequence length budget. Every per-state summed
@@ -704,6 +733,22 @@ mod tests {
         let values = ["a".to_string()];
         let err = lut_id("v", &values, Some(2), Some("z")).unwrap_err().to_string();
         assert!(err.contains("unknown value 'z'"), "{err}");
+    }
+
+    #[test]
+    fn bundled_voices_are_read_from_the_config() {
+        let mut cfg = serde_json::to_value(TTSConfig::v202601(0.7)).unwrap();
+        assert!(cfg.get("voices").is_none(), "an empty list is not written");
+        cfg["voices"] = serde_json::json!([
+            {"name": "alba", "conditions": {"voice_name": "a@300"},
+             "prefix": "voices.alba.speaker_wavs"},
+            {"name": "lut-only", "conditions": {"voice_name": "b@300"}},
+        ]);
+        let cfg: TTSConfig = serde_json::from_value(cfg).unwrap();
+        assert_eq!(cfg.voices.len(), 2);
+        assert_eq!(cfg.voices[0].prefix.as_deref(), Some("voices.alba.speaker_wavs"));
+        assert_eq!(cfg.voices[1].conditions["voice_name"], "b@300");
+        assert_eq!(cfg.voices[1].prefix, None);
     }
 
     #[test]

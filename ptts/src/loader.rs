@@ -52,6 +52,34 @@ pub fn is_unused_by_tts_model(name: &str) -> bool {
         // already matched it this way, and taking the union keeps every caller as permissive as
         // it was.
         || name.starts_with("mimi.downsample.")
+        // Bundled voices (`TTSConfig::voices`): `SynthBuilder` reads them, a bare `TTSModel`
+        // does not.
+        || name.starts_with(VOICES_PREFIX)
+}
+
+/// Prefix of the voice tensors a checkpoint bundles, see [`crate::tts_model::BundledVoice`].
+pub const VOICES_PREFIX: &str = "voices.";
+
+/// A bundled voice's prefix: the weights tensor `name`, read as [`load_voice_emb`] reads a voice
+/// file's tensor. A name ending in `.speaker_wavs` holds speaker-Mimi latents and goes through
+/// `speaker_proj`; any other is an embedding already projected to the flow LM's width.
+pub fn bundled_voice_emb<B: Backend>(
+    vb: &Path<B>,
+    name: &str,
+    speaker_proj: Option<&Linear<f32, B>>,
+) -> Result<Tensor<f32, B>> {
+    let label = format!("bundled voice tensor `{name}`");
+    let Some(shape) = vb.shape(name).cloned() else {
+        return Err(Error::invalid_data(format!("{label} is not in the weights file")));
+    };
+    let dims = shape.dims().to_vec();
+    let tensor: Tensor<f32, B> = vb.tensor(name, shape)?;
+    let kind = if name.ends_with(&format!(".{SPEAKER_WAVS_TENSOR}")) {
+        VoiceTensor::Latents
+    } else {
+        VoiceTensor::Emb
+    };
+    voice_emb_from_tensor(tensor, &dims, kind, name, &label, speaker_proj)
 }
 
 /// Loads GGUF or safetensors weights, picking the format from the extension.
@@ -172,7 +200,20 @@ fn voice_emb_from_vb<B: Backend>(
     let shape = vb.shape(name).context("voice tensor not found")?;
     let dims = shape.dims().to_vec();
     let tensor: Tensor<f32, B> = vb.tensor(name, shape)?;
-    let tensor = match dims.as_slice() {
+    voice_emb_from_tensor(tensor, &dims, kind, name, label, speaker_proj)
+}
+
+/// A voice tensor of shape `dims`, named `name` and found in `label`, as the flow LM's
+/// `[1, T, d_model]` prefix: reshaped, and for latents projected by `speaker_proj`.
+fn voice_emb_from_tensor<B: Backend>(
+    tensor: Tensor<f32, B>,
+    dims: &[usize],
+    kind: VoiceTensor,
+    name: &str,
+    label: &str,
+    speaker_proj: Option<&Linear<f32, B>>,
+) -> Result<Tensor<f32, B>> {
+    let tensor = match dims {
         [a, b] => tensor.reshape((1, *a, *b))?,
         [_, _, _] => tensor,
         _ => {
@@ -385,6 +426,7 @@ mod tests {
             "speaker_mimi.encoder.weight",
             "mimi.downsample.conv.conv.weight",
             "mimi.downsample.something_else",
+            "voices.alba.speaker_wavs",
         ] {
             assert!(is_unused_by_tts_model(unused), "expected {unused} to be ignorable");
         }
@@ -443,5 +485,33 @@ mod tests {
         let w = Tensor::from_vec(vec![0.; 6], (2, 3), &dev).unwrap();
         let err = load_voice_emb(&path, None, Some(&Linear::new(w)), &dev).unwrap_err().to_string();
         assert!(err.contains("2 channels") && err.contains("takes 3"), "{err}");
+    }
+
+    #[test]
+    fn bundled_voices_are_read_by_tensor_name() {
+        let dev = xn::CpuDevice;
+        let path = std::env::temp_dir().join("ptts-loader-bundled-voices.safetensors");
+        let emb = Tensor::from_vec((0..6).map(|v| v as f32).collect(), (3, 2), &dev).unwrap();
+        let latents = Tensor::from_vec(vec![0., 1., 2., 10., 11., 12.], (1, 2, 3), &dev).unwrap();
+        let tensors = std::collections::HashMap::from([
+            ("voices.a.emb".to_string(), xn::TypedTensor::F32(emb)),
+            ("voices.b.speaker_wavs".to_string(), xn::TypedTensor::F32(latents)),
+        ]);
+        xn::safetensors::save_with_data_info(&tensors, None, &path).unwrap();
+        let vb = VB::load(&[&path], dev).unwrap().root();
+
+        let a = bundled_voice_emb(&vb, "voices.a.emb", None).unwrap();
+        assert_eq!(a.dims(), &[1, 3, 2]);
+        assert_eq!(values(&a), (0..6).map(|v| v as f32).collect::<Vec<_>>());
+
+        // `.speaker_wavs` means latents: projected, and unusable without the projection.
+        let err = bundled_voice_emb(&vb, "voices.b.speaker_wavs", None).unwrap_err().to_string();
+        assert!(err.contains("no speaker projection"), "{err}");
+        let w = Tensor::from_vec(vec![1., 0., 0., 2.], (2, 2), &dev).unwrap();
+        let b = bundled_voice_emb(&vb, "voices.b.speaker_wavs", Some(&Linear::new(w))).unwrap();
+        assert_eq!(values(&b), vec![0., 20., 1., 22., 2., 24.]);
+
+        let err = bundled_voice_emb(&vb, "voices.c.emb", None).unwrap_err().to_string();
+        assert!(err.contains("not in the weights file"), "{err}");
     }
 }

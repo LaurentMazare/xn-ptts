@@ -276,8 +276,10 @@ fn resolve(defaults: &Defaults, opts: &SpeechOptions) -> Result<Defaults> {
 struct Voice<Q: BackendQ> {
     emb: Tensor<Q::T, Q::B>,
     null_emb: Option<Tensor<Q::T, Q::B>>,
-    /// Set for a voice that is a value of a summed LUT conditioning (see
-    /// [`TTSModel::set_sum_conditions`]), which has no prompt: `emb` is then empty and unused.
+    /// Values of the model's summed LUT conditionings this voice selects (see
+    /// [`TTSModel::set_sum_conditions`]): a LUT value registered as a voice, with an empty
+    /// `emb` and so no prompt, or a voice bundled with the checkpoint (`TTSConfig::voices`),
+    /// which can also carry a prefix.
     sum: Option<BTreeMap<String, String>>,
 }
 
@@ -491,8 +493,15 @@ impl<Q: BackendQ> SynthOf<Q> {
 
     /// Build a session, sized to `seq_budget`.
     fn session_at(&self, settings: &Defaults, seq_budget: usize) -> Result<SessionOf<Q>> {
-        let (base, cfg_base) =
-            self.primed_state(settings.voice.as_deref(), seq_budget, settings.cfg_coef)?;
+        let voice = settings.voice.as_deref();
+        let (mut base, cfg_base) = self.primed_state(voice, seq_budget, settings.cfg_coef)?;
+        // The voice's LUT values go on the conditioned branch only, after priming, so a primed
+        // prefix is cached without them. The null branch keeps the dropped-attribute state every
+        // fresh state starts with.
+        if let Some(sum) = voice.and_then(|v| self.voices.get(v)).and_then(|v| v.sum.as_ref()) {
+            let values = sum.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+            self.model.set_sum_conditions(&mut base, &values)?;
+        }
         Ok(SessionOf {
             prompt_len: primed_len(&base),
             in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -583,13 +592,13 @@ impl<Q: BackendQ> SynthOf<Q> {
             },
         };
 
-        if let Some((_, Voice { sum: Some(sum), .. })) = voice {
-            // A summed-LUT voice: nothing to prime, the value is added to every audio frame.
-            // The null branch is a fresh state, whose LUTs `init_flow_lm_state` sets as dropped
-            // attributes, as training does.
-            let values = sum.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
-            let mut state = self.model.init_flow_lm_state(1, seq_budget)?;
-            self.model.set_sum_conditions(&mut state, &values)?;
+        if let Some((_, voice)) = voice
+            && voice.emb.dim(1usize)? == 0
+        {
+            // A voice with no prompt, e.g. a summed-LUT value: nothing to prime, `session_at`
+            // adds its value to every audio frame. The null branch is a fresh state, whose LUTs
+            // `init_flow_lm_state` sets as dropped attributes, as training does.
+            let state = self.model.init_flow_lm_state(1, seq_budget)?;
             let cfg_state = match cfg_coef {
                 None => None,
                 Some(coef) => Some((coef, self.model.init_flow_lm_state(1, seq_budget)?)),
@@ -694,6 +703,36 @@ impl<Q: BackendQ> std::fmt::Debug for SynthOf<Q> {
             .field("voices", &self.voices())
             .finish()
     }
+}
+
+/// The voices `config.voices` lists, in order, with their prefixes read from the weights and
+/// their LUT values checked against the model, so a bad entry fails at load rather than on use.
+fn bundled_voices<Q: BackendQ>(
+    model: &TTSModel<Q>,
+    vb: &xn::nn::Path<Q::B>,
+    config: &TTSConfig,
+    device: &Q::B,
+) -> Result<Vec<(String, Voice<Q>)>> {
+    let mut voices: Vec<(String, Voice<Q>)> = Vec::with_capacity(config.voices.len());
+    for v in config.voices.iter() {
+        if voices.iter().any(|(name, _)| *name == v.name) {
+            return Err(Error::invalid_data(format!("the config lists voice '{}' twice", v.name)));
+        }
+        let values = v.conditions.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+        model
+            .sum_conditions(&values)
+            .map_err(|e| Error::invalid_data(format!("bundled voice '{}': {e}", v.name)))?;
+        let emb = match v.prefix.as_deref() {
+            Some(name) => {
+                let speaker_proj = model.speaker_proj();
+                loader::bundled_voice_emb(vb, name, speaker_proj)?.to::<Q::T>()?
+            }
+            None => Tensor::zeros((1, 0, config.flow_lm.d_model), device)?,
+        };
+        let sum = if v.conditions.is_empty() { None } else { Some(v.conditions.clone()) };
+        voices.push((v.name.clone(), Voice { emb, null_emb: None, sum }));
+    }
+    Ok(voices)
 }
 
 /// A fresh, independently-owned state at `seq_budget`, seeded with `prefix`'s filled positions.
@@ -1408,6 +1447,7 @@ impl SynthBuilder {
         let probe = format!("{}.encoder.model.0.conv.weight", config.speaker_mimi_prefix());
         let mimi_enc =
             if vb.contains(&probe) { Some(MimiEnc::<Q>::load(&vb, &config)?) } else { None };
+        let bundled = bundled_voices(&model, &vb, &config, &device)?;
         vb.check_all_used_with_ignore(loader::is_unused_by_tts_model)?;
 
         let mut synth = SynthOf {
@@ -1426,11 +1466,17 @@ impl SynthBuilder {
             normalize: self.normalize,
         };
 
-        // A model whose voice is a summed LUT (no speaker prompt) gets each of its values as a
-        // voice, named by the value. Only with a single summed LUT: with several, a voice would
-        // have to pick a value in each. A voice added below or later under the same name
-        // replaces the LUT value's voice; LUT voices are never primed, so nothing is cached.
-        if let [lut] = synth.model.sum_luts() {
+        // Voices the checkpoint lists in its config come first, and its first one is the
+        // default. Without a list, a model whose voice is a summed LUT (no speaker prompt) gets
+        // each of its values as a voice, named by the value; only with a single summed LUT, as
+        // with several a voice would have to pick a value in each. A voice added below or later
+        // under the same name replaces either kind.
+        if !bundled.is_empty() {
+            if synth.defaults.voice.is_none() {
+                synth.defaults.voice = bundled.first().map(|(name, _)| name.clone());
+            }
+            synth.voices.extend(bundled);
+        } else if let [lut] = synth.model.sum_luts() {
             let empty = Tensor::zeros((1, 0, synth.cfg.flow_lm.d_model), &device)?;
             for value in lut.values.iter() {
                 let sum = BTreeMap::from([(lut.name.clone(), value.clone())]);
