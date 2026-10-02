@@ -17,7 +17,7 @@ PY
 
 To use it from your own project, install it with `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Either one compiles the Rust code, so it needs Rust installed.
 
-`config` is the path to `config.json`. The package loads `model.q8.gguf`, `tokenizer.json` and every voice in `voices/` from the same directory, and downloads nothing. `quant="q8"` matches the weight format of `model.q8.gguf`.
+`config` is the path to `config.json`. The package loads the weights, `tokenizer.json` and the voices from the same directory, and downloads nothing. With `quant="q8"` it loads `model.q8.gguf`; with any other format it prefers `model.safetensors` when the directory has one. Voices are every file in `voices/` or `embeddings/`, plus `default-voice.safetensors` as `default`. `config` can also be a Hugging Face repo id with the same layout.
 
 `lang` is required: `en`, `fr`, `de`, `es` or `pt` picks how numbers, symbols and abbreviations are spelled out; `none` uses the text as written.
 
@@ -36,7 +36,7 @@ with tts.stream("A longer sentence.", voice=voice) as audio:
 
 `tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early.
 
-`tts.voices` lists the names loaded from `voices/`, and the first one is used when no voice is given. Pass `voice="name"` to any speech method to select one.
+`tts.voices` lists the voices that were found, and the first one is used when no voice is given. Pass `voice="name"` to any speech method to select one.
 
 ## Command line
 
