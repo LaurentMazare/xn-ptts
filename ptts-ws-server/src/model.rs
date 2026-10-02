@@ -108,37 +108,8 @@ impl LoadedModel {
             );
         };
         let tokenizer_path = parent_dir.join("tokenizer.json");
-        let mut voice_files = Vec::new();
-        collect_voice_files(&parent_dir.join("voices"), &mut voice_files);
+        let voice_files = ptts::loader::checkpoint_voices(parent_dir);
         Ok(Self { cfg, voice_files, tokenizer_path, model_path })
-    }
-}
-
-/// Every `*.safetensors` file in `dir`, keyed by file stem, appended to `files`. An unreadable
-/// directory or entry is logged and skipped rather than propagated.
-fn collect_voice_files(dir: &std::path::Path, files: &mut Vec<(String, std::path::PathBuf)>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) => {
-            tracing::warn!(?dir, error = %e, "failed to read voice directory");
-            return;
-        }
-    };
-    for entry in entries {
-        let path = match entry {
-            Ok(entry) => entry.path(),
-            Err(e) => {
-                tracing::warn!(?dir, error = %e, "failed to read voice directory entry");
-                continue;
-            }
-        };
-        if path.extension().and_then(|e| e.to_str()) != Some("safetensors") {
-            continue;
-        }
-        match path.file_stem().and_then(|s| s.to_str()) {
-            Some(name) => files.push((name.to_string(), path)),
-            None => tracing::warn!(?path, "invalid voice file name"),
-        }
     }
 }
 
@@ -166,7 +137,11 @@ pub async fn load_ptts(
         None => LoadedModel::load_pocket_from_hf(temperature).await?,
     };
     if let Some(voice_dir) = voice_dir {
-        collect_voice_files(voice_dir, &mut m.voice_files);
+        let found = ptts::loader::voices_in(voice_dir);
+        if found.is_empty() {
+            tracing::warn!(?voice_dir, "no voice files found in --voice-dir");
+        }
+        m.voice_files.extend(found);
     }
     let frame_rate = m.cfg.mimi.frame_rate;
     let mut synth = SynthBuilder::new(m.cfg, &m.model_path, normalize)
@@ -185,7 +160,7 @@ pub async fn load_ptts(
     }
 
     let voices = synth.voices();
-    let default_voice = voices.first().context("no voice embeddings found in model")?.clone();
+    let default_voice = synth.default_voice().context("no voice embeddings found in model")?;
     let sample_rate = synth.sample_rate() as u32;
     let frame_size = (sample_rate as f64 / frame_rate).round() as u32;
     tracing::info!(

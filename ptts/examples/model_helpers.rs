@@ -154,16 +154,7 @@ impl Checkpoint {
         let tokenizer =
             TOKENIZER_CANDIDATES.iter().map(|name| dir.join(name)).find(|path| path.is_file());
 
-        let mut voices = vec![];
-        for sub in ["voices", "embeddings"] {
-            collect_voice_dir(&dir.join(sub), &mut voices);
-        }
-        let default_voice = dir.join("default-voice.safetensors");
-        if default_voice.is_file() {
-            voices.push(("default".to_string(), default_voice));
-        }
-        voices.sort();
-        voices.dedup_by(|a, b| a.0 == b.0);
+        let voices = ptts::loader::checkpoint_voices(dir);
 
         Ok(Self { config, weights, tokenizer, voices })
     }
@@ -211,19 +202,6 @@ fn read_config(path: &Path) -> Result<TTSConfig> {
 
 /// Adds every `*.safetensors` file in `dir` to `voices`, keyed by file stem. A missing or
 /// unreadable directory is not an error: voices are optional.
-fn collect_voice_dir(dir: &Path, voices: &mut Vec<(String, PathBuf)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("safetensors") {
-            continue;
-        }
-        if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-            voices.push((name.to_string(), path));
-        }
-    }
-}
-
 /// A Hugging Face model repo, wrapped so a download failure names the repo and the file --
 /// `hf_hub` does so for a missing file but not for an HTTP or authentication failure, which
 /// makes a gated repo hard to diagnose -- and so the callers need not spell out the download

@@ -153,16 +153,7 @@ fn main() -> Result<()> {
 
     let mut opts = SpeechOptions::default();
     match &voice {
-        // The bundled voices are registered after the load, so the builder's
-        // own "first voice by name" default never saw them; pick it here. A
-        // checkpoint that ships a `default-voice.safetensors` gets that one.
-        VoiceArg::Default => {
-            let voices = tts.voices();
-            let pick = voices.iter().find(|v| v.as_str() == "default").or(voices.first());
-            if let Some(name) = pick {
-                opts = opts.voice(name.clone());
-            }
-        }
+        VoiceArg::Default => {}
         VoiceArg::Bundled(name) => opts = opts.voice(name.clone()),
         VoiceArg::Embedding(_) => opts = opts.voice(VoiceArg::REGISTERED),
         VoiceArg::Audio(path) => {
