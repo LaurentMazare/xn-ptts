@@ -1,0 +1,142 @@
+# Builds the `phonon-tts` npm package from `ptts-wasm/`, and publishes it on a `v*` tag --
+# the same tag that publishes the PyPI wheels, so every registry gets the same version.
+#
+# Publishing uses npm trusted publishing (OIDC), so no token is stored in the repo. It has to
+# be enabled once on npmjs.com: phonon-tts -> Settings -> Trusted publishing -> GitHub Actions,
+# repository gradium-ai/xn-ptts, workflow `npm-publish.yml`. npm records provenance for
+# packages published this way on its own.
+#
+# That setting only exists for a package that is already on the registry. `phonon-tts` is, as a
+# placeholder version, so it can be configured before the first real release. Until it is, a
+# `v*` tag publishes the wheels and fails here, leaving PyPI and npm on different versions.
+name: npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+    # Only so the wasm build cache gets saved: setup-rust saves it on `main` alone, and
+    # without these runs every PR and every release would build from cold.
+    branches: [main]
+    paths:
+      - 'ptts-wasm/**'
+      - 'ptts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'LICENSE-*'
+      - '.github/workflows/npm-publish.yml'
+      - '.github/actions/**'
+  pull_request:
+    paths:
+      - 'ptts-wasm/**'
+      - 'ptts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'LICENSE-*'
+      - '.github/workflows/npm-publish.yml'
+      - '.github/actions/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a PR supersedes the build before it. Tag runs are never cancelled: one of them
+# publishes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  package:
+    name: Build phonon-tts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned rather than whatever the runner image ships. Node 24 also brings npm 11.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: wasm32-unknown-unknown
+          cache-key: npm
+          audio-deps: "false"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      # `make build` runs wasm-opt, and binaryen up to 123 aborts on this module. 124 is the
+      # oldest release that works, and the floor the Makefile checks for. Pinned to the same
+      # version the `wasm` job in rust-ci.yml uses, so the package is optimized by the binary
+      # it was tested with.
+      - name: Install binaryen
+        run: |
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_124/binaryen-version_124-x86_64-linux.tar.gz \
+            | tar xz -C "$RUNNER_TEMP" binaryen-version_124/bin/wasm-opt
+          echo "$RUNNER_TEMP/binaryen-version_124/bin" >> "$GITHUB_PATH"
+      # The package ships a threaded build as well, which needs std rebuilt with atomics and
+      # so a pinned nightly with rust-src. The Makefile holds the version.
+      - name: Install the toolchain for the threaded build
+        run: make -C ptts-wasm threads-toolchain
+
+      - name: Test the JS wrapper
+        run: node --test ptts-wasm/js/test/*.test.mjs
+
+      # The SIMD flags `.cargo/config.toml` sets for local builds, which setup-rust deleted.
+      # `relaxed-simd` is not optional: xn's quantized kernels call `f32x4_relaxed_madd`
+      # unconditionally, so the module needs it either way.
+      - name: Build the package
+        working-directory: ptts-wasm
+        env:
+          RUSTFLAGS: -C target-feature=+simd128,+relaxed-simd
+        run: make build
+
+      - name: Check the tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: ptts-wasm/pkg
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the workspace version $version"
+            exit 1
+          fi
+
+      - name: List the package contents
+        working-directory: ptts-wasm/pkg
+        run: npm pack --dry-run
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: phonon-tts
+          path: ptts-wasm/pkg
+
+  # A job of its own, so only this step can mint the OIDC token npm accepts, and what it
+  # publishes is exactly the artifact the build job listed.
+  publish:
+    name: Publish phonon-tts
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          name: phonon-tts
+          path: pkg
+      # Trusted publishing needs npm 11.5.1 or later. npm also refuses to publish a
+      # prerelease without a dist-tag, so `-rc` and `-beta` versions go to `next`.
+      - name: Publish
+        working-directory: pkg
+        run: |
+          # Pinned, not a range: this is the job that holds the OIDC token, and `^11.5.1`
+          # would install whatever 11.x is newest on the day of a release.
+          npm install --global npm@11.6.2
+          tag=latest
+          case "$GITHUB_REF_NAME" in *-*) tag=next ;; esac
+          npm publish --access public --tag "$tag"
