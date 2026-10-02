@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use ptts::flow_lm::{NormalRng, StepInput};
-use ptts::plan::{EosPolicy, frame_budget};
+use ptts::plan::{Chunk, EosPolicy};
 use ptts::preprocess::{Normalize, Rules};
 use ptts::tok::Tok;
-use ptts::tts_model::{TTSConfig, TTSModel, TTSState};
+use ptts::tts_model::{MAX_TOKENS_PER_CHUNK, TTSConfig, TTSModel, TTSState};
 use xn::{BackendQ, Tensor};
 
 #[derive(Parser, Debug)]
@@ -102,9 +102,8 @@ struct Run {
 fn one<Q: BackendQ>(
     model: &TTSModel<Q>,
     base_state: &TTSState<Q>,
-    chunks: &[(Vec<u32>, usize)],
+    chunks: &[Chunk],
     args: &Args,
-    frame_rate: f64,
 ) -> Result<Run> {
     let mut rng = NormalRng::new(args.temperature, args.seed)?;
     let mut frames = Vec::new();
@@ -114,15 +113,15 @@ fn one<Q: BackendQ>(
     let mut samples = 0usize;
     let start = Instant::now();
 
-    for (tokens, frames_after_eos) in chunks.iter() {
+    for chunk in chunks {
         let mut state = base_state.clone();
-        model.prompt_text(&mut state, tokens)?;
+        model.prompt_text(&mut state, &chunk.tokens)?;
         let mut mimi_state = model.init_mimi_state(1)?;
 
         let mut prev_latent: Option<Tensor<Q::T, Q::B>> = None;
-        let mut eos = EosPolicy::new(*frames_after_eos);
+        let mut eos = EosPolicy::new(chunk.frames_after_eos);
 
-        for _ in 0..frame_budget(tokens.len(), frame_rate) {
+        for _ in 0..chunk.frame_budget {
             let frame_start = Instant::now();
             let input = match &prev_latent {
                 None => StepInput::Bos { batch: 1 },
@@ -228,20 +227,14 @@ impl Bench<'_> {
         let load_ms = ms(t_load.elapsed());
 
         // Tokenize up front: the loop needs the tokens anyway, and the KV cache is sized from
-        // them. Long inputs are split into sentences, as `ptts` does.
-        let input = self.1.apply(&args.input);
-        let chunks = ptts::tts_model::split_into_best_sentences(
+        // them. The chunks are the ones `ptts` makes.
+        let chunks = ptts::plan::chunks(
             model.flow_lm.conditioner.tokenizer.as_deref().context("no tokenizer")?,
-            &input,
-            None,
+            &args.input,
+            self.1,
+            MAX_TOKENS_PER_CHUNK,
+            cfg.mimi.frame_rate,
         )?;
-        let chunks = chunks
-            .iter()
-            .map(|chunk| {
-                let (text, frames_after_eos) = ptts::tts_model::prepare_text_prompt(chunk);
-                Ok((model.flow_lm.conditioner.tokenize(&text)?, frames_after_eos))
-            })
-            .collect::<Result<Vec<_>>>()?;
 
         // Condition on the voice once. Every iteration clones the resulting state, which is
         // what a server does per request, so the measurement is of generation rather than of
@@ -249,9 +242,7 @@ impl Bench<'_> {
         let voice_len = voice_emb.dim(1usize)?;
         let seq_budget = chunks
             .iter()
-            .map(|(tokens, _)| {
-                voice_len + tokens.len() + frame_budget(tokens.len(), cfg.mimi.frame_rate)
-            })
+            .map(|chunk| voice_len + chunk.tokens.len() + chunk.frame_budget)
             .max()
             .unwrap_or(voice_len);
         let t_voice = Instant::now();
@@ -260,11 +251,11 @@ impl Bench<'_> {
         let voice_ms = ms(t_voice.elapsed());
 
         for _ in 0..args.warmup {
-            one(&model, &base_state, &chunks, args, cfg.mimi.frame_rate)?;
+            one(&model, &base_state, &chunks, args)?;
         }
         let mut runs = Vec::with_capacity(args.iters);
         for i in 0..args.iters {
-            let r = one(&model, &base_state, &chunks, args, cfg.mimi.frame_rate)?;
+            let r = one(&model, &base_state, &chunks, args)?;
             if args.per_iter {
                 println!(
                     "iter {i:>3}: total {:>8.2}ms  ttfa {:>7.2}ms  frames {:>4}",
@@ -298,7 +289,7 @@ impl Bench<'_> {
             "model {}  threads {}  input {} chars  audio {:.0}ms  frames/iter {}",
             args.model.display(),
             xn::get_num_threads(),
-            input.len(),
+            self.1.apply(&args.input).len(),
             audio_ms(first),
             first.frames.len(),
         );
