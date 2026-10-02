@@ -475,6 +475,9 @@ impl<Q: BackendQ> StreamingTransformer<Q> {
         max_period: f32,
         kind: Kind,
     ) -> Result<Self> {
+        if num_heads == 0 || !d_model.is_multiple_of(num_heads) {
+            xn::bail!("the config's {num_heads} attention heads do not divide its width {d_model}")
+        }
         let head_dim = d_model / num_heads;
         let mut layers = Vec::with_capacity(num_layers);
         for i in 0..num_layers {
@@ -735,5 +738,38 @@ mod with_seq_budget_tests {
         let err = filled_state(4, 3).with_seq_budget(2).unwrap_err().to_string();
         assert!(err.contains("3") && err.contains("2"), "{err}");
         assert!(filled_state(4, 3).with_seq_budget(3).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod bad_config_tests {
+    use super::*;
+    use xn::CpuDevice;
+    use xn::nn::VB;
+
+    fn load(d_model: usize, num_heads: usize) -> Result<()> {
+        // An empty safetensors file: the check runs before any weight is read.
+        let empty = [2u64.to_le_bytes().as_slice(), b"{}"].concat();
+        let vb = VB::from_bytes(vec![empty], CpuDevice)?.root();
+        StreamingTransformer::<xn::Unquantized<f32, CpuDevice>>::load(
+            &vb,
+            d_model,
+            num_heads,
+            1,
+            None,
+            4,
+            None,
+            10_000.,
+            Kind::FlowLm,
+        )
+        .map(drop)
+    }
+
+    #[test]
+    fn heads_that_do_not_divide_the_width_are_an_error() {
+        for heads in [0, 3] {
+            let err = load(8, heads).err().unwrap_or_else(|| panic!("{heads} heads for 8 wide"));
+            assert!(err.to_string().contains("heads"), "{err}");
+        }
     }
 }
