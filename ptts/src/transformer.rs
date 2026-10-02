@@ -65,7 +65,6 @@ pub struct StreamingMultiheadAttention<Q: BackendQ> {
     out_proj: Q::LinearQ,
     pub embed_dim: usize,
     pub num_heads: usize,
-    name: String,
     device: Q::B,
 }
 
@@ -74,13 +73,8 @@ impl<Q: BackendQ> StreamingMultiheadAttention<Q> {
         let out_dim = 3 * embed_dim;
         let in_proj = Q::linear_load(vb.pp("in_proj"), embed_dim, out_dim)?;
         let out_proj = Q::linear_load(vb.pp("out_proj"), embed_dim, embed_dim)?;
-        let name = vb.prefix();
         let device = vb.device().clone();
-        Ok(Self { in_proj, out_proj, embed_dim, num_heads, name, device })
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
+        Ok(Self { in_proj, out_proj, embed_dim, num_heads, device })
     }
 
     pub fn init_state(
