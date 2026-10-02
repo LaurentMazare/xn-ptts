@@ -5,8 +5,6 @@ use xn::{Backend, Result, Tensor, WithDTypeF};
 pub struct DummyQuantizer<T: WithDTypeF, B: Backend> {
     output_proj_weight: Tensor<T, B>,
     output_proj_bias: Option<Tensor<T, B>>,
-    pub dimension: usize,
-    pub output_dimension: usize,
 }
 
 impl<T: WithDTypeF, B: Backend> DummyQuantizer<T, B> {
@@ -15,7 +13,7 @@ impl<T: WithDTypeF, B: Backend> DummyQuantizer<T, B> {
         let output_proj_weight = vb.tensor("weight", (output_dimension, dimension, 1))?;
         let output_proj_bias =
             if vb.contains("bias") { Some(vb.tensor("bias", (output_dimension,))?) } else { None };
-        Ok(Self { output_proj_weight, output_proj_bias, dimension, output_dimension })
+        Ok(Self { output_proj_weight, output_proj_bias })
     }
 
     /// Forward pass: Conv1d with kernel_size=1, no bias.

@@ -1,3 +1,8 @@
+//! The streaming transformer both the flow LM and Mimi are built on, with its KV caches.
+//!
+//! [`StreamingTransformerState`] holds one cache per layer. [`Kind`] picks which model a layer
+//! belongs to, as the two lay out their attention differently.
+
 use crate::layer_scale::LayerScale;
 use crate::rope::RotaryEmbedding;
 use xn::nn::{LayerNorm, Linear, var_builder::Path};
@@ -92,7 +97,7 @@ impl<Q: BackendQ> StreamingMultiheadAttention<Q> {
     }
 
     #[tracing::instrument(name = "attn", skip_all)]
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         query: &Tensor<Q::T, Q::B>,
         rope: &RotaryEmbedding<Q::T, Q::B>,
@@ -292,7 +297,7 @@ impl<T: WithDTypeF, B: Backend> MimiStreamingMultiheadAttention<T, B> {
         Ok(KvCache::new(self.context))
     }
 
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         query: &Tensor<T, B>,
         rope: &RotaryEmbedding<T, B>,
@@ -417,7 +422,7 @@ impl<Q: BackendQ> StreamingTransformerLayer<Q> {
     }
 
     #[tracing::instrument(name = "transformer-layer", skip_all)]
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         x: &Tensor<Q::T, Q::B>,
         rope: &RotaryEmbedding<Q::T, Q::B>,

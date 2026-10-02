@@ -1,3 +1,9 @@
+//! The Mimi neural audio codec.
+//!
+//! [`MimiDecoder`] turns the flow LM's latents into PCM at the checkpoint's sample rate, one
+//! frame at a time, keeping its streaming state in [`MimiDecoderState`]. [`MimiEncoder`] goes
+//! the other way and is used only to embed a voice prompt from audio.
+
 use crate::conv::pad_for_conv1d;
 use crate::conv::{StreamingConv1dState, StreamingConvTr1dState};
 use crate::dummy_quantizer::DummyQuantizer;
@@ -46,7 +52,7 @@ pub struct MimiDecoder<Q: BackendQ> {
     decoder: SEANetDecoder<Q::T, Q::B>,
     decoder_transformer: ProjectedTransformer<Q>,
     upsample: Option<ConvTrUpsample1d<Q::T, Q::B>>,
-    pub quantizer: DummyQuantizer<Q::T, Q::B>,
+    pub(crate) quantizer: DummyQuantizer<Q::T, Q::B>,
     pub sample_rate: usize,
     pub frame_rate: f64,
 }

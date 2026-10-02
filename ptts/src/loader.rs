@@ -39,8 +39,8 @@ pub fn remap_key(name: &str) -> Option<String> {
 }
 
 /// Tensors that [`crate::tts_model::TTSModel::load`] legitimately leaves untouched: the encoder
-/// side is only pulled in later by `MimiEnc::load`, and the quantizer is replaced by
-/// [`crate::dummy_quantizer`].
+/// side is only pulled in later by `MimiEnc::load`, and the quantizer is replaced by a dummy
+/// one.
 ///
 /// Pass to `check_all_used_with_ignore` so a genuinely unused tensor is still an error.
 pub fn is_unused_by_tts_model(name: &str) -> bool {
