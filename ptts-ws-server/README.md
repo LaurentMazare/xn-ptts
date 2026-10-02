@@ -7,7 +7,7 @@ A speech server for Phonon. It loads one checkpoint and serves it two ways:
 
 ## Build and run
 
-It needs two system libraries: libopus, and LAME for MP3.
+It needs two system libraries: libopus, and LAME 3.99 or later for MP3.
 
 ```bash
 sudo apt-get install libopus-dev libmp3lame-dev pkg-config   # Debian, Ubuntu
@@ -16,7 +16,7 @@ brew install opus lame pkg-config                            # macOS
 cargo run --release -p ptts-ws-server -- --config "$MODEL_DIR/config.json" --quant q8 --lang en
 ```
 
-It listens on `0.0.0.0:8080` (`--addr` to change it). `--lang` is required: it picks how numbers and symbols are spelled out. `--device auto` uses the GPU backend the binary was built with, if any; quantized weights such as `--quant q8` run on the CPU only. `--help` lists the rest.
+It listens on `0.0.0.0:8080` (`--addr` to change it). There is no authentication and no limit on concurrent requests, and every request can ask for up to 4096 characters of speech, so anyone who can reach the port can keep the CPU busy. On a machine others can reach, bind to `--addr 127.0.0.1:8080` or put it behind a proxy that checks access. `--lang` is required: it picks how numbers and symbols are spelled out. `--device auto` uses the GPU backend the binary was built with, if any; quantized weights such as `--quant q8` run on the CPU only. `--help` lists the rest.
 
 ## The OpenAI-compatible API
 
