@@ -161,6 +161,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_written_wav_decodes_to_the_same_samples() {
+        let pcm: Vec<f32> =
+            (0..2400).map(|i| (i as f32 * 0.05).sin() * 0.8).chain([1.0, -1.0, 0.0]).collect();
+        let path =
+            std::env::temp_dir().join(format!("ptts-wav-round-trip-{}.wav", std::process::id()));
+        crate::wav::write_wav_file(&path, &pcm, 24000).unwrap();
+        let decoded = decode_file(&path);
+        std::fs::remove_file(&path).unwrap();
+        let (back, sample_rate) = decoded.unwrap();
+        assert_eq!(sample_rate, 24000);
+        assert_eq!(back.len(), pcm.len());
+        // 16-bit samples, written scaled by 32767 and read back over 32768.
+        for (i, (a, b)) in pcm.iter().zip(&back).enumerate() {
+            assert!((a - b).abs() <= 2.0 / 32767.0, "sample {i}: wrote {a}, read {b}");
+        }
+    }
+
+    #[test]
     fn resampling_to_the_same_rate_is_a_copy() {
         let pcm = vec![0.1, -0.2, 0.3];
         assert_eq!(resample(pcm.clone(), 24000, 24000).unwrap(), pcm);
