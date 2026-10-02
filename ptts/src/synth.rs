@@ -272,10 +272,8 @@ struct Voice<Q: BackendQ> {
     null_emb: Option<Tensor<Q::T, Q::B>>,
 }
 
-/// A loaded model, with the weight format fixed at compile time.
-///
-/// Most callers want [`Synth`], which erases `Q` so the format can be chosen at
-/// runtime.
+/// A loaded model, with the weight format fixed at compile time. Always reached through
+/// [`Synth`], which erases `Q` so the format can be chosen at runtime.
 struct SynthOf<Q: BackendQ> {
     /// The weight format it was loaded as.
     quant: Quant,
@@ -645,30 +643,7 @@ fn plan_chunks<Q: BackendQ>(
     plan::chunks(tokenizer, text, normalize, max_tokens_per_chunk, frame_rate)
 }
 
-/// A voice primed once, ready to generate repeatedly.
-///
-/// # One generation at a time
-///
-/// A session runs one generation at a time, and says so: starting a second
-/// while the first is still running is an error, not silent corruption.
-///
-/// Starting one clones the primed state, and cloning an `xn` tensor shares its
-/// storage rather than copying it, so two overlapping generations would write
-/// into the same KV buffers and each would attend over the other's keys. The
-/// hazard outlives the call — [`SpeechStream`] is `'static` and its workers
-/// keep writing after `stream` returns — so a flag held for the life of those
-/// workers is what actually enforces it; `!Sync` or `&mut self` cannot see it.
-/// Dropping a stream joins its workers, so finishing or dropping one and
-/// starting the next always works.
-///
-/// A server wanting genuine concurrency builds one session per connection,
-/// which is what `ptts-ws-server` does.
-///
-/// Built by [`SynthApi::session`]. Every generation clones the primed state
-/// rather than re-running `prompt_audio` over the voice prompt. A one-shot
-/// caller should just use [`SynthApi::say`].
-///
-/// The KV budget is fixed at construction.
+/// The generic session behind [`Session`], whose docs cover its concurrency rules.
 struct SessionOf<Q: BackendQ> {
     model: Arc<TTSModel<Q>>,
     frame_rate: f64,
@@ -1223,6 +1198,8 @@ impl SynthBuilder {
 
     #[cfg(feature = "cuda")]
     fn build_cuda(self) -> Result<Synth> {
+        // `quant()` reports `self.quant`, which `check_device` keeps at F32 here.
+        debug_assert_eq!(self.quant, Quant::F32);
         let dev = xn::cuda_backend::Device::new(0)?;
         // Event tracking costs a few percent and this workload never queries events.
         unsafe { dev.disable_event_tracking() };
@@ -1232,6 +1209,8 @@ impl SynthBuilder {
 
     #[cfg(feature = "vulkan")]
     fn build_vulkan(self) -> Result<Synth> {
+        // `quant()` reports `self.quant`, which `check_device` keeps at F32 here.
+        debug_assert_eq!(self.quant, Quant::F32);
         let dev = xn::vulkan_backend::Device::new(0)?;
         let synth = self.load::<xn::Unquantized<f32, _>>(dev)?;
         Ok(Synth(Box::new(synth)))
@@ -1239,6 +1218,8 @@ impl SynthBuilder {
 
     #[cfg(feature = "metal")]
     fn build_metal(self) -> Result<Synth> {
+        // `quant()` reports `self.quant`, which `check_device` keeps at F32 here.
+        debug_assert_eq!(self.quant, Quant::F32);
         let dev = xn::metal_backend::Device::new(0)?;
         let synth = self.load::<xn::Unquantized<half::bf16, _>>(dev)?;
         Ok(Synth(Box::new(synth)))
@@ -1338,10 +1319,18 @@ impl SynthBuilder {
     }
 }
 
+mod sealed {
+    /// Lets only this module implement [`super::SynthApi`] and [`super::SessionApi`], so
+    /// methods can be added to them without breaking anyone.
+    pub trait Sealed {}
+    impl<Q: xn::BackendQ> Sealed for super::SynthOf<Q> {}
+    impl<Q: xn::BackendQ> Sealed for super::SessionOf<Q> {}
+}
+
 /// What a loaded model does, whatever its weight format and device.
 ///
 /// [`Synth`] dereferences to this, so these are called on a `Synth` directly, with no import.
-pub trait SynthApi: Send + Sync {
+pub trait SynthApi: sealed::Sealed + Send + Sync {
     /// Sample rate of the audio this model produces, in Hz.
     fn sample_rate(&self) -> usize;
 
@@ -1403,7 +1392,8 @@ pub trait SynthApi: Send + Sync {
         null_emb: Option<&[f32]>,
     ) -> Result<()>;
 
-    /// Synthesize `text` and return the whole waveform.
+    /// Synthesize `text` and return the whole waveform, as mono `f32` at
+    /// [`Self::sample_rate`].
     fn say(&self, text: &str) -> Result<Vec<f32>>;
 
     /// Synthesize `text` with per-request overrides.
@@ -1429,7 +1419,8 @@ pub trait SynthApi: Send + Sync {
     /// session is dropped. At 12.5 Hz a full [`MAX_TOKENS_PER_CHUNK`]-token
     /// chunk needs 796, so 1024 covers any
     /// single chunk; longer text is split into chunks of that size rather than
-    /// needing more.
+    /// needing more. Text that would need more is rejected rather than silently
+    /// re-primed.
     fn session(&self, opts: &SpeechOptions, max_seq_len: usize) -> Result<Session>;
 
     /// Start generating `text` with per-request overrides.
@@ -1459,7 +1450,7 @@ pub trait SynthApi: Send + Sync {
 /// What a [`Session`] does: generate repeatedly from one primed voice.
 ///
 /// [`Session`] dereferences to this, so these are called on a `Session` directly.
-pub trait SessionApi: Send + Sync {
+pub trait SessionApi: sealed::Sealed + Send + Sync {
     /// The KV budget this session was primed with.
     fn seq_budget(&self) -> usize;
 
@@ -1481,7 +1472,8 @@ pub trait SessionApi: Send + Sync {
     /// As [`Self::stream`], with an explicit seed for this request.
     fn stream_seeded(&self, text: &str, seed: u64) -> Result<SpeechStream>;
 
-    /// As [`Self::say`], with an explicit seed for this request.
+    /// As [`Self::say`], with an explicit seed for this request. Every call on a
+    /// session otherwise draws the same noise, since the seed is the session's.
     fn say_seeded(&self, text: &str, seed: u64) -> Result<Vec<f32>>;
 
     /// Tokenize `text` as given, with none of the preparation [`Self::stream`]
@@ -1503,10 +1495,30 @@ pub trait SessionApi: Send + Sync {
     ) -> Result<SpeechStream>;
 }
 
-/// A voice primed once, ready to generate repeatedly.
+/// A voice primed once, ready to generate repeatedly. Its methods are on [`SessionApi`].
 ///
-/// Runs one generation at a time: starting a second while the first is still
-/// running is an error. Its methods are on [`SessionApi`].
+/// # One generation at a time
+///
+/// A session runs one generation at a time, and says so: starting a second
+/// while the first is still running is an error, not silent corruption.
+///
+/// Starting one clones the primed state, and cloning an `xn` tensor shares its
+/// storage rather than copying it, so two overlapping generations would write
+/// into the same KV buffers and each would attend over the other's keys. The
+/// hazard outlives the call — [`SpeechStream`] is `'static` and its workers
+/// keep writing after `stream` returns — so a flag held for the life of those
+/// workers is what actually enforces it; `!Sync` or `&mut self` cannot see it.
+/// Dropping a stream joins its workers, so finishing or dropping one and
+/// starting the next always works.
+///
+/// A server wanting genuine concurrency builds one session per connection,
+/// which is what `ptts-ws-server` does.
+///
+/// Built by [`SynthApi::session`]. Every generation clones the primed state
+/// rather than re-running `prompt_audio` over the voice prompt. A one-shot
+/// caller should just use [`SynthApi::say`].
+///
+/// The KV budget is fixed at construction.
 pub struct Session(Box<dyn SessionApi>);
 
 impl std::ops::Deref for Session {
