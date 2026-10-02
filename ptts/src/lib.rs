@@ -62,7 +62,7 @@
 //! doing nothing.
 //!
 //! A voice is conditioned on once per [`synth::Synth`], whichever entry point
-//! is used; [`synth::Synth::session`] additionally pins the KV budget for a
+//! is used; [`synth::SynthApi::session`] additionally pins the KV budget for a
 //! stream of requests.
 //!
 //! Callers that need to drive the loop themselves — a browser build stepping
