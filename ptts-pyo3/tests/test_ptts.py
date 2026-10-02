@@ -8,6 +8,7 @@ deselected by default -- see `pyproject.toml`.
 from __future__ import annotations
 
 import ast
+import inspect
 from importlib import metadata
 from pathlib import Path
 
@@ -63,6 +64,57 @@ def test_the_stubs_cover_everything_the_extension_exports():
     }
     missing = set(ptts.__all__) - declared
     assert not missing, f"exported but not in the stubs: {sorted(missing)}"
+
+
+def _stub_parameters(fn: ast.FunctionDef) -> list[tuple[str, str, object]]:
+    args = fn.args
+    positional = args.posonlyargs + args.args
+    defaults = [None] * (len(positional) - len(args.defaults)) + args.defaults
+    params = [
+        (arg.arg, "POSITIONAL_ONLY" if i < len(args.posonlyargs) else "POSITIONAL_OR_KEYWORD", d)
+        for i, (arg, d) in enumerate(zip(positional, defaults))
+    ]
+    if args.vararg:
+        params.append((args.vararg.arg, "VAR_POSITIONAL", None))
+    params += [(arg.arg, "KEYWORD_ONLY", d) for arg, d in zip(args.kwonlyargs, args.kw_defaults)]
+    if args.kwarg:
+        params.append((args.kwarg.arg, "VAR_KEYWORD", None))
+    return [
+        (name, kind, inspect.Parameter.empty if d is None else ast.literal_eval(d))
+        for name, kind, d in params
+        if name != "self"
+    ]
+
+
+def _stub_callables():
+    tree = ast.parse((Path(ptts.__file__).parent / "__init__.pyi").read_text())
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            yield pytest.param(node, getattr(ptts, node.name), id=node.name)
+        elif isinstance(node, ast.ClassDef):
+            cls = getattr(ptts, node.name)
+            for fn in node.body:
+                if not isinstance(fn, ast.FunctionDef) or any(
+                    isinstance(d, ast.Name) and d.id == "property" for d in fn.decorator_list
+                ):
+                    continue
+                if fn.name == "__init__":
+                    yield pytest.param(fn, cls, id=node.name)
+                elif not fn.name.startswith("__"):
+                    yield pytest.param(fn, getattr(cls, fn.name), id=f"{node.name}.{fn.name}")
+
+
+@pytest.mark.parametrize(("fn", "obj"), list(_stub_callables()))
+def test_the_stub_signatures_match_the_extension(fn, obj):
+    # The check above only compares names. This one compares parameters, their kinds and
+    # their defaults, which is where the stubs drifted before: `temperature` said 0.5 while
+    # the extension used 0.3, and `rewrites` was missing.
+    runtime = [
+        (p.name, p.kind.name, p.default)
+        for p in inspect.signature(obj).parameters.values()
+        if p.name != "self"
+    ]
+    assert _stub_parameters(fn) == runtime
 
 
 def test_all_matches_what_is_importable():

@@ -24,6 +24,9 @@ ptts-wasm/site/
 
 tmp/
 *.wav
+# Model weights. Checkpoints are downloaded or kept outside the repo, never committed.
+*.safetensors
+*.gguf
 .DS_Store
 .claude
 
