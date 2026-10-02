@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import sys
 from importlib import metadata
 from pathlib import Path
 
@@ -109,6 +110,10 @@ def test_the_stub_signatures_match_the_extension(fn, obj):
     # The check above only compares names. This one compares parameters, their kinds and
     # their defaults, which is where the stubs drifted before: `temperature` said 0.5 while
     # the extension used 0.3, and `rewrites` was missing.
+    if isinstance(obj, type) and sys.version_info < (3, 10):
+        # An abi3 build only gives a class its signature from 3.10 on. The wheel jobs that
+        # test on a later Python still check the constructor.
+        pytest.skip("classes carry no signature before Python 3.10")
     runtime = [
         (p.name, p.kind.name, p.default)
         for p in inspect.signature(obj).parameters.values()
