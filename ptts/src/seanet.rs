@@ -25,8 +25,8 @@ impl<T: WithDTypeF, B: Backend> SEANetResnetBlock<T, B> {
         pad_mode: PadMode,
         compress: usize,
     ) -> Result<Self> {
-        if compress == 0 {
-            xn::bail!("the config's SEANet compress is 0; it must be at least 1")
+        if compress == 0 || compress > dim {
+            xn::bail!("the config's SEANet compress is {compress}; it must be from 1 to {dim}")
         }
         let hidden = dim / compress;
         let mut convs = Vec::new();
@@ -363,19 +363,21 @@ mod tests {
     use xn::nn::VB;
 
     #[test]
-    fn a_compress_of_zero_is_an_error() {
+    fn a_compress_outside_1_to_the_width_is_an_error() {
         // An empty safetensors file: the check runs before any weight is read.
         let empty = [2u64.to_le_bytes().as_slice(), b"{}"].concat();
         let vb = VB::from_bytes(vec![empty], CpuDevice).unwrap().root();
-        let block = SEANetResnetBlock::<f32, CpuDevice>::load(
-            &vb,
-            8,
-            &[3, 1],
-            &[1, 1],
-            PadMode::Constant,
-            0,
-        );
-        let err = block.err().expect("compress 0");
-        assert!(err.to_string().contains("compress"), "{err}");
+        for compress in [0, 9] {
+            let block = SEANetResnetBlock::<f32, CpuDevice>::load(
+                &vb,
+                8,
+                &[3, 1],
+                &[1, 1],
+                PadMode::Constant,
+                compress,
+            );
+            let err = block.err().unwrap_or_else(|| panic!("compress {compress} for a width of 8"));
+            assert!(err.to_string().contains("compress"), "{err}");
+        }
     }
 }

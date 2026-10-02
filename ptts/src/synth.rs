@@ -328,6 +328,17 @@ impl<Q: BackendQ> SynthOf<Q> {
         primed.retain(|(voice, _), _| voice != name);
     }
 
+    /// The voice a request speaks in: the one it names, else the default. `None` when there
+    /// are no voices, and generation is then unconditioned.
+    fn voice_for(&self, name: Option<&str>) -> Result<Option<(&str, &Voice<Q>)>> {
+        let default = if name.is_none() { self.default_voice() } else { None };
+        let Some(name) = name.or(default.as_deref()) else { return Ok(None) };
+        match self.voices.get_key_value(name) {
+            Some((name, voice)) => Ok(Some((name.as_str(), voice))),
+            None => Err(Error::UnknownVoice { name: name.to_string(), known: self.voices() }),
+        }
+    }
+
     /// The state every chunk starts from, sized to `seq_budget` and conditioned on the voice.
     ///
     /// Conditioning is the expensive part and depends only on (voice, guidance), so it happens
@@ -340,21 +351,7 @@ impl<Q: BackendQ> SynthOf<Q> {
         seq_budget: usize,
         cfg_coef: Option<f32>,
     ) -> Result<(TTSState<Q>, Option<(f32, TTSState<Q>)>)> {
-        let default = if voice.is_none() { self.default_voice() } else { None };
-        let voice = match voice.or(default.as_deref()) {
-            None => None,
-            Some(name) => match self.voices.get(name) {
-                Some(v) => Some((name, v)),
-                None => {
-                    return Err(Error::UnknownVoice {
-                        name: name.to_string(),
-                        known: self.voices(),
-                    });
-                }
-            },
-        };
-
-        let Some((name, voice)) = voice else {
+        let Some((name, voice)) = self.voice_for(voice)? else {
             let state = self.model.init_flow_lm_state(1, seq_budget)?;
             let cfg_state = match cfg_coef {
                 None => None,
@@ -602,8 +599,15 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
             self.normalize,
         )?;
         // A one-shot call is a session sized to this text and dropped afterwards,
-        // so there is one generation path rather than two.
-        let seq_budget = chunks.iter().map(Chunk::seq_budget).max().unwrap_or(0);
+        // so there is one generation path rather than two. The voice prompt gets its
+        // real length, as the session's own check counts it, and never less than
+        // PROMPT_SEQ_HEADROOM: a reserve alone would leave a long prompt no room.
+        let prompt = match self.voice_for(settings.voice.as_deref())? {
+            Some((_, voice)) => voice.emb.dim(1usize)?,
+            None => 0,
+        };
+        let text = chunks.iter().map(|c| c.tokens.len() + c.frame_budget).max().unwrap_or(0);
+        let seq_budget = text + prompt.max(plan::PROMPT_SEQ_HEADROOM);
         self.session_at(&settings, seq_budget)?.stream_chunks(chunks, rng)
     }
 
