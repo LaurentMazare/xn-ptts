@@ -22,8 +22,8 @@ inputs:
     default: ""
   audio-deps:
     description: >
-      Install libopus, which `ptts-ws-server` needs through `kaudio`. Set to "false" for jobs
-      that do not touch that crate.
+      Install libopus and libmp3lame, which `ptts-ws-server` needs: libopus through `kaudio`,
+      LAME for its MP3 output. Set to "false" for jobs that do not touch that crate.
     required: false
     default: "true"
 
@@ -36,18 +36,19 @@ runs:
       # target-specific flags (the wasm one) set them explicitly instead.
       run: rm -f .cargo/config.toml
 
-    - name: Install libopus
+    - name: Install libopus and libmp3lame
       if: inputs.audio-deps == 'true' && runner.os != 'Windows'
       shell: bash
       # `ptts-ws-server` -> `kaudio` -> `libopus_sys`, which looks for a system libopus via
-      # pkg-config. Without this the crate cannot be built at all, which is why it used to be
-      # excluded from every CI job.
+      # pkg-config, and the server links LAME itself for MP3 (see its build.rs). Without these
+      # the crate cannot be built at all, which is why it used to be excluded from every CI job.
       run: |
         if [ "${{ runner.os }}" = "Linux" ]; then
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libopus-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libopus-dev libmp3lame-dev pkg-config
         else
           brew list opus >/dev/null 2>&1 || brew install opus
+          brew list lame >/dev/null 2>&1 || brew install lame
           brew list pkg-config >/dev/null 2>&1 || brew install pkg-config
         fi
 

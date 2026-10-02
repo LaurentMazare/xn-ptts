@@ -1,12 +1,14 @@
 mod encoder;
 mod handler;
 mod model;
+mod mp3;
+mod openai;
 mod protocol;
 mod utils;
 
 use anyhow::Result;
 use axum::Router;
-use axum::routing::any;
+use axum::routing::{any, get, post};
 use clap::Parser;
 use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant};
@@ -15,7 +17,7 @@ use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(name = "ptts-ws-server")]
-#[command(about = "WebSocket server for Phonon")]
+#[command(about = "Speech server for Phonon: a WebSocket protocol and an OpenAI-compatible API")]
 struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     addr: String,
@@ -88,11 +90,15 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/speech/tts", any(handler::ws_handler))
+        .route("/v1/audio/speech", post(openai::speech))
+        .route("/v1/audio/voices", get(openai::voices))
+        .route("/v1/models", get(openai::models))
+        .route("/health", get(openai::health))
         .with_state(app_state)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&args.addr).await?;
-    tracing::info!(addr = %args.addr, "listening on /speech/tts");
+    tracing::info!(addr = %args.addr, "listening on /speech/tts and /v1/audio/speech");
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
