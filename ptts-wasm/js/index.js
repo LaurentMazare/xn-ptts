@@ -350,26 +350,28 @@ export class PhononTTS {
   }
 }
 
-/**
- * An absolute URL for `url`. The worker resolves relative URLs against its own script, which
- * lives inside the package, so anything relative has to be made absolute against the page.
- */
-/** What `resolveUrl` takes: a URL string, relative to the page or absolute, or a `URL`. */
 /** A seed as the model takes it: a `u64`, carried as a `bigint`. */
 function toSeed(seed) {
   const value = typeof seed === 'bigint' ? seed : Number.isSafeInteger(seed) ? BigInt(seed) : null;
   if (value === null || value < 0n || value >= 1n << 64n) {
+    // `String`, not a template literal, which throws on a symbol.
+    const got = `${String(seed)} (${typeof seed})`;
     throw new RangeError(
-      `seed must be a whole number from 0 to 2^64 - 1, as a number up to ${Number.MAX_SAFE_INTEGER} or a bigint; got ${seed}`,
+      `seed must be a whole number from 0 to 2^64 - 1, as a number up to ${Number.MAX_SAFE_INTEGER} or a bigint; got ${got}`,
     );
   }
   return value;
 }
 
+/** What `resolveUrl` takes: a URL string, relative to the page or absolute, or a `URL`. */
 function isUrl(url) {
   return typeof url === 'string' || url instanceof URL;
 }
 
+/**
+ * An absolute URL for `url`. The worker resolves relative URLs against its own script, which
+ * lives inside the package, so anything relative has to be made absolute against the page.
+ */
 function resolveUrl(url) {
   return globalThis.location ? new URL(url, globalThis.location.href).href : String(url);
 }

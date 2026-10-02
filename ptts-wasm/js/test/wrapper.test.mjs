@@ -162,7 +162,7 @@ test('the seed defaults to the one Rust and Python use, and goes out as a bigint
     await tts.synth('Hi.', { seed });
     assert.equal(FakeWorker.last.generations.at(-1).seed, sent);
   }
-  for (const seed of [-1, 1.5, 2 ** 60, '7', 2n ** 64n]) {
+  for (const seed of [-1, 1.5, 2 ** 60, '7', 2n ** 64n, {}, Symbol('seed')]) {
     assert.throws(() => tts.stream('Hi.', { seed }), RangeError, String(seed));
   }
 });
