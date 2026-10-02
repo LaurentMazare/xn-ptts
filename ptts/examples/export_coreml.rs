@@ -50,8 +50,7 @@ struct Args {
     /// with it the cost of every step, so it is worth keeping near what ptts chunks text into.
     #[arg(long, default_value_t = 48)]
     max_tokens: usize,
-    /// Sampling temperature the app speaks at. The checkpoint's own `temp` is not used: the
-    /// other frontends ignore it too and default to 0.3.
+    /// Sampling temperature the app speaks at. The default matches the other frontends.
     #[arg(long, default_value_t = 0.3)]
     temperature: f32,
 }

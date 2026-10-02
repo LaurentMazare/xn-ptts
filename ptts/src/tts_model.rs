@@ -10,35 +10,6 @@ use crate::mimi::{MimiConfig, MimiDecoder, MimiDecoderState, MimiEncoder};
 use xn::nn::{Linear, var_builder::Path};
 use xn::{BackendQ, Result, Tensor, Unquantized};
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct FuserConfig {
-    pub sum: Vec<String>,
-    pub streaming_sum: Vec<String>,
-    pub prepend: Vec<String>,
-    pub cross: Vec<String>,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct LutConditioner {
-    n_bins: usize,
-    dim: usize,
-    possible_values: Vec<String>,
-    tokenizer: String,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ConditionerInnerConfig {
-    Lut { lut: LutConditioner },
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct ConditionerConfig {
-    pub name: String,
-    #[serde(flatten)]
-    pub inner: ConditionerInnerConfig,
-}
-
 fn default_audio_prompt_min_duration() -> f32 {
     10.0
 }
@@ -51,8 +22,6 @@ fn default_audio_prompt_max_duration() -> f32 {
 pub struct ModelId {
     pub sig: String,
     pub epoch: usize,
-    pub mimi_sig: String,
-    pub mimi_epoch: usize,
 }
 
 /// Optional separate Mimi codec used only for speaker (voice-prompt) encoding.
@@ -69,11 +38,8 @@ pub struct SpeakerMimiConfig {
 pub struct TTSConfig {
     pub flow_lm: FlowLMConfig,
     pub mimi: MimiConfig,
-    pub temp: f32,
     pub lsd_decode_steps: usize,
     pub eos_threshold: f32,
-    pub fuser: FuserConfig,
-    pub conditioners: Vec<ConditionerConfig>,
     pub model_id: Option<ModelId>,
     /// Minimum allowed duration in seconds for an audio prompt passed to
     /// `get_state_for_audio`. If zero, an empty audio prompt is allowed, in
@@ -98,7 +64,7 @@ pub struct TTSConfig {
 }
 
 impl TTSConfig {
-    pub fn v202601(temp: f32) -> Self {
+    pub fn v202601() -> Self {
         Self {
             flow_lm: FlowLMConfig {
                 d_model: 1024,
@@ -136,16 +102,8 @@ impl TTSConfig {
                 transformer_dim_feedforward: 2048,
                 downsample_channel_wise: false,
             },
-            temp,
             lsd_decode_steps: 1,
             eos_threshold: -4.0,
-            conditioners: vec![],
-            fuser: FuserConfig {
-                sum: vec![],
-                streaming_sum: vec![],
-                prepend: vec![],
-                cross: vec![],
-            },
             model_id: None,
             audio_prompt_min_duration: 10.0,
             audio_prompt_max_duration: 10.0,
@@ -551,7 +509,7 @@ mod tests {
 
     #[test]
     fn config_round_trips_and_fills_defaults() {
-        let cfg = TTSConfig::v202601(0.3);
+        let cfg = TTSConfig::v202601();
         let json = serde_json::to_value(&cfg).unwrap();
         let back: TTSConfig = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), json);

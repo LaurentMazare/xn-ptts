@@ -14,7 +14,7 @@
 //! use ptts::preprocess::{Lang, Normalize};
 //!
 //! let tts = Synth::builder(
-//!     TTSConfig::v202601(0.3),
+//!     TTSConfig::v202601(),
 //!     "model/model.safetensors",
 //!     Normalize::for_lang(Lang::En),
 //! )
@@ -32,7 +32,7 @@
 //!
 //! ```no_run
 //! # fn main() -> xn::Result<()> {
-//! # let cfg = ptts::tts_model::TTSConfig::v202601(0.3);
+//! # let cfg = ptts::tts_model::TTSConfig::v202601();
 //! # let norm = ptts::preprocess::Normalize::for_lang(ptts::preprocess::Lang::En);
 //! # let tts = ptts::synth::Synth::builder(cfg, "model/model.safetensors", norm)
 //! #     .tokenizer_file("model/tokenizer.json")
@@ -1196,7 +1196,7 @@ impl SynthBuilder {
     /// use ptts::tts_model::TTSConfig;
     ///
     /// let tts = SynthBuilder::new(
-    ///     TTSConfig::v202601(0.3),
+    ///     TTSConfig::v202601(),
     ///     "model/model.safetensors",
     ///     Normalize::for_lang(Lang::De),
     /// )
@@ -1855,7 +1855,7 @@ mod tests {
     #[test]
     fn the_builder_keeps_the_policy_it_was_given() {
         for norm in [Normalize::for_lang(Lang::En), Normalize::for_lang(Lang::De), Normalize::OFF] {
-            let b = SynthBuilder::new(TTSConfig::v202601(0.5), "model.safetensors", norm);
+            let b = SynthBuilder::new(TTSConfig::v202601(), "model.safetensors", norm);
             assert_eq!(b.normalize, norm);
         }
     }

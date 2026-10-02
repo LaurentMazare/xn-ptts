@@ -53,13 +53,12 @@ struct LoadedModel {
 }
 
 impl LoadedModel {
-    async fn load_from_hf(repo_id: &str, temperature: f32) -> Result<Self> {
+    async fn load_from_hf(repo_id: &str) -> Result<Self> {
         tracing::info!("downloading model artifacts");
         let repo = crate::utils::HfRepo::model(repo_id)?;
         let config_path = repo.get("config.json").await?;
-        let mut cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config_path)?)
+        let cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config_path)?)
             .with_context(|| "failed to read config from file {config:?}")?;
-        cfg.temp = temperature;
 
         let model_path = repo.get("model.q8.gguf").await?;
         tracing::info!(?model_path, "model weights ready");
@@ -71,7 +70,7 @@ impl LoadedModel {
         Ok(Self { cfg, voice_files, tokenizer_path, model_path })
     }
 
-    async fn load_pocket_from_hf(temperature: f32) -> Result<Self> {
+    async fn load_pocket_from_hf() -> Result<Self> {
         tracing::info!("downloading model artifacts");
         let repo = crate::utils::HfRepo::model(DEFAULT_REPO_ID)?;
         let model_path = repo.get(DEFAULT_MODEL_FILE).await?;
@@ -87,17 +86,16 @@ impl LoadedModel {
             }
         }
 
-        let cfg = TTSConfig::v202601(temperature);
+        let cfg = TTSConfig::v202601();
         Ok(Self { cfg, voice_files, tokenizer_path, model_path })
     }
 
-    fn load_from_path(config: &std::path::PathBuf, temperature: f32) -> Result<Self> {
+    fn load_from_path(config: &std::path::PathBuf) -> Result<Self> {
         let parent_dir = config
             .parent()
             .with_context(|| format!("failed to get parent directory of config path {config:?}"))?;
-        let mut cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config)?)
+        let cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config)?)
             .with_context(|| "failed to read config from file {config:?}")?;
-        cfg.temp = temperature;
         let model_path = if parent_dir.join("model.safetensors").is_file() {
             parent_dir.join("model.safetensors")
         } else if parent_dir.join("model.q8.gguf").is_file() {
@@ -128,13 +126,13 @@ pub async fn load_ptts(
 ) -> Result<AppState> {
     let mut m = match config {
         Some(config) if config.is_file() || config.extension().is_some_and(|v| v == "json") => {
-            LoadedModel::load_from_path(config, temperature)?
+            LoadedModel::load_from_path(config)?
         }
         Some(repo_id) => {
             let repo_id = repo_id.to_str().context("invalid repo ID path")?;
-            LoadedModel::load_from_hf(repo_id, temperature).await?
+            LoadedModel::load_from_hf(repo_id).await?
         }
-        None => LoadedModel::load_pocket_from_hf(temperature).await?,
+        None => LoadedModel::load_pocket_from_hf().await?,
     };
     if let Some(voice_dir) = voice_dir {
         let found = ptts::loader::voices_in(voice_dir);

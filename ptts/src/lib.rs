@@ -15,7 +15,7 @@
 //! use ptts::tts_model::TTSConfig;
 //!
 //! let tts = Synth::builder(
-//!     TTSConfig::v202601(0.3),
+//!     TTSConfig::v202601(),
 //!     "model/model.safetensors",
 //!     Normalize::for_lang(Lang::En),
 //! )
