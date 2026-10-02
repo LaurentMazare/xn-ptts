@@ -188,10 +188,9 @@ impl Checkpoint {
 }
 
 /// The config the published checkpoint ships, for repos and directories that carry no
-/// `config.json`. `temp` is not read by the runtime -- sampling temperature reaches the model
-/// through `SynthBuilder::temperature` -- so any value does.
+/// `config.json`.
 fn shipped_config() -> TTSConfig {
-    TTSConfig::v202601(0.5)
+    TTSConfig::v202601()
 }
 
 fn read_config(path: &Path) -> Result<TTSConfig> {

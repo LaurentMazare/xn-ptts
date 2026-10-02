@@ -88,7 +88,7 @@ fn weight_candidates(quant: Quant) -> [&'static str; 3] {
 
 /// Resolve `config` — a local `config.json`, a Hub repo id, or nothing for the
 /// published checkpoint — into the files needed to load it.
-fn resolve(config: Option<&str>, quant: Quant, temperature: f32) -> ptts::Result<Artifacts> {
+fn resolve(config: Option<&str>, quant: Quant) -> ptts::Result<Artifacts> {
     match config {
         // A local config path: load the weights sitting next to it.
         Some(path) if std::path::Path::new(path).is_file() || path.ends_with(".json") => {
@@ -109,26 +109,20 @@ fn resolve(config: Option<&str>, quant: Quant, temperature: f32) -> ptts::Result
                 )?;
             let text =
                 std::fs::read_to_string(&config_path).map_err(|e| config_error(&config_path, e))?;
-            let mut cfg: TTSConfig =
+            let cfg: TTSConfig =
                 serde_json::from_str(&text).map_err(|e| config_error(&config_path, e))?;
-            cfg.temp = temperature;
             let voices = ptts::loader::checkpoint_voices(parent);
             Ok(Artifacts { cfg, model_path, tokenizer_path: parent.join("tokenizer.json"), voices })
         }
-        Some(repo_id) => resolve_hub(&hub(repo_id)?, repo_id, quant, temperature),
-        None => resolve_hub(&hub(DEFAULT_REPO_ID)?, DEFAULT_REPO_ID, quant, temperature),
+        Some(repo_id) => resolve_hub(&hub(repo_id)?, repo_id, quant),
+        None => resolve_hub(&hub(DEFAULT_REPO_ID)?, DEFAULT_REPO_ID, quant),
     }
 }
 
 /// A Hub repo: `config.json` (optional, as the Pocket TTS repo has none), weights, a
 /// tokenizer, and voices under `voices/` or `embeddings/` plus an optional
 /// `default-voice.safetensors`. Only the files that are used get downloaded.
-fn resolve_hub(
-    repo: &HubRepo,
-    repo_id: &str,
-    quant: Quant,
-    temperature: f32,
-) -> ptts::Result<Artifacts> {
+fn resolve_hub(repo: &HubRepo, repo_id: &str, quant: Quant) -> ptts::Result<Artifacts> {
     // One listing rather than a request per guessed name, and the only way to learn a repo's
     // voices. Offline it fails, and then every name is tried, which the cache can still serve.
     let listing: Option<Vec<String>> =
@@ -163,12 +157,9 @@ fn resolve_hub(
     let cfg = match get_optional("config.json")? {
         Some(path) => {
             let text = std::fs::read_to_string(&path).map_err(|e| config_error(&path, e))?;
-            let mut cfg: TTSConfig =
-                serde_json::from_str(&text).map_err(|e| config_error(&path, e))?;
-            cfg.temp = temperature;
-            cfg
+            serde_json::from_str::<TTSConfig>(&text).map_err(|e| config_error(&path, e))?
         }
-        None => TTSConfig::v202601(temperature),
+        None => TTSConfig::v202601(),
     };
     let candidates = weight_candidates(quant);
     let mut model_path = None;
@@ -373,7 +364,7 @@ impl Tts {
         }
         // Loading reads hundreds of megabytes and runs no Python.
         py.detach(move || {
-            let artifacts = resolve(config.as_deref(), quant, temperature).py()?;
+            let artifacts = resolve(config.as_deref(), quant).py()?;
             let mut builder = SynthBuilder::new(artifacts.cfg, &artifacts.model_path, normalize)
                 .tokenizer_file(&artifacts.tokenizer_path)
                 .device(device)

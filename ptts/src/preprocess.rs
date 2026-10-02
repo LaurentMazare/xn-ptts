@@ -18,64 +18,25 @@ pub use rewrite::{Rules, rewrite_word};
 /// Spoken forms of the punctuation characters that are read aloud rather than dropped.
 #[derive(Debug, Clone)]
 pub struct SpecialChars {
-    pub colon: &'static str,
-    pub slash: &'static str,
-    pub dash: &'static str,
-    pub dot: &'static str,
     pub at: &'static str,
     pub plus: &'static str,
     pub equals: &'static str,
 }
 
-pub const SPECIAL_CHARS_EN: SpecialChars = SpecialChars {
-    colon: "colon",
-    slash: "slash",
-    dash: "dash",
-    dot: "dot",
-    at: "at",
-    plus: "plus",
-    equals: "equals",
-};
+pub const SPECIAL_CHARS_EN: SpecialChars =
+    SpecialChars { at: "at", plus: "plus", equals: "equals" };
 
-pub const SPECIAL_CHARS_FR: SpecialChars = SpecialChars {
-    colon: "deux-points",
-    slash: "slash",
-    dash: "tiret",
-    dot: "point",
-    at: "arobaze",
-    plus: "plus",
-    equals: "égal",
-};
+pub const SPECIAL_CHARS_FR: SpecialChars =
+    SpecialChars { at: "arobaze", plus: "plus", equals: "égal" };
 
-pub const SPECIAL_CHARS_DE: SpecialChars = SpecialChars {
-    colon: "Doppelpunkt",
-    slash: "Slash",
-    dash: "Bindestrich",
-    dot: "Punkt",
-    at: "ät",
-    plus: "Plus",
-    equals: "Gleich",
-};
+pub const SPECIAL_CHARS_DE: SpecialChars =
+    SpecialChars { at: "ät", plus: "Plus", equals: "Gleich" };
 
-pub const SPECIAL_CHARS_ES: SpecialChars = SpecialChars {
-    colon: "dos-puntos",
-    slash: "slash",
-    dash: "guion",
-    dot: "punto",
-    at: "arroba",
-    plus: "mas",
-    equals: "igual",
-};
+pub const SPECIAL_CHARS_ES: SpecialChars =
+    SpecialChars { at: "arroba", plus: "mas", equals: "igual" };
 
-pub const SPECIAL_CHARS_PT: SpecialChars = SpecialChars {
-    colon: "dois-pontos",
-    slash: "slash",
-    dash: "hifen",
-    dot: "ponto",
-    at: "arroba",
-    plus: "mais",
-    equals: "igual",
-};
+pub const SPECIAL_CHARS_PT: SpecialChars =
+    SpecialChars { at: "arroba", plus: "mais", equals: "igual" };
 
 /// Language driving the spoken forms used by [`normalize_text`].
 ///
@@ -137,80 +98,6 @@ impl Lang {
             Lang::De => "Komma",
             Lang::Es => "coma",
             Lang::Pt => "vírgula",
-        }
-    }
-
-    pub fn underscore(self) -> &'static str {
-        match self {
-            Lang::En | Lang::Fr | Lang::Pt => "underscore",
-            Lang::De => "Unterstrich",
-            Lang::Es => "guion bajo",
-        }
-    }
-
-    pub fn dollars(self) -> &'static str {
-        match self {
-            Lang::En | Lang::Fr => "dollars",
-            Lang::De => "Dollar",
-            Lang::Es | Lang::Pt => "dólares",
-        }
-    }
-
-    pub fn dollars_singular(self) -> &'static str {
-        match self {
-            Lang::En | Lang::Fr => "dollar",
-            Lang::De => "Dollar",
-            Lang::Es | Lang::Pt => "dólar",
-        }
-    }
-
-    pub fn euros(self) -> &'static str {
-        match self {
-            Lang::En | Lang::Fr | Lang::Es | Lang::Pt => "euros",
-            Lang::De => "Euro",
-        }
-    }
-
-    pub fn euros_singular(self) -> &'static str {
-        match self {
-            Lang::En | Lang::Fr | Lang::Es | Lang::Pt => "euro",
-            Lang::De => "Euro",
-        }
-    }
-
-    pub fn pounds(self) -> &'static str {
-        match self {
-            Lang::En => "pounds",
-            Lang::Fr => "livres",
-            Lang::De => "Pfund",
-            Lang::Es | Lang::Pt => "libras",
-        }
-    }
-
-    pub fn pounds_singular(self) -> &'static str {
-        match self {
-            Lang::En => "pound",
-            Lang::Fr => "livre",
-            Lang::De => "Pfund",
-            Lang::Es | Lang::Pt => "libra",
-        }
-    }
-
-    pub fn currency(&self, symbol: char) -> Option<&'static str> {
-        match symbol {
-            '$' => Some(self.dollars()),
-            '€' => Some(self.euros()),
-            '£' => Some(self.pounds()),
-            _ => None,
-        }
-    }
-
-    pub fn currency_singular(&self, symbol: char) -> Option<&'static str> {
-        match symbol {
-            '$' => Some(self.dollars_singular()),
-            '€' => Some(self.euros_singular()),
-            '£' => Some(self.pounds_singular()),
-            _ => None,
         }
     }
 }

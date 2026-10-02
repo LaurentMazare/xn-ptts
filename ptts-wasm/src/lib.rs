@@ -168,9 +168,7 @@ impl Model {
                 Ok(cfg) => cfg,
                 Err(e) => xn::bail!("cannot parse config.json: {e}"),
             },
-            // `temp` is not read by the runtime: sampling temperature reaches the model
-            // through `start_generation`.
-            None => TTSConfig::v202601(0.3),
+            None => TTSConfig::v202601(),
         };
         console_log!("[phonon] loading model with quant={quant:?}");
 
@@ -402,12 +400,11 @@ impl Model {
     /// the `tokenizer.json` for its vocabulary, and `config_json` its `config.json`, or
     /// `undefined` for the original Pocket TTS architecture.
     ///
-    /// Two things a config cannot ask this build for. Its `temp` is not read: the sampling
-    /// temperature reaches the model through `start_generation`. And there is no
-    /// classifier-free guidance here -- guidance is a caller's option in `ptts::synth`
-    /// (`SynthOpts::cfg_coef`), not a field of the config, and the browser build never turns
-    /// it on, so `cfg_null_audio_empty` is inert. Everything else -- the flow LM and Mimi
-    /// shapes, `lsd_decode_steps`, `eos_threshold`, `model_id`, `speaker_mimi` -- is honored.
+    /// One thing a config cannot ask this build for: classifier-free guidance. Guidance is a
+    /// caller's option in `ptts::synth` (`SpeechOptions::cfg_coef`), not a field of the
+    /// config, and the browser build never turns it on, so `cfg_null_audio_empty` is inert.
+    /// Everything else -- the flow LM and Mimi shapes, `lsd_decode_steps`, `eos_threshold`,
+    /// `model_id`, `speaker_mimi` -- is honored.
     ///
     /// `quant` is `"f32"` or `"q8"`.
     ///
