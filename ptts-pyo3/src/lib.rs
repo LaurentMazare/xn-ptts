@@ -16,6 +16,7 @@
 //! other Python thread wanting the same lock, and Ctrl-C reaches neither.
 
 use numpy::{PyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
+use ptts::loader::{DEFAULT_VOICE_FILE, VOICE_DIRS};
 use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant, SpeechOptions, SpeechStream, Synth, SynthBuilder};
 use ptts::tts_model::TTSConfig;
@@ -84,8 +85,6 @@ fn weight_candidates(quant: Quant) -> [&'static str; 3] {
         ["model.safetensors", DEFAULT_MODEL_FILE, "model.q8.gguf"]
     }
 }
-
-use ptts::loader::{DEFAULT_VOICE_FILE, VOICE_DIRS};
 
 /// Resolve `config` — a local `config.json`, a Hub repo id, or nothing for the
 /// published checkpoint — into the files needed to load it.

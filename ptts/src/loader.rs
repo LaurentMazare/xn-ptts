@@ -65,7 +65,6 @@ pub fn load_weights<Q: BackendQ>(path: &std::path::Path, dev: &Q::B) -> Result<P
     Ok(vb.root())
 }
 
-/// Name of the speaker projection weight, as [`remap_key`] spells it.
 /// The directories a checkpoint keeps its voices in. Both layouts are in circulation.
 pub const VOICE_DIRS: [&str; 2] = ["voices", "embeddings"];
 
@@ -104,6 +103,7 @@ pub fn checkpoint_voices(dir: &std::path::Path) -> Vec<(String, std::path::PathB
     voices
 }
 
+/// Name of the speaker projection weight, as [`remap_key`] spells it.
 pub const SPEAKER_PROJ_WEIGHT: &str = "flow_lm.speaker_proj_weight";
 
 /// Tensor name of a precomputed voice embedding, as `create_voice` writes it.

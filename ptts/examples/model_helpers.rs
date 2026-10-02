@@ -200,8 +200,6 @@ fn read_config(path: &Path) -> Result<TTSConfig> {
     serde_json::from_str(&text).with_context(|| format!("cannot parse config {}", path.display()))
 }
 
-/// Adds every `*.safetensors` file in `dir` to `voices`, keyed by file stem. A missing or
-/// unreadable directory is not an error: voices are optional.
 /// A Hugging Face model repo, wrapped so a download failure names the repo and the file --
 /// `hf_hub` does so for a missing file but not for an HTTP or authentication failure, which
 /// makes a gated repo hard to diagnose -- and so the callers need not spell out the download
