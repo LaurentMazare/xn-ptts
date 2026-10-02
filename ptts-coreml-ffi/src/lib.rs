@@ -72,15 +72,8 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     })
 }
 
-fn voice_names(dir: &Path) -> Result<Vec<String>, String> {
-    let rd = std::fs::read_dir(dir.join("voices")).map_err(|e| format!("voices/: {e}"))?;
-    let mut v: Vec<String> = rd
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "safetensors"))
-        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-        .collect();
-    v.sort();
-    Ok(v)
+fn voice_names(dir: &Path) -> Vec<String> {
+    ptts::loader::voices_in(&dir.join("voices")).into_iter().map(|(name, _)| name).collect()
 }
 
 /// A voice as the exporter writes it: an `emb` tensor of `[1, T, D]` or `[T, D]`.
@@ -124,7 +117,7 @@ fn open(dir: &Path, unit: u32, lang: &str) -> Result<PttsHandle, String> {
         seed: 0,
         flow_unit,
     };
-    let voices = voice_names(dir)?;
+    let voices = voice_names(dir);
     let (voice, vlen) = load_voice(dir, voices.first().ok_or("no voices in the bundle")?)?;
     let tokenizer = ptts::tok::Tok::open(&dir.join("tokenizer.json")).map_err(|e| e.to_string())?;
     let normalize = Normalize::parse(lang).map_err(|e| e.to_string())?;

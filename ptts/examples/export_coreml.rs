@@ -123,15 +123,7 @@ fn main() -> Result<()> {
 
     std::fs::create_dir_all(args.out.join("voices"))?;
     let voices: Vec<(String, PathBuf)> = match args.voices.as_deref() {
-        Some(dir) => {
-            let mut v: Vec<(String, PathBuf)> = std::fs::read_dir(dir)?
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.extension().is_some_and(|x| x == "safetensors"))
-                .map(|p| (p.file_stem().unwrap().to_string_lossy().into(), p))
-                .collect();
-            v.sort();
-            v
-        }
+        Some(dir) => ptts::loader::voices_in(dir),
         None => ck.voices.clone(),
     };
     anyhow::ensure!(!voices.is_empty(), "no voices: pass --voices <dir>");

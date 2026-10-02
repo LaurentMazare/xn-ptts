@@ -16,6 +16,7 @@
 //! other Python thread wanting the same lock, and Ctrl-C reaches neither.
 
 use numpy::{PyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
+use ptts::loader::{DEFAULT_VOICE_FILE, VOICE_DIRS};
 use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant, SpeechOptions, SpeechStream, Synth, SynthBuilder};
 use ptts::tts_model::TTSConfig;
@@ -85,11 +86,6 @@ fn weight_candidates(quant: Quant) -> [&'static str; 3] {
     }
 }
 
-/// The two directories voices are kept in, both layouts being in circulation, and the file
-/// name of a checkpoint's own voice, registered as `default`.
-const VOICE_DIRS: [&str; 2] = ["voices", "embeddings"];
-const DEFAULT_VOICE_FILE: &str = "default-voice.safetensors";
-
 /// Resolve `config` — a local `config.json`, a Hub repo id, or nothing for the
 /// published checkpoint — into the files needed to load it.
 fn resolve(config: Option<&str>, quant: Quant, temperature: f32) -> ptts::Result<Artifacts> {
@@ -116,14 +112,7 @@ fn resolve(config: Option<&str>, quant: Quant, temperature: f32) -> ptts::Result
             let mut cfg: TTSConfig =
                 serde_json::from_str(&text).map_err(|e| config_error(&config_path, e))?;
             cfg.temp = temperature;
-            let mut voices = vec![];
-            for dir in VOICE_DIRS {
-                collect_voices(&parent.join(dir), &mut voices);
-            }
-            let default_voice = parent.join(DEFAULT_VOICE_FILE);
-            if default_voice.is_file() {
-                push_voice(&mut voices, "default".to_string(), default_voice);
-            }
+            let voices = ptts::loader::checkpoint_voices(parent);
             Ok(Artifacts { cfg, model_path, tokenizer_path: parent.join("tokenizer.json"), voices })
         }
         Some(repo_id) => resolve_hub(&hub(repo_id)?, repo_id, quant, temperature),
@@ -280,21 +269,6 @@ fn hub_get(repo: &HubRepo, filename: &str) -> ptts::Result<std::path::PathBuf> {
             ptts::Error::Io(std::io::Error::other(format!("cannot fetch `{filename}`: {other}")))
         }
     })
-}
-
-/// Add every `*.safetensors` file in `dir` to `voices`, keyed by file stem.
-/// A missing directory is not an error: voices are optional.
-fn collect_voices(dir: &std::path::Path, voices: &mut Vec<(String, std::path::PathBuf)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("safetensors") {
-            continue;
-        }
-        if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-            push_voice(voices, name.to_string(), path);
-        }
-    }
 }
 
 /// Flatten a conditioning embedding of shape `[T, dim]` or `[1, T, dim]`.
@@ -605,19 +579,9 @@ impl Tts {
     /// against any other Python thread calling in.
     fn start(&self, py: Python<'_>, text: &str, opts: &SpeechOptions) -> PyResult<SpeechStream> {
         let inner = Arc::clone(&self.inner);
-        let mut opts = opts.clone();
+        let opts = opts.clone();
         py.detach(move || {
             let synth = inner.lock().map_err(|_| poisoned())?;
-            // Resolved here rather than at construction so a voice registered
-            // afterwards -- `clone_voice` on a repo that ships none -- is used
-            // without having to name it on every call.
-            if opts.voice.is_none() {
-                // The checkpoint's own `default-voice.safetensors` when it ships one, as in
-                // the `ptts` example, and otherwise the first by name.
-                let voices = synth.voices();
-                opts.voice =
-                    voices.iter().find(|v| *v == "default").or_else(|| voices.first()).cloned();
-            }
             synth.stream_with(text, &opts).py()
         })
     }

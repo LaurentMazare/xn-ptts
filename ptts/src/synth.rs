@@ -334,6 +334,15 @@ impl<Q: BackendQ> SynthOf<Q> {
         self.voices.keys().cloned().collect()
     }
 
+    /// The voice a request that names none speaks in: the builder's [`SynthBuilder::voice`],
+    /// else `default` (a checkpoint's own `default-voice.safetensors`), else the first by name.
+    /// Decided per request, so a voice registered after the build counts. `None` when there
+    /// are no voices, and generation is then unconditioned.
+    pub fn default_voice(&self) -> Option<String> {
+        let found = self.voices.get_key_value("default").or_else(|| self.voices.iter().next());
+        self.defaults.voice.clone().or_else(|| found.map(|(name, _)| name.clone()))
+    }
+
     /// True if this checkpoint carries a speaker encoder, which voice cloning
     /// from raw audio requires.
     pub fn supports_voice_cloning(&self) -> bool {
@@ -561,14 +570,9 @@ impl<Q: BackendQ> SynthOf<Q> {
         seq_budget: usize,
         cfg_coef: Option<f32>,
     ) -> Result<(TTSState<Q>, Option<(f32, TTSState<Q>)>)> {
-        let voice = match voice {
-            None if self.voices.is_empty() => None,
-            None => {
-                return Err(Error::not_found(format!(
-                    "no voice selected; this model has {}",
-                    self.voices.keys().cloned().collect::<Vec<_>>().join(", ")
-                )));
-            }
+        let default = if voice.is_none() { self.default_voice() } else { None };
+        let voice = match voice.or(default.as_deref()) {
+            None => None,
             Some(name) => match self.voices.get(name) {
                 Some(v) => Some((name, v)),
                 None => {
@@ -1269,8 +1273,8 @@ impl SynthBuilder {
         self
     }
 
-    /// Default voice for requests that do not name one. Defaults to the first
-    /// registered voice by name.
+    /// Default voice for requests that do not name one. Without it,
+    /// [`SynthOf::default_voice`] picks one.
     pub fn voice(mut self, voice: impl Into<String>) -> Self {
         self.voice = Some(voice.into());
         self
@@ -1412,11 +1416,6 @@ impl SynthBuilder {
             synth.add_voice_file(name, path)?;
         }
 
-        // Default to the first voice by name when the caller named none, so a
-        // bare `say` works out of the box.
-        if synth.defaults.voice.is_none() {
-            synth.defaults.voice = synth.voices.keys().next().cloned();
-        }
         if let Some(name) = synth.defaults.voice.as_ref()
             && !synth.voices.contains_key(name)
         {
@@ -1712,6 +1711,11 @@ impl Synth {
     /// Registered voice names, sorted.
     pub fn voices(&self) -> Vec<String> {
         dispatch!(&self.0, |s| s.voices())
+    }
+
+    /// See [`SynthOf::default_voice`].
+    pub fn default_voice(&self) -> Option<String> {
+        dispatch!(&self.0, |s| s.default_voice())
     }
 
     /// True if this checkpoint carries a speaker encoder, which

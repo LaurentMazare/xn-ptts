@@ -65,6 +65,44 @@ pub fn load_weights<Q: BackendQ>(path: &std::path::Path, dev: &Q::B) -> Result<P
     Ok(vb.root())
 }
 
+/// The directories a checkpoint keeps its voices in. Both layouts are in circulation.
+pub const VOICE_DIRS: [&str; 2] = ["voices", "embeddings"];
+
+/// A checkpoint's own voice, which [`checkpoint_voices`] registers as `default`.
+pub const DEFAULT_VOICE_FILE: &str = "default-voice.safetensors";
+
+/// Every `*.safetensors` directly in `dir`, as (file stem, path), sorted by name. A missing or
+/// unreadable directory has none.
+pub fn voices_in(dir: &std::path::Path) -> Vec<(String, std::path::PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    let mut voices: Vec<_> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "safetensors"))
+        .filter_map(|path| Some((path.file_stem()?.to_str()?.to_string(), path)))
+        .collect();
+    voices.sort();
+    voices
+}
+
+/// A checkpoint directory's voices: those in each of [`VOICE_DIRS`], then
+/// [`DEFAULT_VOICE_FILE`] as `default`. A name found twice keeps the first, so `voices/` wins
+/// over `embeddings/`.
+pub fn checkpoint_voices(dir: &std::path::Path) -> Vec<(String, std::path::PathBuf)> {
+    let default = dir.join(DEFAULT_VOICE_FILE);
+    let found = VOICE_DIRS
+        .iter()
+        .flat_map(|sub| voices_in(&dir.join(sub)))
+        .chain(default.is_file().then(|| ("default".to_string(), default)));
+    let mut voices: Vec<(String, std::path::PathBuf)> = vec![];
+    for (name, path) in found {
+        if !voices.iter().any(|(known, _)| *known == name) {
+            voices.push((name, path));
+        }
+    }
+    voices
+}
+
 /// Name of the speaker projection weight, as [`remap_key`] spells it.
 pub const SPEAKER_PROJ_WEIGHT: &str = "flow_lm.speaker_proj_weight";
 
@@ -273,6 +311,38 @@ fn read_safetensors_header(path: &std::path::Path) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_voices_follow_the_layout() {
+        let dir = std::env::temp_dir().join(format!("ptts-voices-{}", std::process::id()));
+        for file in [
+            "voices/b.safetensors",
+            "embeddings/a.safetensors",
+            "embeddings/b.safetensors",
+            "embeddings/notes.txt",
+            "default-voice.safetensors",
+        ] {
+            let path = dir.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"").unwrap();
+        }
+        let voices = checkpoint_voices(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let found: Vec<_> = voices
+            .iter()
+            .map(|(name, path)| (name.as_str(), path.strip_prefix(&dir).unwrap().to_owned()))
+            .collect();
+        // `b` is in both directories and `voices/` wins; `notes.txt` is not a voice.
+        assert_eq!(
+            found,
+            [
+                ("b", "voices/b.safetensors".into()),
+                ("a", "embeddings/a.safetensors".into()),
+                ("default", "default-voice.safetensors".into()),
+            ]
+        );
+        assert!(checkpoint_voices(&dir).is_empty(), "a missing directory has no voices");
+    }
 
     #[test]
     fn remap_key_renames_and_drops() {
