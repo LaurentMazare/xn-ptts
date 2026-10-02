@@ -204,7 +204,7 @@ fn read_config(path: &Path) -> Result<TTSConfig> {
 /// `hf_hub` does so for a missing file but not for an HTTP or authentication failure, which
 /// makes a gated repo hard to diagnose -- and so the callers need not spell out the download
 /// builder.
-struct HubRepo {
+pub struct HubRepo {
     repo: hf_hub::HFRepositorySync<hf_hub::repository::RepoTypeModel>,
     repo_id: String,
 }
@@ -212,14 +212,14 @@ struct HubRepo {
 impl HubRepo {
     /// The client reads `HF_TOKEN`, `HF_ENDPOINT` and the cache location from the environment,
     /// falling back to the token `huggingface-cli login` stores.
-    fn open(repo_id: &str) -> Result<Self> {
+    pub fn open(repo_id: &str) -> Result<Self> {
         let client = hf_hub::HFClientSync::new().context("cannot reach the Hugging Face Hub")?;
         let (owner, name) = hf_hub::split_id(repo_id);
         Ok(Self { repo: client.model(owner, name), repo_id: repo_id.to_string() })
     }
 
     /// Download `filename`, or find it in the local cache.
-    fn get(&self, filename: &str) -> Result<PathBuf> {
+    pub fn get(&self, filename: &str) -> Result<PathBuf> {
         self.repo.download_file().filename(filename).send().map_err(|e| {
             anyhow::anyhow!(
                 "failed to fetch `{filename}` from `{}`: {e}\n\
