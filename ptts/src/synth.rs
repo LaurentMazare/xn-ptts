@@ -62,12 +62,9 @@
 
 use crate::flow_lm::{NormalRng, StepInput};
 use crate::loader;
-use crate::plan::{self, EosPolicy};
+use crate::plan::{self, Chunk, EosPolicy};
 use crate::preprocess::Normalize;
-use crate::tts_model::{
-    MAX_TOKENS_PER_CHUNK, MimiEnc, TTSConfig, TTSModel, TTSState, prepare_text_prompt,
-    split_into_best_sentences,
-};
+use crate::tts_model::{MAX_TOKENS_PER_CHUNK, MimiEnc, TTSConfig, TTSModel, TTSState};
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path as FsPath, PathBuf};
@@ -547,7 +544,7 @@ impl<Q: BackendQ> SynthOf<Q> {
         )?;
         // A one-shot call is a session sized to this text and dropped afterwards,
         // so there is one generation path rather than two.
-        let seq_budget = chunks.iter().map(|c| c.seq_budget).max().unwrap_or(0);
+        let seq_budget = chunks.iter().map(Chunk::seq_budget).max().unwrap_or(0);
         self.session_at(&settings, seq_budget)?.stream_chunks(chunks, rng)
     }
 
@@ -700,7 +697,7 @@ fn plan_chunks<Q: BackendQ>(
     text: &str,
     max_tokens_per_chunk: usize,
     normalize: Normalize,
-) -> Result<Vec<ChunkPlan>> {
+) -> Result<Vec<Chunk>> {
     let tokenizer = match model.flow_lm.conditioner.tokenizer.as_ref() {
         Some(tokenizer) => tokenizer.as_ref(),
         None => {
@@ -711,22 +708,7 @@ fn plan_chunks<Q: BackendQ>(
             ));
         }
     };
-    // Normalization runs first, on the whole input: it rewrites the characters
-    // the sentence splitter looks for.
-    let text = normalize.apply(text);
-    let texts = split_into_best_sentences(tokenizer, &text, Some(max_tokens_per_chunk))?;
-    let mut chunks = Vec::with_capacity(texts.len());
-    for text in texts {
-        let (prepared, frames_after_eos) = prepare_text_prompt(&text);
-        let tokens = model.flow_lm.conditioner.tokenize(&prepared)?;
-        let frame_budget = plan::frame_budget(tokens.len(), frame_rate);
-        let seq_budget = plan::seq_budget(tokens.len(), frame_budget);
-        chunks.push(ChunkPlan { tokens, frame_budget, frames_after_eos, seq_budget });
-    }
-    if chunks.is_empty() {
-        return Err(Error::invalid_argument("nothing to synthesize: the text is empty"));
-    }
-    Ok(chunks)
+    plan::chunks(tokenizer, text, normalize, max_tokens_per_chunk, frame_rate)
 }
 
 /// A voice primed once, ready to generate repeatedly.
@@ -786,7 +768,7 @@ impl<Q: BackendQ> SessionOf<Q> {
     ///
     /// [`Self::stream`] and [`Self::say`] apply it themselves. Callers that
     /// tokenize by hand for [`Self::stream_tokens`] should run their text
-    /// through [`Normalize::apply`] first, before [`prepare_text_prompt`].
+    /// through [`Normalize::apply`] first, before [`crate::tts_model::prepare_text_prompt`].
     pub fn normalization(&self) -> Normalize {
         self.normalize
     }
@@ -838,7 +820,7 @@ impl<Q: BackendQ> SessionOf<Q> {
     }
 
     /// Tokenize `text` as given, with none of the preparation [`Self::stream`]
-    /// does first — no [`prepare_text_prompt`], no sentence splitting.
+    /// does first — no [`crate::tts_model::prepare_text_prompt`], no sentence splitting.
     ///
     /// Paired with [`Self::stream_tokens`] for callers that want one utterance
     /// per request and prepare the text themselves.
@@ -848,7 +830,7 @@ impl<Q: BackendQ> SessionOf<Q> {
 
     /// Synthesize from tokens produced elsewhere, as one chunk.
     ///
-    /// `frames_after_eos` is the tail [`prepare_text_prompt`] would have
+    /// `frames_after_eos` is the tail [`crate::tts_model::prepare_text_prompt`] would have
     /// chosen: 3 for a very short prompt, 1 otherwise.
     pub fn stream_tokens(
         &self,
@@ -860,8 +842,7 @@ impl<Q: BackendQ> SessionOf<Q> {
             return Err(Error::invalid_argument("nothing to synthesize: no tokens"));
         }
         let frame_budget = plan::frame_budget(tokens.len(), self.frame_rate);
-        let seq_budget = plan::seq_budget(tokens.len(), frame_budget);
-        let chunk = ChunkPlan { tokens, frame_budget, frames_after_eos, seq_budget };
+        let chunk = Chunk { text: String::new(), tokens, frames_after_eos, frame_budget };
         self.stream_chunks(vec![chunk], rng)
     }
 
@@ -871,7 +852,7 @@ impl<Q: BackendQ> SessionOf<Q> {
     /// reaches it through an ephemeral session.
     fn stream_chunks(
         &self,
-        chunks: Vec<ChunkPlan>,
+        chunks: Vec<Chunk>,
         rng: Box<dyn crate::flow_lm::Rng + Send>,
     ) -> Result<SpeechStream> {
         // `c.seq_budget` reserves PROMPT_SEQ_HEADROOM for a voice prompt whose
@@ -1019,14 +1000,6 @@ impl Drop for InFlight {
     }
 }
 
-/// What one text chunk will need.
-struct ChunkPlan {
-    tokens: Vec<u32>,
-    frame_budget: usize,
-    frames_after_eos: usize,
-    seq_budget: usize,
-}
-
 /// Messages from the flow-LM thread to the decoder thread.
 enum Frame<Q: BackendQ> {
     Latent(Tensor<Q::T, Q::B>),
@@ -1036,7 +1009,7 @@ enum Frame<Q: BackendQ> {
 /// The autoregressive loop, shared by every frontend and every chunk.
 fn run_backbone<Q: BackendQ>(
     model: &TTSModel<Q>,
-    chunks: Vec<ChunkPlan>,
+    chunks: Vec<Chunk>,
     base_state: TTSState<Q>,
     cfg_base: Option<(f32, TTSState<Q>)>,
     mut rng: Box<dyn crate::flow_lm::Rng + Send>,

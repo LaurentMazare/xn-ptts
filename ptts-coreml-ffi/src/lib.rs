@@ -10,7 +10,7 @@
 //! hand, so any change to a signature or to `PttsResult` has to be made there too.
 #![cfg(target_vendor = "apple")]
 
-use ptts::Tokenizer;
+use ptts::plan::Chunk;
 use ptts::preprocess::Normalize;
 use ptts_coreml::Weights;
 use ptts_coreml::phonon::driver::{Config, Phonon};
@@ -141,38 +141,35 @@ fn open(dir: &Path, unit: u32, lang: &str) -> Result<PttsHandle, String> {
 /// Mimi's frame rate, for the per-chunk frame budget.
 const FRAME_RATE: f64 = 12.5;
 
-/// Split `text` into chunks the prefill graph takes, as `(tokens, frames_after_eos)`.
+/// Split `text` into chunks the prefill graph takes.
 ///
-/// The same plan `ptts::synth` makes: normalize the whole input first, split it at sentence
-/// ends, and prepare each sentence on its own. A single sentence longer than the graph's rows
-/// is split again at its middle word; the tokenizer's ids per word do not depend on the words
-/// around them, so that loses nothing but the prosody across the cut.
-fn plan(h: &PttsHandle, text: &str) -> Result<Vec<(Vec<u32>, usize)>, String> {
+/// The chunks every frontend makes, from [`ptts::plan::chunks`], with one addition the graph
+/// forces: it has a fixed number of rows, so a single sentence longer than that is split again
+/// at its middle word. The tokenizer's ids per word do not depend on the words around them, so
+/// that loses nothing but the prosody across the cut.
+fn plan(h: &PttsHandle, text: &str) -> Result<Vec<Chunk>, String> {
     let max = h.phonon.max_tokens();
-    let text = h.normalize.apply(text);
-    let sentences = ptts::tts_model::split_into_best_sentences(&h.tokenizer, &text, Some(max))
+    let planned = ptts::plan::chunks(&h.tokenizer, text, h.normalize, max, FRAME_RATE)
         .map_err(|e| e.to_string())?;
     let mut chunks = Vec::new();
-    let mut todo: Vec<String> = sentences.into_iter().rev().collect();
-    while let Some(s) = todo.pop() {
-        let (prepared, frames_after_eos) = ptts::tts_model::prepare_text_prompt(&s);
-        let tokens = h.tokenizer.encode(&prepared).map_err(|e| e.to_string())?;
-        let words: Vec<&str> = s.split_whitespace().collect();
-        if tokens.len() > max && words.len() > 1 {
-            let (a, b) = words.split_at(words.len() / 2);
-            todo.push(b.join(" "));
-            todo.push(a.join(" "));
-        } else if tokens.len() > max {
+    let mut todo: Vec<Chunk> = planned.into_iter().rev().collect();
+    while let Some(chunk) = todo.pop() {
+        if chunk.tokens.len() <= max {
+            chunks.push(chunk);
+            continue;
+        }
+        let words: Vec<&str> = chunk.text.split_whitespace().collect();
+        if words.len() < 2 {
             return Err(format!(
                 "one word is {} tokens, over the {max} the model takes",
-                tokens.len()
+                chunk.tokens.len()
             ));
-        } else if !tokens.is_empty() {
-            chunks.push((tokens, frames_after_eos));
         }
-    }
-    if chunks.is_empty() {
-        return Err("nothing to say: the text is empty".into());
+        let (a, b) = words.split_at(words.len() / 2);
+        for half in [b, a] {
+            let half = Chunk::new(half.join(" "), &h.tokenizer, FRAME_RATE);
+            todo.push(half.map_err(|e| e.to_string())?);
+        }
     }
     Ok(chunks)
 }
@@ -186,15 +183,16 @@ fn speak(
     let chunks = plan(h, text)?;
     let (mut frames, mut samples, mut ttfa) = (0, 0, None);
     let mut pcm_buf = Vec::new();
-    for (tokens, frames_after_eos) in chunks {
-        let budget = ptts::plan::frame_budget(tokens.len(), FRAME_RATE);
-        let t = h.phonon.generate(&tokens, frames_after_eos, budget, &mut |pcm: &[f32]| {
-            // Core ML has been seen to hand back a stray non-finite sample; silence it rather
-            // than send it to the speaker.
-            pcm_buf.clear();
-            pcm_buf.extend(pcm.iter().map(|v| if v.is_finite() { *v } else { 0.0 }));
-            sink(&pcm_buf)
-        })?;
+    for chunk in chunks {
+        let (tokens, budget) = (&chunk.tokens, chunk.frame_budget);
+        let t =
+            h.phonon.generate(tokens, chunk.frames_after_eos, budget, &mut |pcm: &[f32]| {
+                // Core ML has been seen to hand back a stray non-finite sample; silence it rather
+                // than send it to the speaker.
+                pcm_buf.clear();
+                pcm_buf.extend(pcm.iter().map(|v| if v.is_finite() { *v } else { 0.0 }));
+                sink(&pcm_buf)
+            })?;
         ttfa.get_or_insert(start.elapsed() - t.total + t.ttfa);
         frames += t.frames;
         samples += t.samples;

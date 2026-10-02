@@ -27,10 +27,7 @@ use ptts::plan::{self, EosPolicy};
 use ptts::preprocess::{Normalize, Rules};
 use ptts::tok::Tok;
 use ptts::transformer::{LayerAttentionState, StreamingMHAState, StreamingTransformerState};
-use ptts::tts_model::{
-    MAX_TOKENS_PER_CHUNK, TTSConfig, TTSModel, TTSState, prepare_text_prompt,
-    split_into_best_sentences,
-};
+use ptts::tts_model::{MAX_TOKENS_PER_CHUNK, TTSConfig, TTSModel, TTSState};
 use xn::nn::{Linear, VB};
 use xn::quantized::Q80F32;
 use xn::{BackendQ, CPU, CpuDevice, Result, Tensor, TypedTensor, Unquantized};
@@ -105,13 +102,6 @@ macro_rules! dispatch {
     };
 }
 
-/// One sentence-aligned piece of the text, ready to prompt.
-struct ChunkPlan {
-    tokens: Vec<u32>,
-    frame_budget: usize,
-    frames_after_eos: usize,
-}
-
 /// The chunk currently being generated.
 struct ChunkState {
     tts_state: StateInner,
@@ -130,7 +120,7 @@ struct GenState {
     /// it, as `ptts::synth` does: chunks run one after the other, so sharing the KV storage
     /// is safe, and each overwrites only what lies past the voice prompt.
     base: RawState,
-    chunks: std::vec::IntoIter<ChunkPlan>,
+    chunks: std::vec::IntoIter<plan::Chunk>,
     current: Option<ChunkState>,
     /// One noise source for the whole text, so a seed fixes every chunk.
     rng: NormalRng,
@@ -289,29 +279,14 @@ impl Model {
         Ok(num_chunks)
     }
 
-    /// Normalize the whole text, split it into sentence-aligned chunks and tokenize each,
-    /// exactly as `ptts::synth` does: normalization first, because it rewrites the characters
-    /// the splitter looks for.
-    fn plan_chunks(&self, text: &str) -> Result<Vec<ChunkPlan>> {
+    /// The same chunks `ptts::synth` makes, from [`plan::chunks`].
+    fn plan_chunks(&self, text: &str) -> Result<Vec<plan::Chunk>> {
         let frame_rate = self.cfg.mimi.frame_rate;
-        let text = self.normalize.apply(text);
         with_model!(&self.inner, |m| {
-            let conditioner = &m.flow_lm.conditioner;
-            let Some(tokenizer) = conditioner.tokenizer.as_deref() else {
+            let Some(tokenizer) = m.flow_lm.conditioner.tokenizer.as_deref() else {
                 xn::bail!("this model was loaded without a tokenizer")
             };
-            let texts = split_into_best_sentences(tokenizer, &text, Some(MAX_TOKENS_PER_CHUNK))?;
-            let mut chunks = Vec::with_capacity(texts.len());
-            for text in texts {
-                let (prepared, frames_after_eos) = prepare_text_prompt(&text);
-                let tokens = conditioner.tokenize(&prepared)?;
-                let frame_budget = plan::frame_budget(tokens.len(), frame_rate);
-                chunks.push(ChunkPlan { tokens, frame_budget, frames_after_eos });
-            }
-            if chunks.is_empty() {
-                xn::bail!("nothing to synthesize: the text is empty")
-            }
-            Ok(chunks)
+            Ok(plan::chunks(tokenizer, text, self.normalize, MAX_TOKENS_PER_CHUNK, frame_rate)?)
         })
     }
 
