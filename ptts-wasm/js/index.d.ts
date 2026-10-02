@@ -78,8 +78,12 @@ export interface SpeechOptions {
   voice?: string;
   /** Sampling temperature. Default `0.3`. */
   temperature?: number;
-  /** Noise seed: the same text, voice, temperature and seed give the same audio. Default `42`. */
-  seed?: number;
+  /**
+   * Noise seed: the same text, voice, temperature and seed give the same audio, here and in
+   * the Rust and Python packages. Default `4242424242424242`, as there. Above
+   * `Number.MAX_SAFE_INTEGER`, pass a `bigint`.
+   */
+  seed?: number | bigint;
   /** Aborting stops the generation; the stream ends with what was produced so far. */
   signal?: AbortSignal;
 }
