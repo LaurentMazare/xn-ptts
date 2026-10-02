@@ -855,7 +855,7 @@ impl<Q: BackendQ> SessionOf<Q> {
         chunks: Vec<Chunk>,
         rng: Box<dyn crate::flow_lm::Rng + Send>,
     ) -> Result<SpeechStream> {
-        // `c.seq_budget` reserves PROMPT_SEQ_HEADROOM for a voice prompt whose
+        // `Chunk::seq_budget` reserves PROMPT_SEQ_HEADROOM for a voice prompt whose
         // real length this session knows, so it over-states what is needed for
         // a short prompt and under-states it for a long one.
         let needed = chunks

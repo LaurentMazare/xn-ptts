@@ -87,9 +87,13 @@ impl EosPolicy {
 }
 
 /// One piece of the text, ready to prompt the model with.
+///
+/// Built by [`chunks`] or [`Chunk::new`], so the budgets always match the tokens.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Chunk {
-    /// The piece of normalized text, before [`crate::tts_model::prepare_text_prompt`].
+    /// The piece of normalized text, before [`crate::tts_model::prepare_text_prompt`]; empty
+    /// for a chunk built from tokens alone.
     pub text: String,
     pub tokens: Vec<u32>,
     /// The tail [`EosPolicy`] runs after the model signals the end.

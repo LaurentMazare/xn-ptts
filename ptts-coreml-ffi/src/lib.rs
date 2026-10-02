@@ -154,6 +154,9 @@ fn plan(h: &PttsHandle, text: &str) -> Result<Vec<Chunk>, String> {
     let mut chunks = Vec::new();
     let mut todo: Vec<Chunk> = planned.into_iter().rev().collect();
     while let Some(chunk) = todo.pop() {
+        if chunk.tokens.is_empty() {
+            continue;
+        }
         if chunk.tokens.len() <= max {
             chunks.push(chunk);
             continue;
