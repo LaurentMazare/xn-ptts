@@ -1,3 +1,5 @@
+//! Writing PCM as a 16-bit WAV file.
+
 use std::io::prelude::*;
 
 pub trait Sample {

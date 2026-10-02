@@ -1,3 +1,8 @@
+//! The streaming transformer both the flow LM and Mimi are built on, with its KV caches.
+//!
+//! [`StreamingTransformerState`] holds one cache per layer. [`Kind`] picks which model a layer
+//! belongs to, as the two lay out their attention differently.
+
 use crate::layer_scale::LayerScale;
 use crate::rope::RotaryEmbedding;
 use xn::nn::{LayerNorm, Linear, var_builder::Path};

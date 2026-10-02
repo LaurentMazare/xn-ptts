@@ -1,3 +1,6 @@
+//! Loudness normalization for voice prompts: [`normalize_loudness`] brings a recording to a
+//! fixed level before the speaker encoder embeds it.
+
 use xn::Result;
 
 /// Target loudness (in dB LUFS) used when normalizing voice-embedding input.

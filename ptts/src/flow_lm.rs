@@ -1,3 +1,9 @@
+//! The flow-matching language model. Conditioned on the voice and the text tokens, it emits one
+//! Mimi latent per frame, and with it the logit that decides when speech ends.
+//!
+//! [`FlowLM`] is the model and [`FlowLMState`] its KV cache. The noise each step samples comes
+//! from an [`Rng`]: [`NormalRng`] normally, or [`ReplayRng`] to replay a recorded sequence.
+
 use crate::conditioners::LUTConditioner;
 use crate::mlp::SimpleMLPAdaLN;
 use crate::transformer::{StreamingTransformer, StreamingTransformerState};

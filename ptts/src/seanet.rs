@@ -81,8 +81,6 @@ pub struct SEANetEncoder<T: WithDTypeF, B: Backend> {
     init_conv: StreamingConv1d<T, B>,
     layers: Vec<EncoderLayer<T, B>>,
     final_conv: StreamingConv1d<T, B>,
-    pub hop_length: usize,
-    pub dimension: usize,
 }
 
 type EncoderLayerState<T, B> = (Vec<SEANetResnetBlockState<T, B>>, StreamingConv1dState<T, B>);
@@ -112,7 +110,6 @@ impl<T: WithDTypeF, B: Backend> SEANetEncoder<T, B> {
     ) -> Result<Self> {
         // Ratios are reversed for encoder
         let ratios: Vec<usize> = ratios.iter().rev().copied().collect();
-        let hop_length: usize = ratios.iter().product();
 
         let mut mult = 1usize;
         let init_conv = StreamingConv1d::load(
@@ -176,7 +173,7 @@ impl<T: WithDTypeF, B: Backend> SEANetEncoder<T, B> {
             true,
         )?;
 
-        Ok(Self { init_conv, layers, final_conv, hop_length, dimension })
+        Ok(Self { init_conv, layers, final_conv })
     }
 
     pub fn init_state(&self, batch_size: usize) -> Result<SEANetEncoderState<T, B>> {

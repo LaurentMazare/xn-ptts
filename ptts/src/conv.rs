@@ -22,7 +22,6 @@ pub struct Conv1d<T: WithDTypeF, B: Backend> {
     pub dilation: usize,
     pub kernel_size: usize,
     pub in_channels: usize,
-    pub out_channels: usize,
     pub groups: usize,
 }
 
@@ -40,7 +39,7 @@ impl<T: WithDTypeF, B: Backend> Conv1d<T, B> {
     ) -> Result<Self> {
         let weight = vb.tensor("weight", (out_channels, in_channels / groups, kernel_size))?;
         let bias = if bias { Some(vb.tensor("bias", (out_channels,))?) } else { None };
-        Ok(Self { weight, bias, stride, dilation, kernel_size, in_channels, out_channels, groups })
+        Ok(Self { weight, bias, stride, dilation, kernel_size, in_channels, groups })
     }
 
     pub fn forward(&self, x: &Tensor<T, B>) -> Result<Tensor<T, B>> {

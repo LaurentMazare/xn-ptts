@@ -1,3 +1,9 @@
+//! The Mimi neural audio codec.
+//!
+//! [`MimiDecoder`] turns the flow LM's latents into 24 kHz PCM, one frame at a time, keeping
+//! its streaming state in [`MimiDecoderState`]. [`MimiEncoder`] goes the other way and is used
+//! only to embed a voice prompt from audio.
+
 use crate::conv::pad_for_conv1d;
 use crate::conv::{StreamingConv1dState, StreamingConvTr1dState};
 use crate::dummy_quantizer::DummyQuantizer;

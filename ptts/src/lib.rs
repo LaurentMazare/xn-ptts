@@ -41,7 +41,7 @@
 //! | [`audio`] | Decoding and resampling audio files for voice cloning, behind `audio`. |
 //! | [`tts_model`] | [`tts_model::TTSModel`], the streaming primitives `synth` drives. |
 //! | [`flow_lm`], [`transformer`] | The token-conditioned flow-matching LM. |
-//! | [`mimi`], [`seanet`] | The neural audio codec. |
+//! | [`mimi`] | The neural audio codec. |
 //!
 //! # Errors
 //!
@@ -74,20 +74,20 @@
 
 #[cfg(feature = "audio")]
 pub mod audio;
-pub mod conditioners;
-pub mod conv;
-pub mod dummy_quantizer;
+mod conditioners;
+mod conv;
+mod dummy_quantizer;
 pub mod error;
 pub mod flow_lm;
-pub mod layer_scale;
+mod layer_scale;
 pub mod loader;
 pub mod mimi;
-pub mod mlp;
+mod mlp;
 pub mod plan;
 pub mod preprocess;
-pub mod resample;
-pub mod rope;
-pub mod seanet;
+mod resample;
+mod rope;
+mod seanet;
 // Not on wasm: `Synth` runs the flow LM and the Mimi decoder on two `std::thread`s, and
 // `wasm32-unknown-unknown` has none -- `spawn` there compiles and then panics. Browser
 // frontends drive `tts_model::TTSModel` directly instead.

@@ -1,3 +1,10 @@
+//! [`TTSModel`], the flow LM and the Mimi decoder together, and [`TTSConfig`], a checkpoint's
+//! `config.json`.
+//!
+//! It exposes generation one step at a time: prompt the state with a voice and text, step out
+//! latents, decode them. [`crate::synth`] drives these steps on two threads. A caller with its
+//! own event loop, such as the browser build, drives them directly.
+
 use crate::flow_lm::{FlowLM, FlowLMConfig, FlowLMState};
 use crate::mimi::{MimiConfig, MimiDecoder, MimiDecoderState, MimiEncoder};
 use xn::nn::{Linear, var_builder::Path};
