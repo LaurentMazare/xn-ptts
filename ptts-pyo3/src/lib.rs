@@ -122,7 +122,7 @@ fn resolve(config: Option<&str>, quant: Quant, temperature: f32) -> ptts::Result
             }
             let default_voice = parent.join(DEFAULT_VOICE_FILE);
             if default_voice.is_file() {
-                voices.push(("default".to_string(), default_voice));
+                push_voice(&mut voices, "default".to_string(), default_voice);
             }
             Ok(Artifacts { cfg, model_path, tokenizer_path: parent.join("tokenizer.json"), voices })
         }
@@ -152,6 +152,10 @@ fn resolve_hub(
                 })
                 .collect()
         });
+    // Without a listing every name is a guess, and one that was never cached fails offline with
+    // a network error rather than a not-found. So it counts as absent, letting a later name the
+    // cache does hold be found, and the first such error is reported only if no weights resolve.
+    let first_err = std::cell::RefCell::new(None);
     let get_optional = |name: &str| -> ptts::Result<Option<std::path::PathBuf>> {
         if listing.as_ref().is_some_and(|files| !files.iter().any(|f| f == name)) {
             return Ok(None);
@@ -159,6 +163,10 @@ fn resolve_hub(
         match hub_get(repo, name) {
             Ok(path) => Ok(Some(path)),
             Err(ptts::Error::NotFound(_)) => Ok(None),
+            Err(e) if listing.is_none() => {
+                first_err.borrow_mut().get_or_insert(e);
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     };
@@ -181,23 +189,26 @@ fn resolve_hub(
             break;
         }
     }
-    let model_path = model_path.ok_or_else(|| {
-        ptts::Error::NotFound(format!(
-            "no weights in `{repo_id}`; expected one of {}",
-            candidates.join(", ")
-        ))
-    })?;
+    let Some(model_path) = model_path else {
+        return Err(first_err.borrow_mut().take().unwrap_or_else(|| {
+            ptts::Error::NotFound(format!(
+                "no weights in `{repo_id}`; expected one of {}",
+                candidates.join(", ")
+            ))
+        }));
+    };
     let tokenizer_path = hub_get(repo, "tokenizer.json")?;
 
     let voice_files: Vec<(String, String)> = match &listing {
-        Some(files) => files
+        // Directory by directory, so a name in both resolves the same way every time.
+        Some(files) => VOICE_DIRS
             .iter()
-            .filter_map(|f| {
-                let (dir, file) = f.split_once('/')?;
-                let name = file.strip_suffix(".safetensors")?;
-                (VOICE_DIRS.contains(&dir) && !name.contains('/'))
-                    .then(|| (name.to_string(), f.clone()))
+            .flat_map(|&dir| {
+                files.iter().filter_map(move |f| {
+                    hub_voice_name(f).filter(|(d, _)| *d == dir).map(|(_, name)| (name, f))
+                })
             })
+            .map(|(name, f)| (name.to_string(), f.clone()))
             .collect(),
         None => POCKET_TTS_VOICES
             .iter()
@@ -211,10 +222,31 @@ fn resolve_hub(
         // A voice that will not download is skipped, as one that will not load is: `TTS.voices`
         // shows which ones made it.
         if let Ok(Some(path)) = get_optional(&file) {
-            voices.push((name, path));
+            push_voice(&mut voices, name, path);
         }
     }
     Ok(Artifacts { cfg, model_path, tokenizer_path, voices })
+}
+
+/// The directory and voice name of a repo file that is a voice: a `.safetensors` directly
+/// under one of [`VOICE_DIRS`]. Anything deeper, or in another directory, is not.
+fn hub_voice_name(path: &str) -> Option<(&str, &str)> {
+    let (dir, file) = path.split_once('/')?;
+    let name = file.strip_suffix(".safetensors")?;
+    (VOICE_DIRS.contains(&dir) && !name.contains('/')).then_some((dir, name))
+}
+
+/// Add a voice unless one of that name is already there: the first found wins, so `voices/`
+/// beats `embeddings/`, and both beat `default-voice.safetensors`. `Synth` would otherwise keep
+/// whichever it registered last.
+fn push_voice(
+    voices: &mut Vec<(String, std::path::PathBuf)>,
+    name: String,
+    path: std::path::PathBuf,
+) {
+    if !voices.iter().any(|(n, _)| *n == name) {
+        voices.push((name, path));
+    }
 }
 
 /// A config that is there but unreadable, as opposed to one that is missing.
@@ -260,7 +292,7 @@ fn collect_voices(dir: &std::path::Path, voices: &mut Vec<(String, std::path::Pa
             continue;
         }
         if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-            voices.push((name.to_string(), path));
+            push_voice(voices, name.to_string(), path);
         }
     }
 }
@@ -580,7 +612,11 @@ impl Tts {
             // afterwards -- `clone_voice` on a repo that ships none -- is used
             // without having to name it on every call.
             if opts.voice.is_none() {
-                opts.voice = synth.voices().first().cloned();
+                // The checkpoint's own `default-voice.safetensors` when it ships one, as in
+                // the `ptts` example, and otherwise the first by name.
+                let voices = synth.voices();
+                opts.voice =
+                    voices.iter().find(|v| *v == "default").or_else(|| voices.first()).cloned();
             }
             synth.stream_with(text, &opts).py()
         })
@@ -726,4 +762,40 @@ fn ptts_(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(available_quants, m)?)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_files_directly_in_a_voice_dir_are_voices() {
+        assert_eq!(hub_voice_name("voices/Freya.safetensors"), Some(("voices", "Freya")));
+        assert_eq!(hub_voice_name("embeddings/alba.safetensors"), Some(("embeddings", "alba")));
+        for path in [
+            "embeddings_v2/alba.safetensors",
+            "languages/french/embeddings/alba.safetensors",
+            "voices/sub/alba.safetensors",
+            "voices/readme.md",
+            "default-voice.safetensors",
+        ] {
+            assert_eq!(hub_voice_name(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn q8_weights_lead_only_for_q8() {
+        assert_eq!(weight_candidates(Quant::Q80)[0], "model.q8.gguf");
+        for quant in [Quant::F32, Quant::Q4k, Quant::Q81] {
+            assert_eq!(weight_candidates(quant)[0], "model.safetensors", "{quant:?}");
+        }
+    }
+
+    #[test]
+    fn the_first_voice_of_a_name_wins() {
+        let mut voices = vec![];
+        push_voice(&mut voices, "a".into(), "voices/a.safetensors".into());
+        push_voice(&mut voices, "a".into(), "embeddings/a.safetensors".into());
+        assert_eq!(voices, [("a".to_string(), "voices/a.safetensors".into())]);
+    }
 }

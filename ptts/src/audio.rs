@@ -164,7 +164,8 @@ mod tests {
     fn a_written_wav_decodes_to_the_same_samples() {
         let pcm: Vec<f32> =
             (0..2400).map(|i| (i as f32 * 0.05).sin() * 0.8).chain([1.0, -1.0, 0.0]).collect();
-        let path = std::env::temp_dir().join(format!("ptts-wav-{}.wav", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("ptts-wav-round-trip-{}.wav", std::process::id()));
         crate::wav::write_wav_file(&path, &pcm, 24000).unwrap();
         let decoded = decode_file(&path);
         std::fs::remove_file(&path).unwrap();

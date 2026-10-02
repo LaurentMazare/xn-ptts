@@ -36,7 +36,7 @@ with tts.stream("A longer sentence.", voice=voice) as audio:
 
 `tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early.
 
-`tts.voices` lists the voices that were found, and the first one is used when no voice is given. Pass `voice="name"` to any speech method to select one.
+`tts.voices` lists the voices that were found. When no voice is given, `default` is used if the checkpoint ships one, and otherwise the first by name. Pass `voice="name"` to any speech method to select one.
 
 ## Command line
 
