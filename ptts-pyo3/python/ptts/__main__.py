@@ -31,6 +31,12 @@ def _parser() -> argparse.ArgumentParser:
         help="required: normalize text as en, fr, de, es, pt, or none to skip",
     )
     p.add_argument(
+        "-r",
+        "--rewrites",
+        help="word rewrites to run: all, none, or a comma-separated list such as numbers"
+        " (default: all)",
+    )
+    p.add_argument(
         "-m",
         "--model",
         help="Hugging Face repo id or path to a local config.json (default: the published one)",
@@ -73,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         set_num_threads(args.threads)
 
     kwargs: dict[str, object] = {"lang": args.lang}
-    for name in ("config", "device", "quant", "voice", "seed", "temperature"):
+    for name in ("config", "device", "quant", "voice", "seed", "temperature", "rewrites"):
         value = getattr(args, {"config": "model"}.get(name, name))
         if value is not None:
             kwargs[name] = value
