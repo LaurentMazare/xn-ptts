@@ -8,6 +8,7 @@ deselected by default -- see `pyproject.toml`.
 from __future__ import annotations
 
 import ast
+from importlib import metadata
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,19 @@ def test_the_package_is_marked_typed():
 
 def test_the_stubs_ship_with_the_wheel():
     assert (Path(ptts.__file__).parent / "__init__.pyi").is_file()
+
+
+@pytest.mark.parametrize(
+    ("name", "needle"),
+    [("LICENSE-MIT", "Permission is hereby granted"), ("LICENSE-APACHE", "Apache License")],
+)
+def test_the_licenses_ship_with_the_wheel(name, needle):
+    # `ptts-pyo3/LICENSE-*` are symlinks to the repository root. A checkout without symlink
+    # support makes each one a file holding its target's path, which would then ship instead.
+    dist = metadata.distribution("ptts")
+    assert dist.metadata["License-Expression"] == "MIT OR Apache-2.0"
+    text = dist.read_text(f"licenses/{name}")
+    assert text is not None and needle in text, f"{name} in the wheel holds {text!r:.80}"
 
 
 def test_the_stubs_cover_everything_the_extension_exports():
