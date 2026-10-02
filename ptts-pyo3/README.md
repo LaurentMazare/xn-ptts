@@ -48,3 +48,7 @@ uv run --project ptts-pyo3 --locked ptts --lang en --quant q8 \
 ```
 
 `--voice` selects a loaded voice, and `--list-voices` prints the available names. Run with `--help` for the remaining options. The package ships type stubs and `py.typed`.
+
+## License
+
+MIT or Apache-2.0, at your option. The model weights are not part of the package and come with their own license.

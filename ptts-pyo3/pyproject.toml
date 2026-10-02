@@ -1,5 +1,6 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+# 1.9.2: the first release that writes `license` below as a PEP 639 `License-Expression`.
+requires = ["maturin>=1.9.2,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -7,6 +8,9 @@ name = "ptts"
 description = "Text to 24 kHz speech, on device. No PyTorch."
 readme = "README.md"
 requires-python = ">=3.9"
+license = "MIT OR Apache-2.0"
+# Links to the files at the repository root, which PEP 639 does not let this name directly.
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 authors = [{ name = "Laurent Mazare" }, { name = "Gradium" }]
 keywords = ["tts", "text-to-speech", "speech-synthesis", "voice-cloning", "on-device"]
 classifiers = [

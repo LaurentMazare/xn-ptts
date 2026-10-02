@@ -183,7 +183,8 @@ impl Encoder {
 }
 
 // Taken from: https://github.com/bericyb/law-encoder/blob/main/src/encoder.rs
-// Licensed under the MIT License.
+// Copyright (c) 2024 Beric Bearnson. Licensed under the MIT License, whose text is in
+// LICENSE-MIT at the root of this repository.
 // TODO(laurent): double check the implementation.
 mod law_encoder {
     const CLIP: i16 = 0x1FFF;

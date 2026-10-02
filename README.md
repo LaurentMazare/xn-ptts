@@ -172,3 +172,14 @@ Cross-Origin-Embedder-Policy: require-corp
 ```
 
 With them, the page can only load cross-origin files that opt in through CORS, which matters if the model is served from another origin. `tts.threads` says how many threads it got, and `tts.threadsReason` why.
+
+## License
+
+The code in this repository is licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. The model weights are not part of this repository and come with their own license.
+
+Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in this repository, as defined in the Apache-2.0 license, is dual licensed as above, without any additional terms or conditions.
