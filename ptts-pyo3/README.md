@@ -49,6 +49,13 @@ uv run --project ptts-pyo3 --locked ptts --lang en --quant q8 \
 
 `--voice` selects a loaded voice, and `--list-voices` prints the available names. Run with `--help` for the remaining options. The package ships type stubs and `py.typed`.
 
+## Wheels
+
+Released wheels are `cp39-abi3`, so one per platform covers every CPython from 3.9 on, and a
+new CPython release needs no new wheel. Free-threaded CPython and PyPy cannot load an abi3
+extension, so those two install from the sdist and compile the Rust runtime, which needs a
+Rust toolchain and takes a few minutes.
+
 ## License
 
 MIT or Apache-2.0, at your option. The model weights are not part of the package and come with their own license.
