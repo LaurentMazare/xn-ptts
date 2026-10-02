@@ -1,6 +1,6 @@
 //! Reading audio files, for voice cloning.
 //!
-//! [`crate::synth::SynthOf::add_voice_from_pcm`] wants mono `f32` at the
+//! [`crate::synth::SynthApi::add_voice_from_pcm`] wants mono `f32` at the
 //! speaker codec's sample rate, which means decoding a file and resampling it.
 //! Both examples that clone a voice need exactly that, and so does anything
 //! outside this repo, so it lives here rather than in a private example module

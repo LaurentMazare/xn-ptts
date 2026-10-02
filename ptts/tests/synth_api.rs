@@ -102,9 +102,7 @@ fn explicit_device_survives_resolution() {
 
 #[test]
 fn missing_weights_are_a_not_found_naming_the_path() {
-    let err = builder("/definitely/not/a/model/weights.safetensors")
-        .load::<xn::Unquantized<f32, xn::CpuDevice>>(xn::CPU)
-        .unwrap_err();
+    let err = builder("/definitely/not/a/model/weights.safetensors").build().unwrap_err();
     assert!(matches!(err, Error::NotFound(_)), "{err:?}");
     assert!(err.to_string().contains("/definitely/not/a/model/weights.safetensors"), "{err}");
 }
@@ -115,7 +113,7 @@ fn a_load_without_a_tokenizer_says_how_to_supply_one() {
     // is not a checkpoint, but the tokenizer is resolved before it is read.
     let weights = std::env::temp_dir().join("ptts-synth-api-no-tokenizer.safetensors");
     std::fs::write(&weights, b"").unwrap();
-    let err = builder(&weights).load::<xn::Unquantized<f32, xn::CpuDevice>>(xn::CPU).unwrap_err();
+    let err = builder(&weights).build().unwrap_err();
     assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
     assert!(err.to_string().contains("SynthBuilder::tokenizer"), "{err}");
     std::fs::remove_file(&weights).ok();
@@ -170,17 +168,10 @@ fn session_is_part_of_the_public_api() {
     }
 }
 
-#[test]
-fn a_generic_session_is_nameable_too() {
-    // `ptts-wasm` and anything else that fixes its weight format at compile
-    // time uses `SessionOf<Q>` rather than the erased `Session`.
-    fn _accepts<Q: xn::BackendQ>(_: &ptts::synth::SessionOf<Q>) {}
-}
-
 /// `Session` needs `Sync` as well as `Send`: `ptts-ws-server` holds a
 /// `&Session` across an await, and tokio requires that future to be `Send`.
 /// That does **not** make concurrent generation from one session safe — see the
-/// note on `SessionOf`, which the type cannot enforce. `SpeechStream` is `Send`
+/// note on `Session`, which the type cannot enforce. `SpeechStream` is `Send`
 /// only: it owns an mpsc receiver, which is why `ptts-pyo3` wraps it in a mutex.
 #[test]
 fn the_types_the_frontends_move_between_threads_still_can() {
@@ -189,9 +180,7 @@ fn the_types_the_frontends_move_between_threads_still_can() {
     // `ptts-ws-server` is built on `anyhow`, which only accepts a `Send + Sync` error.
     send_sync::<ptts::Error>();
     send_sync::<ptts::synth::Synth>();
-    send_sync::<ptts::synth::SynthOf<xn::Unquantized<f32, xn::CpuDevice>>>();
     send_sync::<ptts::synth::Session>();
-    send_sync::<ptts::synth::SessionOf<xn::Unquantized<f32, xn::CpuDevice>>>();
     send::<ptts::synth::SpeechStream>();
 }
 

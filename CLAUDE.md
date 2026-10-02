@@ -160,10 +160,9 @@ Top-level orchestrator is `tts_model::TTSModel<Q>`, generic over a backend-quant
 `synth::Synth` sits on top of all of it: `synth::SynthBuilder::new(config, weights)` loads a
 checkpoint whose files the caller has already located and registers voices,
 `plan` supplies the frame/KV budgets and the EOS policy, and `Synth::say` / `Synth::stream`
-run the flow LM and the Mimi decoder on two threads. `Synth` erases the `Q` parameter behind
-an enum so a CLI flag can pick the weight format; `SynthBuilder::load::<Q>` skips that for
-callers who want it fixed at compile time. `ptts-pyo3`, `ptts-wasm` and `ptts-ws-server`
-still drive `TTSModel` directly.
+run the flow LM and the Mimi decoder on two threads. `Synth` erases the `Q` parameter behind a trait object (`Box<dyn SynthApi>`, which it
+dereferences to) so a CLI flag can pick the weight format; the generic `SynthOf<Q>` is
+private. `ptts-wasm` still drives `TTSModel` directly.
 
 Generation is streaming and stateful: callers `init_flow_lm_state(batch, seq_len)`, then `prompt_text*` / `prompt_audio` to seed the state, then step-decode latents and feed them into `MimiDecoderState`. `lsd_decode_steps` controls flow-matching solver steps; `eos_threshold` controls termination. The default `TTSConfig::v202601` configuration is the canonical one consumed by all three frontends.
 
