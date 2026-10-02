@@ -262,4 +262,18 @@ mod tests {
         assert_eq!(rewrite_word("1234", Lang::En, Rules::NONE), None);
         assert_eq!(rewrite_word("1234", Lang::De, Rules::ALL).as_deref(), Some("ein Tausend 234"));
     }
+
+    #[test]
+    fn rules_parse_lists_spaces_and_case() {
+        // What a CLI flag or a Python string is likely to hold.
+        assert_eq!(Rules::parse(" Numbers ").unwrap(), Rules::ALL);
+        assert_eq!(Rules::parse("numbers, numbers").unwrap(), Rules::ALL);
+        assert_eq!(Rules::parse("ALL").unwrap(), Rules::ALL);
+        assert_eq!(Rules::parse("Off").unwrap(), Rules::NONE);
+        let err = Rules::parse("numbers,dates").unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidArgument(_)), "{err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("dates") && msg.contains("numbers"), "{msg}");
+        assert!(Rules::parse("").is_err());
+    }
 }

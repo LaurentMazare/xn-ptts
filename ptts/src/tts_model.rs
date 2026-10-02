@@ -548,4 +548,47 @@ mod tests {
             ("One two three four five.".to_string(), 1)
         );
     }
+
+    #[test]
+    fn prepare_text_prompt_edge_cases() {
+        let cases: &[(&str, &str, usize)] = &[
+            ("", "", 3),
+            ("  \n ", "", 3),
+            // Only a trailing letter or digit gets a full stop; other punctuation is kept.
+            ("is it?", "Is it?", 3),
+            ("hello world!", "Hello world!", 3),
+            ("call me at 5", "Call me at 5.", 3),
+            // Line breaks, CRLF included, and runs of spaces become one space.
+            ("one\r\ntwo   three\nfour five", "One two three four five.", 1),
+            ("éclair au chocolat", "Éclair au chocolat.", 3),
+        ];
+        for &(input, text, frames) in cases {
+            assert_eq!(prepare_text_prompt(input), (text.to_string(), frames), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn config_round_trips_and_fills_defaults() {
+        let cfg = TTSConfig::v202601(0.3);
+        let json = serde_json::to_value(&cfg).unwrap();
+        let back: TTSConfig = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), json);
+
+        // A config written before these fields existed still loads, with their defaults.
+        let mut old = json;
+        let fields = old.as_object_mut().unwrap();
+        for key in [
+            "audio_prompt_min_duration",
+            "audio_prompt_max_duration",
+            "cfg_null_audio_empty",
+            "speaker_mimi",
+        ] {
+            assert!(fields.remove(key).is_some(), "{key} is no longer in the config");
+        }
+        let old: TTSConfig = serde_json::from_value(old).unwrap();
+        assert_eq!(old.audio_prompt_min_duration, default_audio_prompt_min_duration());
+        assert_eq!(old.audio_prompt_max_duration, default_audio_prompt_max_duration());
+        assert!(!old.cfg_null_audio_empty);
+        assert!(old.speaker_mimi.is_none());
+    }
 }
