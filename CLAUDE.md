@@ -73,7 +73,7 @@ cargo run --release --features hf,accelerate --example bench -- \
   --voice voices/freya.safetensors --threads 8 --iters 20
 ```
 
-`bench` takes explicit paths and a precomputed voice embedding, never downloads, and reports time-to-first-audio, per-frame time, total generate time and RTF over `--iters` runs, excluding the one-off model load and voice conditioning. It decodes each frame on the generating thread rather than overlapping Mimi with the next frame's sampling as the `ptts` example does, so its RTF (generate time over audio duration, lower is better) reads higher than that example for the same weights — don't compare the two directly. `--threads` defaults to xn's one-per-logical-core, usually too many for a single autoregressive stream. For profiling rather than measuring, `ptts --chrome-tracing` writes a Chrome trace for https://ui.perfetto.dev.
+`bench` takes explicit paths and a precomputed voice embedding, never downloads, and reports time-to-first-audio, per-frame time, total generate time and RTF over `--iters` runs, excluding the one-off model load and voice conditioning. It decodes each frame on the generating thread rather than overlapping Mimi with the next frame's sampling as the `ptts` example does, so its RTF (generate time over audio duration, lower is better) reads higher than that example for the same weights — don't compare the two directly. `--threads` defaults to xn's one-per-logical-core, usually too many for a single autoregressive stream. For profiling rather than measuring, `ptts --chrome-tracing` writes a Chrome trace for https://ui.perfetto.dev. For a sampling profiler (samply, Instruments, perf), build with `--profile profiling` instead of `--release`: the release profile carries no debug info, and `profiling` is release plus symbols. Binaries then land in `target/profiling/`.
 
 ## WASM build
 
@@ -122,10 +122,10 @@ than by argparse, so that `--build-info` still works without one.
 and a new CPython release needs no rebuild. abi3 does not load on free-threaded CPython and
 PyPy needs its own ABI; both fall back to the sdist, which `sdist-fallback` compiles and tests
 on `3.14t` and `pypy3.11`. It is deliberately outside `release`'s `needs`: those users compile
-either way, so blocking everyone else's wheels would not help them. Wheels are built `--strip`,
-because `[profile.release]` keeps `debug = true` for profiling and on Linux that debug info
-lands inside the `.so`, which is what made the published 0.2.2 Linux wheels 41 MB against
-3.9 MB for macOS and Windows.
+either way, so blocking everyone else's wheels would not help them. Wheels are built `--strip`:
+on Linux debug info lands inside the `.so`, which is what made the published 0.2.2 Linux wheels
+41 MB against 3.9 MB for macOS and Windows. `[profile.release]` no longer carries debug info,
+so `--strip` is now a guard rather than a fix.
 `pyproject.toml` deliberately has no `features` key under `[tool.maturin]`: a `--features` on
 the maturin command line replaces that list rather than adding to it, so `pyo3/extension-module`
 lives in `ptts-pyo3/Cargo.toml` where the macOS job's `--features accelerate` cannot drop it.
