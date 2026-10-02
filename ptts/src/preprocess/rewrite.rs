@@ -23,10 +23,14 @@ impl Rules {
 
     /// Every rule this version implements.
     pub const ALL: Self = Self((1 << RULES.len()) - 1);
+}
 
-    /// Parse the frontends' `--rewrites` flag: `all`, `none`, or a comma-separated list of rule
-    /// names.
-    pub fn parse(s: &str) -> crate::Result<Self> {
+/// Parse the frontends' `--rewrites` flag: `all`, `none`, or a comma-separated list of rule
+/// names.
+impl std::str::FromStr for Rules {
+    type Err = crate::Error;
+
+    fn from_str(s: &str) -> crate::Result<Self> {
         match s.trim().to_lowercase().as_str() {
             "all" => Ok(Self::ALL),
             "none" | "off" => Ok(Self::NONE),
@@ -253,10 +257,10 @@ mod tests {
 
     #[test]
     fn rules_pick_what_runs() {
-        assert_eq!(Rules::parse("all").unwrap(), Rules::ALL);
-        assert_eq!(Rules::parse("numbers").unwrap(), Rules::ALL);
-        assert_eq!(Rules::parse("none").unwrap(), Rules::NONE);
-        assert!(Rules::parse("dates").is_err());
+        assert_eq!("all".parse::<Rules>().unwrap(), Rules::ALL);
+        assert_eq!("numbers".parse::<Rules>().unwrap(), Rules::ALL);
+        assert_eq!("none".parse::<Rules>().unwrap(), Rules::NONE);
+        assert!("dates".parse::<Rules>().is_err());
         assert_eq!(rewrite_word("1234", Lang::En, Rules::ALL).as_deref(), Some("1 thousand 234"));
         assert_eq!(rewrite_word("1234", Lang::Fr, Rules::ALL).as_deref(), Some("mille 234"));
         assert_eq!(rewrite_word("1234", Lang::En, Rules::NONE), None);
@@ -266,14 +270,14 @@ mod tests {
     #[test]
     fn rules_parse_lists_spaces_and_case() {
         // What a CLI flag or a Python string is likely to hold.
-        assert_eq!(Rules::parse(" Numbers ").unwrap(), Rules::ALL);
-        assert_eq!(Rules::parse("numbers, numbers").unwrap(), Rules::ALL);
-        assert_eq!(Rules::parse("ALL").unwrap(), Rules::ALL);
-        assert_eq!(Rules::parse("Off").unwrap(), Rules::NONE);
-        let err = Rules::parse("numbers,dates").unwrap_err();
+        assert_eq!(" Numbers ".parse::<Rules>().unwrap(), Rules::ALL);
+        assert_eq!("numbers, numbers".parse::<Rules>().unwrap(), Rules::ALL);
+        assert_eq!("ALL".parse::<Rules>().unwrap(), Rules::ALL);
+        assert_eq!("Off".parse::<Rules>().unwrap(), Rules::NONE);
+        let err = "numbers,dates".parse::<Rules>().unwrap_err();
         assert!(matches!(err, crate::Error::InvalidArgument(_)), "{err:?}");
         let msg = err.to_string();
         assert!(msg.contains("dates") && msg.contains("numbers"), "{msg}");
-        assert!(Rules::parse("").is_err());
+        assert!("".parse::<Rules>().is_err());
     }
 }

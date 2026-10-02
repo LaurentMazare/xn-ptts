@@ -123,8 +123,8 @@ test('rewrites is checked before anything is downloaded, then handed to the work
   assert.equal(FakeWorker.last.init.rewrites, undefined);
 });
 
-test('the rewrites check accepts exactly what Rules::parse accepts', async () => {
-  // `Rules::parse` trims and lowercases, and takes `off` as a synonym for `none`.
+test('the rewrites check accepts exactly what the Rust Rules parser accepts', async () => {
+  // `Rules`'s `FromStr` trims and lowercases, and takes `off` as a synonym for `none`.
   for (const value of ['off', 'ALL', ' none ', 'Numbers', 'numbers']) {
     await PhononTTS.load({ lang: 'en', rewrites: value, model: MODEL, workerUrl: 'worker.js' });
     assert.equal(FakeWorker.last.init.rewrites, value, 'passed through as written');

@@ -7,22 +7,22 @@
 //! latents through the Mimi decoder on a second thread.
 //!
 //! ```no_run
-//! # fn main() -> xn::Result<()> {
+//! # fn main() -> ptts::Result<()> {
 //! use ptts::synth::Synth;
 //! use ptts::tts_model::TTSConfig;
 //!
-//! use ptts::preprocess::{Lang, Normalize};
+//! use ptts::preprocess::Lang;
 //!
 //! let tts = Synth::builder(
 //!     TTSConfig::v202601(),
 //!     "model/model.safetensors",
-//!     Normalize::for_lang(Lang::En),
+//!     Lang::En,
 //! )
 //! .tokenizer_file("model/tokenizer.json")
 //!     .add_voice("alba", "model/voices/alba.safetensors")
 //!     .build()?;
 //! let pcm = tts.say("Hello world")?;
-//! ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate() as u32)?;
+//! ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate())?;
 //! # Ok(())
 //! # }
 //! ```
@@ -31,9 +31,9 @@
 //! [`SynthApi::say`] is built on:
 //!
 //! ```no_run
-//! # fn main() -> xn::Result<()> {
+//! # fn main() -> ptts::Result<()> {
 //! # let cfg = ptts::tts_model::TTSConfig::v202601();
-//! # let norm = ptts::preprocess::Normalize::for_lang(ptts::preprocess::Lang::En);
+//! # let norm = ptts::preprocess::Lang::En;
 //! # let tts = ptts::synth::Synth::builder(cfg, "model/model.safetensors", norm)
 //! #     .tokenizer_file("model/tokenizer.json")
 //! #     .build()?;
@@ -82,19 +82,6 @@ pub enum DeviceKind {
 }
 
 impl DeviceKind {
-    pub fn parse(name: &str) -> Result<Self> {
-        match name {
-            "auto" => Ok(Self::Auto),
-            "cpu" => Ok(Self::Cpu),
-            "cuda" => Ok(Self::Cuda),
-            "vulkan" => Ok(Self::Vulkan),
-            "metal" => Ok(Self::Metal),
-            other => Err(Error::invalid_argument(format!(
-                "unknown device '{other}'; expected auto, cpu, cuda, vulkan or metal"
-            ))),
-        }
-    }
-
     /// Resolve [`Self::Auto`] against the backends this build was compiled with.
     pub fn resolve(self) -> Self {
         if self != Self::Auto {
@@ -108,6 +95,23 @@ impl DeviceKind {
             Self::Metal
         } else {
             Self::Cpu
+        }
+    }
+}
+
+impl std::str::FromStr for DeviceKind {
+    type Err = crate::Error;
+
+    fn from_str(name: &str) -> crate::Result<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "cpu" => Ok(Self::Cpu),
+            "cuda" => Ok(Self::Cuda),
+            "vulkan" => Ok(Self::Vulkan),
+            "metal" => Ok(Self::Metal),
+            _ => Err(Error::invalid_argument(format!(
+                "unknown device '{name}'; expected auto, cpu, cuda, vulkan or metal"
+            ))),
         }
     }
 }
@@ -130,27 +134,6 @@ pub enum Quant {
 }
 
 impl Quant {
-    /// Parse the spellings the CLIs accept.
-    pub fn parse(name: &str) -> Result<Self> {
-        match name {
-            "f32" | "none" => Ok(Self::F32),
-            "q8" | "q8_0" => Ok(Self::Q80),
-            "q8_1" => Ok(Self::Q81),
-            "q8k" => Ok(Self::Q8k),
-            "q6k" => Ok(Self::Q6k),
-            "q5" | "q5_0" => Ok(Self::Q50),
-            "q5_1" => Ok(Self::Q51),
-            "q5k" => Ok(Self::Q5k),
-            "q4" | "q4_0" => Ok(Self::Q40),
-            "q4_1" => Ok(Self::Q41),
-            "q4k" => Ok(Self::Q4k),
-            other => Err(Error::invalid_argument(format!(
-                "unsupported quantization '{other}'; expected one of \
-                 f32, q8_0, q8_1, q8k, q6k, q5_0, q5_1, q5k, q4_0, q4_1, q4k"
-            ))),
-        }
-    }
-
     /// Error if this weight format cannot run on `device`.
     ///
     /// [`SynthBuilder::build`] checks this too, but a caller that downloads a
@@ -181,6 +164,31 @@ impl Quant {
             Self::Q40 => "q4_0",
             Self::Q41 => "q4_1",
             Self::Q4k => "q4k",
+        }
+    }
+}
+
+/// Parse the spellings the CLIs accept.
+impl std::str::FromStr for Quant {
+    type Err = crate::Error;
+
+    fn from_str(name: &str) -> crate::Result<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "f32" | "none" => Ok(Self::F32),
+            "q8" | "q8_0" => Ok(Self::Q80),
+            "q8_1" => Ok(Self::Q81),
+            "q8k" => Ok(Self::Q8k),
+            "q6k" => Ok(Self::Q6k),
+            "q5" | "q5_0" => Ok(Self::Q50),
+            "q5_1" => Ok(Self::Q51),
+            "q5k" => Ok(Self::Q5k),
+            "q4" | "q4_0" => Ok(Self::Q40),
+            "q4_1" => Ok(Self::Q41),
+            "q4k" => Ok(Self::Q4k),
+            _ => Err(Error::invalid_argument(format!(
+                "unsupported quantization '{name}'; expected one of \
+                 f32, q8_0, q8_1, q8k, q6k, q5_0, q5_1, q5k, q4_0, q4_1, q4k"
+            ))),
         }
     }
 }
@@ -441,8 +449,8 @@ impl<Q: BackendQ> SynthOf<Q> {
 }
 
 impl<Q: BackendQ> SynthApi for SynthOf<Q> {
-    fn sample_rate(&self) -> usize {
-        self.model.sample_rate()
+    fn sample_rate(&self) -> u32 {
+        self.model.sample_rate() as u32
     }
 
     fn config(&self) -> &TTSConfig {
@@ -470,8 +478,8 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
         self.mimi_enc.is_some()
     }
 
-    fn voice_prompt_sample_rate(&self) -> usize {
-        self.cfg.speaker_mimi_cfg().sample_rate
+    fn voice_prompt_sample_rate(&self) -> u32 {
+        self.cfg.speaker_mimi_cfg().sample_rate as u32
     }
 
     fn add_voice_file(&mut self, name: &str, path: &FsPath) -> Result<()> {
@@ -507,7 +515,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
             )));
         }
         let mut pcm = pcm[..pcm.len().min(max_len)].to_vec();
-        crate::utils::normalize_loudness(&mut pcm, sr as u32)?;
+        crate::utils::normalize_loudness(&mut pcm, sr)?;
 
         let dev = self.model.device().clone();
         let pcm = Tensor::from_vec(pcm, (1, 1, ()), &dev)?.to::<Q::T>()?;
@@ -813,8 +821,8 @@ impl<Q: BackendQ> SessionApi for SessionOf<Q> {
         self.seq_budget
     }
 
-    fn sample_rate(&self) -> usize {
-        self.model.sample_rate()
+    fn sample_rate(&self) -> u32 {
+        self.model.sample_rate() as u32
     }
 
     fn normalization(&self) -> Normalize {
@@ -961,7 +969,7 @@ pub struct SpeechStream {
     /// unbounded, so a worker only notices it should stop once the receiver is
     /// gone, and fields drop after `Drop::drop` has run.
     rx: Option<std::sync::mpsc::Receiver<Result<Vec<f32>>>>,
-    sample_rate: usize,
+    sample_rate: u32,
     failed: bool,
     /// The flow-LM and decoder threads, joined once the channel closes so that
     /// a panic in either surfaces as an error rather than as truncated audio.
@@ -969,7 +977,7 @@ pub struct SpeechStream {
 }
 
 impl SpeechStream {
-    pub fn sample_rate(&self) -> usize {
+    pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
 }
@@ -1059,26 +1067,30 @@ impl SynthBuilder {
     /// to the tokenizer as written.
     ///
     /// ```no_run
-    /// # fn main() -> xn::Result<()> {
-    /// use ptts::preprocess::{Lang, Normalize};
+    /// # fn main() -> ptts::Result<()> {
+    /// use ptts::preprocess::Lang;
     /// use ptts::synth::SynthBuilder;
     /// use ptts::tts_model::TTSConfig;
     ///
     /// let tts = SynthBuilder::new(
     ///     TTSConfig::v202601(),
     ///     "model/model.safetensors",
-    ///     Normalize::for_lang(Lang::De),
+    ///     Lang::De,
     /// )
     /// .tokenizer_file("model/tokenizer.model")
     /// .build()?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new(config: TTSConfig, weights: impl Into<PathBuf>, normalize: Normalize) -> Self {
+    pub fn new(
+        config: TTSConfig,
+        weights: impl Into<PathBuf>,
+        normalize: impl Into<Normalize>,
+    ) -> Self {
         Self {
             config,
             weights: weights.into(),
-            normalize,
+            normalize: normalize.into(),
             tokenizer_file: None,
             device: DeviceKind::Auto,
             quant: Quant::F32,
@@ -1336,7 +1348,7 @@ mod sealed {
 /// [`Synth`] dereferences to this, so these are called on a `Synth` directly, with no import.
 pub trait SynthApi: sealed::Sealed + Send + Sync {
     /// Sample rate of the audio this model produces, in Hz.
-    fn sample_rate(&self) -> usize;
+    fn sample_rate(&self) -> u32;
 
     /// The config the model was loaded with.
     fn config(&self) -> &TTSConfig;
@@ -1365,7 +1377,7 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
     fn supports_voice_cloning(&self) -> bool;
 
     /// The sample rate [`Self::add_voice_from_pcm`] expects.
-    fn voice_prompt_sample_rate(&self) -> usize;
+    fn voice_prompt_sample_rate(&self) -> u32;
 
     /// Register a precomputed voice embedding, replacing any voice of the same name.
     fn add_voice_file(&mut self, name: &str, path: &FsPath) -> Result<()>;
@@ -1409,7 +1421,7 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
     /// Prime a voice once and keep it, for callers that generate repeatedly.
     ///
     /// ```no_run
-    /// # fn main() -> xn::Result<()> {
+    /// # fn main() -> ptts::Result<()> {
     /// # let tts: ptts::synth::Synth = todo!();
     /// let session = tts.session(&ptts::synth::SpeechOptions::default().voice("alba"), 1024)?;
     /// for line in ["First.", "Second.", "Third."] {
@@ -1458,7 +1470,7 @@ pub trait SessionApi: sealed::Sealed + Send + Sync {
     /// The KV budget this session was primed with.
     fn seq_budget(&self) -> usize;
 
-    fn sample_rate(&self) -> usize;
+    fn sample_rate(&self) -> u32;
 
     /// How text is normalized.
     ///
@@ -1556,7 +1568,7 @@ impl Synth {
     pub fn builder(
         config: TTSConfig,
         weights: impl Into<PathBuf>,
-        normalize: Normalize,
+        normalize: impl Into<Normalize>,
     ) -> SynthBuilder {
         SynthBuilder::new(config, weights, normalize)
     }

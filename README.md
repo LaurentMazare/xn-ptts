@@ -46,21 +46,21 @@ serde_json = "1"
 
 ```rust
 use std::{env, fs, path::PathBuf};
-use ptts::preprocess::{Lang, Normalize};
+use ptts::preprocess::Lang;
 use ptts::synth::{Quant, Synth};
 use ptts::tts_model::TTSConfig;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = PathBuf::from(env::var("MODEL_DIR")?);
     let config: TTSConfig = serde_json::from_slice(&fs::read(dir.join("config.json"))?)?;
-    let tts = Synth::builder(config, dir.join("model.q8.gguf"), Normalize::for_lang(Lang::En))
+    let tts = Synth::builder(config, dir.join("model.q8.gguf"), Lang::En)
         .tokenizer_file(dir.join("tokenizer.json"))
         .quant(Quant::Q80)
         .add_voice("Freya", dir.join("voices/Freya.safetensors"))
         .build()?;
 
     let pcm = tts.say("Hello world")?;
-    ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate() as u32)?;
+    ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate())?;
     Ok(())
 }
 ```

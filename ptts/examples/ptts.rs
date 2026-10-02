@@ -104,7 +104,7 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     // Parsed before anything is downloaded, so a bad --lang fails in milliseconds.
-    let normalize = Normalize::parse(&args.lang)?.with_rules(Rules::parse(&args.rewrites)?);
+    let normalize = args.lang.parse::<Normalize>()?.with_rules(args.rewrites.parse::<Rules>()?);
     if let Some(threads) = args.threads {
         // Must happen before the first tensor op, since it sets the size of rayon's global pool.
         xn::set_num_threads(threads);
@@ -127,14 +127,14 @@ fn main() -> Result<()> {
     let checkpoint = model_helpers::Checkpoint::locate(source, args.weights.as_deref())?;
     let mut builder = checkpoint
         .builder(normalize)
-        .device(DeviceKind::parse(&args.device)?)
+        .device(args.device.parse::<DeviceKind>()?)
         .temperature(args.temperature)
         .seed(args.seed);
     if let Some(tokenizer) = args.tokenizer.as_deref() {
         builder = builder.tokenizer_file(tokenizer);
     }
     if let Some(quant) = args.quant.as_deref() {
-        builder = builder.quant(Quant::parse(quant)?);
+        builder = builder.quant(quant.parse::<Quant>()?);
     }
     if let Some(cfg_coef) = args.cfg_coef {
         builder = builder.cfg_coef(cfg_coef);
@@ -205,7 +205,7 @@ fn main() -> Result<()> {
         tracing::info!("peak RSS: {rss_mb:.2} MB");
     }
 
-    ptts::wav::write_wav_file(&args.output, &pcm, sample_rate as u32)?;
+    ptts::wav::write_wav_file(&args.output, &pcm, sample_rate)?;
     tracing::info!("wrote {}", args.output.display());
     Ok(())
 }

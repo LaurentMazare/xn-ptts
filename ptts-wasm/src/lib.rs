@@ -149,10 +149,10 @@ impl Model {
     ) -> Result<Model> {
         let quant = Quant::parse(quant)?;
         let rules = match rewrites {
-            Some(rewrites) => Rules::parse(rewrites)?,
+            Some(rewrites) => rewrites.parse::<Rules>()?,
             None => Rules::ALL,
         };
-        let normalize = Normalize::parse(lang)?.with_rules(rules);
+        let normalize = lang.parse::<Normalize>()?.with_rules(rules);
         let cfg = match config_json {
             Some(json) => match serde_json::from_slice(&json) {
                 Ok(cfg) => cfg,

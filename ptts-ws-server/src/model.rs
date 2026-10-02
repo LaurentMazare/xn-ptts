@@ -161,7 +161,7 @@ pub async fn load_ptts(
 
     let voices = synth.voices();
     let default_voice = synth.default_voice().context("no voice embeddings found in model")?;
-    let sample_rate = synth.sample_rate() as u32;
+    let sample_rate = synth.sample_rate();
     let frame_size = (sample_rate as f64 / frame_rate).round() as u32;
     tracing::info!(
         device = %synth.device_name(),
