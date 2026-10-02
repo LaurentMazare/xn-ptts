@@ -60,6 +60,15 @@ impl<T: WithDTypeF, B: Backend> LUTConditioner<T, B> {
             let dev = self.embed.device();
             return Tensor::zeros((1, 0, self.dim), dev);
         }
+        // `index_select` does not bounds-check, so an id past the table panics instead of
+        // erroring. The usual cause is a tokenizer from another checkpoint.
+        let rows = self.embed.dims()[0];
+        if let Some(&id) = token_ids.iter().find(|&&id| id as usize >= rows) {
+            xn::bail!(
+                "token id {id} is past this checkpoint's {rows}-entry embedding table: the \
+                 tokenizer.json does not belong to this checkpoint"
+            )
+        }
         let ids_t = Tensor::from_vec(
             token_ids.iter().map(|&x| x as i64).collect(),
             token_ids.len(),
@@ -72,5 +81,32 @@ impl<T: WithDTypeF, B: Backend> LUTConditioner<T, B> {
 
     pub fn learnt_padding(&self) -> Option<&Tensor<T, B>> {
         self.learnt_padding.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xn::CpuDevice;
+
+    fn conditioner(rows: usize, dim: usize) -> LUTConditioner<f32, CpuDevice> {
+        let data = (0..rows * dim).map(|i| i as f32).collect();
+        let embed = Tensor::from_vec(data, (rows, dim), &CpuDevice).unwrap();
+        LUTConditioner {
+            tokenizer: None,
+            embed,
+            learnt_padding: None,
+            learnt_padding_id: None,
+            dim,
+            output_dim: dim,
+        }
+    }
+
+    #[test]
+    fn a_token_id_past_the_table_is_an_error() {
+        let c = conditioner(4, 2);
+        assert!(c.embed_tokens(&[0, 3]).is_ok());
+        let err = c.embed_tokens(&[1, 4]).expect_err("id 4 is past a 4-row table");
+        assert!(err.to_string().contains("tokenizer"), "{err}");
     }
 }

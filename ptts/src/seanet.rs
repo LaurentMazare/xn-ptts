@@ -25,6 +25,9 @@ impl<T: WithDTypeF, B: Backend> SEANetResnetBlock<T, B> {
         pad_mode: PadMode,
         compress: usize,
     ) -> Result<Self> {
+        if compress == 0 {
+            xn::bail!("the config's SEANet compress is 0; it must be at least 1")
+        }
         let hidden = dim / compress;
         let mut convs = Vec::new();
         for (i, (&ks, &dil)) in kernel_sizes.iter().zip(dilations.iter()).enumerate() {
@@ -353,5 +356,29 @@ impl<T: WithDTypeF, B: Backend> SEANetDecoder<T, B> {
         }
         z = z.elu(1.0)?;
         self.final_conv.forward(&z, &mut state.final_conv_state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xn::CpuDevice;
+    use xn::nn::VB;
+
+    #[test]
+    fn a_compress_of_zero_is_an_error() {
+        // An empty safetensors file: the check runs before any weight is read.
+        let empty = [2u64.to_le_bytes().as_slice(), b"{}"].concat();
+        let vb = VB::from_bytes(vec![empty], CpuDevice).unwrap().root();
+        let block = SEANetResnetBlock::<f32, CpuDevice>::load(
+            &vb,
+            8,
+            &[3, 1],
+            &[1, 1],
+            PadMode::Constant,
+            0,
+        );
+        let err = block.err().expect("compress 0");
+        assert!(err.to_string().contains("compress"), "{err}");
     }
 }
