@@ -40,7 +40,7 @@ use xn::{BackendQ, CPU, CpuDevice, Result, Tensor, TypedTensor, Unquantized};
 type RawState = StreamingTransformerState<f32, CpuDevice>;
 
 fn wrap_state<Q: BackendQ<T = f32, B = CpuDevice>>(raw: RawState) -> TTSState<Q> {
-    TTSState { flow_lm_state: FlowLMState { transformer_state: raw } }
+    TTSState { flow_lm_state: FlowLMState { transformer_state: raw, extra_sum: None } }
 }
 
 /// Slots a voice state already occupies: the voice prompt's frames. Every flow-LM layer
@@ -328,6 +328,8 @@ impl Model {
             ModelInner::Q8(_) => StateInner::Q8(wrap_state(raw)),
         };
         let mimi_state = dispatch!(&self.inner, &mut tts_state, |m, s| {
+            // `wrap_state` has no model to ask, so summed LUTs start as dropped attributes here.
+            m.set_sum_conditions(s, &Default::default())?;
             m.prompt_text(s, &chunk.tokens)?;
             m.init_mimi_state(1)?
         });
