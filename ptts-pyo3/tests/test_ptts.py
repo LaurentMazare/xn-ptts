@@ -88,28 +88,35 @@ def _stub_parameters(fn: ast.FunctionDef) -> list[tuple[str, str, object]]:
 
 
 def _stub_callables():
+    # Plain functions and methods, plus `__init__` as the class's own signature. Properties
+    # and the other dunders are left out: their signatures are fixed by Python, not by us.
+    # Names are resolved in the test, so one the extension lacks fails that case alone
+    # rather than the collection of this whole file.
     tree = ast.parse((Path(ptts.__file__).parent / "__init__.pyi").read_text())
     for node in tree.body:
         if isinstance(node, ast.FunctionDef):
-            yield pytest.param(node, getattr(ptts, node.name), id=node.name)
+            yield pytest.param(node, node.name, id=node.name)
         elif isinstance(node, ast.ClassDef):
-            cls = getattr(ptts, node.name)
             for fn in node.body:
                 if not isinstance(fn, ast.FunctionDef) or any(
                     isinstance(d, ast.Name) and d.id == "property" for d in fn.decorator_list
                 ):
                     continue
                 if fn.name == "__init__":
-                    yield pytest.param(fn, cls, id=node.name)
+                    yield pytest.param(fn, node.name, id=node.name)
                 elif not fn.name.startswith("__"):
-                    yield pytest.param(fn, getattr(cls, fn.name), id=f"{node.name}.{fn.name}")
+                    path = f"{node.name}.{fn.name}"
+                    yield pytest.param(fn, path, id=path)
 
 
-@pytest.mark.parametrize(("fn", "obj"), list(_stub_callables()))
-def test_the_stub_signatures_match_the_extension(fn, obj):
+@pytest.mark.parametrize(("fn", "path"), list(_stub_callables()))
+def test_the_stub_signatures_match_the_extension(fn, path):
     # The check above only compares names. This one compares parameters, their kinds and
     # their defaults, which is where the stubs drifted before: `temperature` said 0.5 while
     # the extension used 0.3, and `rewrites` was missing.
+    obj = ptts
+    for name in path.split("."):
+        obj = getattr(obj, name)
     if isinstance(obj, type) and (sys.version_info < (3, 10) or sys.implementation.name == "pypy"):
         # Neither an abi3 build on 3.9 nor PyPy gives a class its signature. The wheel jobs
         # that test on a later CPython still check the constructor.
