@@ -34,6 +34,10 @@ class TTS:
     `lang` is required and keyword-only: text is normalized before it is tokenized, and the
     spoken forms of `@`, `+` and `=` differ per language, so there is nothing safe to default
     to. One of `"en"`, `"fr"`, `"de"`, `"es"`, `"pt"`, or `"none"`/`None` to skip normalizing.
+
+    `rewrites` picks which word rewrites run on the normalized text: `"all"` (what `None`
+    means), `"none"`, or a comma-separated list of rule names, of which there is one today,
+    `"numbers"`.
     """
 
     def __init__(
@@ -42,12 +46,13 @@ class TTS:
         device: str | None = None,
         quant: str | None = None,
         voice: str | None = None,
-        temperature: float = 0.5,
+        temperature: float = 0.3,
         seed: int = 4242424242424242,
         cfg_coef: float | None = None,
         eos_threshold: float | None = None,
         *,
         lang: str | None,
+        rewrites: str | None = None,
     ) -> None: ...
     @property
     def sample_rate(self) -> int:

@@ -210,7 +210,7 @@ struct Tts {
 
 #[pymethods]
 impl Tts {
-    /// `TTS(*, lang, rewrites="all", config=None, device=None, quant=None, voice=None, temperature=0.3, seed=..., cfg_coef=None, eos_threshold=None)`
+    /// `TTS(config=None, device=None, quant=None, voice=None, temperature=0.3, seed=..., cfg_coef=None, eos_threshold=None, *, lang, rewrites=None)`
     ///
     /// `lang` is required and keyword-only: the language text is normalized as
     /// before it is tokenized, one of `"en"`, `"fr"`, `"de"`, `"es"` or
@@ -220,7 +220,7 @@ impl Tts {
     /// as written, for callers that normalize it themselves.
     ///
     /// `rewrites` picks which word rewrites run on the normalized text:
-    /// `"all"` (the default), `"none"`, or a comma-separated list of rule
+    /// `"all"` (what `None` means), `"none"`, or a comma-separated list of rule
     /// names, of which there is one today, `"numbers"`.
     #[new]
     #[pyo3(signature = (

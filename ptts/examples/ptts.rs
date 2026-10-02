@@ -24,7 +24,7 @@ struct Args {
     text: String,
 
     /// Output WAV file path.
-    #[arg(short, long, default_value = "output.wav")]
+    #[arg(short, long, default_value = "out.wav")]
     output: std::path::PathBuf,
 
     /// Voice: a bundled voice id, a path to a voice `.safetensors`, or a path to

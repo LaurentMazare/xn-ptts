@@ -11,10 +11,10 @@ resolver = "3"
 
 [workspace.package]
 version = "0.4.0"
-description = "Phonon text-to-speech inference and serving using xn"
-repository = "https://github.com/LaurentMazare/xn-ptts"
-keywords = ["pytorch", "deep-learning", "machine-learning"]
-categories = ["science"]
+description = "Phonon text-to-speech inference and serving"
+repository = "https://github.com/gradium-ai/xn-ptts"
+keywords = ["tts", "text-to-speech", "speech-synthesis", "voice-cloning", "on-device"]
+categories = ["multimedia::audio"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
