@@ -57,8 +57,8 @@ impl LoadedModel {
         tracing::info!("downloading model artifacts");
         let repo = crate::utils::HfRepo::model(repo_id)?;
         let config_path = repo.get("config.json").await?;
-        let cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config_path)?)
-            .with_context(|| "failed to read config from file {config:?}")?;
+        let cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(&config_path)?)
+            .with_context(|| format!("failed to read config from file {config_path:?}"))?;
 
         let model_path = repo.get("model.q8.gguf").await?;
         tracing::info!(?model_path, "model weights ready");
@@ -95,7 +95,7 @@ impl LoadedModel {
             .parent()
             .with_context(|| format!("failed to get parent directory of config path {config:?}"))?;
         let cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config)?)
-            .with_context(|| "failed to read config from file {config:?}")?;
+            .with_context(|| format!("failed to read config from file {config:?}"))?;
         let model_path = if parent_dir.join("model.safetensors").is_file() {
             parent_dir.join("model.safetensors")
         } else if parent_dir.join("model.q8.gguf").is_file() {

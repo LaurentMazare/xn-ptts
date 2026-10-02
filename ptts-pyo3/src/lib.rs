@@ -157,8 +157,7 @@ fn resolve_hub(repo: &HubRepo, repo_id: &str, quant: Quant) -> ptts::Result<Arti
     let cfg = match get_optional("config.json")? {
         Some(path) => {
             let text = std::fs::read_to_string(&path).map_err(|e| config_error(&path, e))?;
-            let cfg: TTSConfig = serde_json::from_str(&text).map_err(|e| config_error(&path, e))?;
-            cfg
+            serde_json::from_str::<TTSConfig>(&text).map_err(|e| config_error(&path, e))?
         }
         None => TTSConfig::v202601(),
     };

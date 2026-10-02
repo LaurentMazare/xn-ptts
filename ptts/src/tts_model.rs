@@ -531,4 +531,19 @@ mod tests {
         assert!(!old.cfg_null_audio_empty);
         assert!(old.speaker_mimi.is_none());
     }
+
+    #[test]
+    fn config_ignores_keys_it_no_longer_reads() {
+        // Published config.json files still carry these, and have to keep loading.
+        let mut json = serde_json::to_value(TTSConfig::v202601()).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        fields.insert("temp".into(), serde_json::json!(0.7));
+        let fuser = serde_json::json!({"sum": [], "streaming_sum": [], "prepend": [], "cross": []});
+        fields.insert("fuser".into(), fuser);
+        fields.insert("conditioners".into(), serde_json::json!([]));
+        let id = serde_json::json!({"sig": "abc", "epoch": 1, "mimi_sig": "def", "mimi_epoch": 2});
+        fields.insert("model_id".into(), id);
+        let cfg: TTSConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(cfg.model_ext().as_deref(), Some("abc@1"));
+    }
 }
