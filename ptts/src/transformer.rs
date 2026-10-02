@@ -97,7 +97,7 @@ impl<Q: BackendQ> StreamingMultiheadAttention<Q> {
     }
 
     #[tracing::instrument(name = "attn", skip_all)]
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         query: &Tensor<Q::T, Q::B>,
         rope: &RotaryEmbedding<Q::T, Q::B>,
@@ -297,7 +297,7 @@ impl<T: WithDTypeF, B: Backend> MimiStreamingMultiheadAttention<T, B> {
         Ok(KvCache::new(self.context))
     }
 
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         query: &Tensor<T, B>,
         rope: &RotaryEmbedding<T, B>,
@@ -422,7 +422,7 @@ impl<Q: BackendQ> StreamingTransformerLayer<Q> {
     }
 
     #[tracing::instrument(name = "transformer-layer", skip_all)]
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         x: &Tensor<Q::T, Q::B>,
         rope: &RotaryEmbedding<Q::T, Q::B>,

@@ -4,7 +4,8 @@
 //! [`FlowLM`] is the model and [`FlowLMState`] its KV cache. The noise each step samples comes
 //! from an [`Rng`]: [`NormalRng`] normally, or [`ReplayRng`] to replay a recorded sequence.
 
-use crate::conditioners::LUTConditioner;
+// Re-exported because `FlowLM::conditioner` is public and frontends tokenize through it.
+pub use crate::conditioners::LUTConditioner;
 use crate::mlp::SimpleMLPAdaLN;
 use crate::transformer::{StreamingTransformer, StreamingTransformerState};
 use xn::nn::{Linear, var_builder::Path};
