@@ -155,6 +155,18 @@ test('stream yields every frame in order, then its stats', async () => {
   assert.equal(FakeWorker.last.generations[0].voice, 'alba', 'the default voice');
 });
 
+test('the seed defaults to the one Rust and Python use, and goes out as a bigint', async () => {
+  FakeWorker.script = { frames: 1, fail: null };
+  const tts = await load();
+  for (const [seed, sent] of [[undefined, 4242424242424242n], [7, 7n], [2n ** 63n, 2n ** 63n]]) {
+    await tts.synth('Hi.', { seed });
+    assert.equal(FakeWorker.last.generations.at(-1).seed, sent);
+  }
+  for (const seed of [-1, 1.5, 2 ** 60, '7', 2n ** 64n, {}, Symbol('seed')]) {
+    assert.throws(() => tts.stream('Hi.', { seed }), RangeError, String(seed));
+  }
+});
+
 test('synth concatenates, and requests run one at a time in order', async () => {
   FakeWorker.script = { frames: 2, fail: null };
   const tts = await load();

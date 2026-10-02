@@ -25,6 +25,8 @@ pub struct AppState(Arc<Inner>);
 
 pub struct Inner {
     pub synth: Synth,
+    /// The checkpoint that loaded: its repo id, or for a local config the name of its folder.
+    pub model_name: String,
     pub voices: Vec<String>,
     pub default_voice: String,
     pub max_seq_len: usize,
@@ -170,8 +172,21 @@ pub async fn load_ptts(
         "model loaded"
     );
 
+    // A repo id as given. For a local config, only its folder's name: clients have no use for
+    // the server's filesystem layout.
+    let model_name = match config {
+        None => DEFAULT_REPO_ID.to_string(),
+        Some(c) if c.is_file() => {
+            let dir = std::fs::canonicalize(c)
+                .ok()
+                .and_then(|c| Some(c.parent()?.file_name()?.to_owned()));
+            dir.unwrap_or_else(|| c.as_os_str().to_owned()).to_string_lossy().into_owned()
+        }
+        Some(repo_id) => repo_id.display().to_string(),
+    };
     Ok(AppState(Arc::new(Inner {
         synth,
+        model_name,
         voices,
         default_voice,
         max_seq_len,

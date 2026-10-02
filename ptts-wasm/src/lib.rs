@@ -251,14 +251,14 @@ impl Model {
         voice_index: usize,
         text: &str,
         temperature: f32,
-        seed: u32,
+        seed: u64,
     ) -> Result<usize> {
         // Dropped before anything else can fail, so a caller that swallows the error cannot
         // go on stepping and quietly resume the *previous* utterance.
         self.gen_state = None;
         // Built here rather than after planning: a temperature that cannot produce a
         // distribution should be refused before any work is done.
-        let rng = NormalRng::new(temperature, seed as u64)?;
+        let rng = NormalRng::new(temperature, seed)?;
         let Some(voice) = self.voice_states.get(voice_index) else {
             xn::bail!("invalid voice index: {voice_index}")
         };
@@ -418,7 +418,7 @@ impl Model {
         voice_index: usize,
         text: &str,
         temperature: f32,
-        seed: u32,
+        seed: u64,
     ) -> std::result::Result<usize, JsError> {
         self.start_generation_(voice_index, text, temperature, seed).map_err(js_err)
     }

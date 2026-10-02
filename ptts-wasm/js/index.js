@@ -16,6 +16,9 @@ const RULES = ['numbers'];
 /** Values `Rules::parse` accepts only as the entire string, never inside a list. */
 const WHOLE_RULES = ['all', 'none', 'off'];
 
+/** The seed Rust and Python use when none is given, so the same request gives the same audio. */
+const DEFAULT_SEED = 4242424242424242n;
+
 export class PhononTTS {
   #worker;
   #nextId = 0;
@@ -204,7 +207,8 @@ export class PhononTTS {
    * @returns {import('./index.js').SpeechStream}
    */
   stream(text, options = {}) {
-    const { voice = this.#defaultVoice, temperature = 0.3, seed = 42, signal } = options;
+    const { voice = this.#defaultVoice, temperature = 0.3, signal } = options;
+    const seed = toSeed(options.seed ?? DEFAULT_SEED);
     const id = this.#nextId++;
     // Chunks the consumer has not taken yet, and the consumer waiting for the next one.
     const buffered = [];
@@ -346,15 +350,28 @@ export class PhononTTS {
   }
 }
 
-/**
- * An absolute URL for `url`. The worker resolves relative URLs against its own script, which
- * lives inside the package, so anything relative has to be made absolute against the page.
- */
+/** A seed as the model takes it: a `u64`, carried as a `bigint`. */
+function toSeed(seed) {
+  const value = typeof seed === 'bigint' ? seed : Number.isSafeInteger(seed) ? BigInt(seed) : null;
+  if (value === null || value < 0n || value >= 1n << 64n) {
+    // `String`, not a template literal, which throws on a symbol.
+    const got = `${String(seed)} (${typeof seed})`;
+    throw new RangeError(
+      `seed must be a whole number from 0 to 2^64 - 1, as a number up to ${Number.MAX_SAFE_INTEGER} or a bigint; got ${got}`,
+    );
+  }
+  return value;
+}
+
 /** What `resolveUrl` takes: a URL string, relative to the page or absolute, or a `URL`. */
 function isUrl(url) {
   return typeof url === 'string' || url instanceof URL;
 }
 
+/**
+ * An absolute URL for `url`. The worker resolves relative URLs against its own script, which
+ * lives inside the package, so anything relative has to be made absolute against the page.
+ */
 function resolveUrl(url) {
   return globalThis.location ? new URL(url, globalThis.location.href).href : String(url);
 }
