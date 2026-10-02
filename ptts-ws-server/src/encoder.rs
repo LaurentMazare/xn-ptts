@@ -140,12 +140,7 @@ impl Encoder {
 
     fn wav(sample_rate: usize) -> Result<Encoder_> {
         let mut header = vec![];
-        crate::wav::write_wav_header(
-            &mut header,
-            sample_rate as u32,
-            0xFFFF_FFFFu32,
-            0xFFFF_FFFFu32,
-        )?;
+        ptts::wav::write_header(&mut header, sample_rate as u32, 1, None)?;
         Ok(Encoder_::Wav { header })
     }
 
@@ -162,7 +157,7 @@ impl Encoder {
             Encoder_::OggOpus(oo) => oo.encode_page(pcm)?,
             Encoder_::Wav { .. } => {
                 let mut buf = vec![];
-                crate::wav::write_pcm_in_wav(&mut buf, pcm)?;
+                ptts::wav::write_samples(&mut buf, pcm)?;
                 buf
             }
             Encoder_::Pcm { fft: None, format } => format.pcm_to_bytes(pcm),

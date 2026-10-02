@@ -27,8 +27,8 @@ export function encodeWav(pcm, sampleRate) {
   view.setUint32(40, dataSize, true);
 
   for (let i = 0; i < pcm.length; i++) {
-    const s = Math.max(-1, Math.min(1, pcm[i]));
-    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    // Scaled by 32767 either side of zero, as the Rust writer does.
+    view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
   }
   return new Blob([view.buffer], { type: 'audio/wav' });
 }
