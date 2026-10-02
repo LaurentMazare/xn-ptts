@@ -25,6 +25,8 @@ pub struct AppState(Arc<Inner>);
 
 pub struct Inner {
     pub synth: Synth,
+    /// The checkpoint that loaded, as named on the command line: a repo id or a config path.
+    pub model_name: String,
     pub voices: Vec<String>,
     pub default_voice: String,
     pub max_seq_len: usize,
@@ -170,8 +172,10 @@ pub async fn load_ptts(
         "model loaded"
     );
 
+    let model_name = config.map_or(DEFAULT_REPO_ID.to_string(), |c| c.display().to_string());
     Ok(AppState(Arc::new(Inner {
         synth,
+        model_name,
         voices,
         default_voice,
         max_seq_len,
