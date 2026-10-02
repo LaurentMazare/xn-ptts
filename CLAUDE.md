@@ -120,7 +120,12 @@ than by argparse, so that `--build-info` still works without one.
 
 `pyo3` is built with `abi3-py39`, so one wheel per platform serves every CPython from 3.9 on
 and a new CPython release needs no rebuild. abi3 does not load on free-threaded CPython and
-PyPy needs its own ABI; both fall back to the sdist, which is why a CI job builds and tests it.
+PyPy needs its own ABI; both fall back to the sdist, which `sdist-fallback` compiles and tests
+on `3.14t` and `pypy3.11`. It is deliberately outside `release`'s `needs`: those users compile
+either way, so blocking everyone else's wheels would not help them. Wheels are built `--strip`,
+because `[profile.release]` keeps `debug = true` for profiling and on Linux that debug info
+lands inside the `.so`, which is what made the published 0.2.2 Linux wheels 41 MB against
+3.9 MB for macOS and Windows.
 `pyproject.toml` deliberately has no `features` key under `[tool.maturin]`: a `--features` on
 the maturin command line replaces that list rather than adding to it, so `pyo3/extension-module`
 lives in `ptts-pyo3/Cargo.toml` where the macOS job's `--features accelerate` cannot drop it.

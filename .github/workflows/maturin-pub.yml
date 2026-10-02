@@ -64,7 +64,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --manifest-path ptts-pyo3/Cargo.toml
+          args: --release --strip --out dist --manifest-path ptts-pyo3/Cargo.toml
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
         env:
@@ -105,7 +105,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --manifest-path ptts-pyo3/Cargo.toml
+          args: --release --strip --out dist --manifest-path ptts-pyo3/Cargo.toml
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
         env:
@@ -139,7 +139,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --manifest-path ptts-pyo3/Cargo.toml
+          args: --release --strip --out dist --manifest-path ptts-pyo3/Cargo.toml
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
         env:
           RUSTFLAGS: ${{ matrix.platform.rustflags }}
@@ -171,7 +171,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --manifest-path ptts-pyo3/Cargo.toml --features accelerate
+          args: --release --strip --out dist --manifest-path ptts-pyo3/Cargo.toml --features accelerate
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
         env:
           RUSTFLAGS: ${{ matrix.platform.rustflags }}
@@ -211,6 +211,34 @@ jobs:
         with:
           name: wheels-sdist
           path: dist
+
+  sdist-fallback:
+    name: sdist on ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    needs: sdist
+    # The interpreters an abi3 wheel cannot serve, so the sdist is all they get. Deliberately
+    # not in `release`'s `needs`: a break here means those users compile and fail, and holding
+    # back everyone else's wheels does nothing to fix that. This is here to be seen, not to gate.
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.14t', 'pypy3.11']
+    steps:
+      - uses: actions/checkout@v7
+      - name: Remove the local cargo config
+        run: rm -f .cargo/config.toml
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-sdist
+          path: dist
+      - name: Compile the sdist and test what comes out
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.tar.gz pytest
+          cd ptts-pyo3 && python -m pytest -m "not checkpoint" -q
 
   release:
     name: Release
