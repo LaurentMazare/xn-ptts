@@ -53,7 +53,7 @@ struct Args {
     #[arg(long, short, default_value = "Hello, this is a test of the Phonon TTS system.")]
     input: String,
 
-    #[arg(long, default_value_t = 0.4)]
+    #[arg(long, default_value_t = 0.3)]
     temperature: f32,
 
     #[arg(long, default_value_t = 42)]

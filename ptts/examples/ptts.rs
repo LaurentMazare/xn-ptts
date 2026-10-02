@@ -78,11 +78,11 @@ struct Args {
 
     /// Replay noise from a JSON array of floats instead of sampling it, so a
     /// run can be compared against the reference implementation step for step.
-    #[arg(long)]
+    #[arg(long, help_heading = "Developer")]
     rng_values: Option<std::path::PathBuf>,
 
     /// Write a Chrome trace of the run to ./trace-<timestamp>.json.
-    #[arg(long)]
+    #[arg(long, help_heading = "Developer")]
     chrome_tracing: bool,
 
     /// Number of CPU threads for tensor ops. Defaults to one per logical core.
