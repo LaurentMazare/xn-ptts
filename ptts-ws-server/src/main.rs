@@ -38,17 +38,10 @@ struct Args {
     #[arg(long, default_value_t = 4096)]
     max_seq_len: usize,
 
-    /// Use the CUDA backend (requires building with --features cuda).
-    #[arg(long, default_value_t = false)]
-    cuda: bool,
-
-    /// Use the Vulkan backend (requires building with --features vulkan).
-    #[arg(long, default_value_t = false)]
-    vulkan: bool,
-
-    /// Use the Metal backend (requires building with --features metal).
-    #[arg(long, default_value_t = false)]
-    metal: bool,
+    /// Device to run on: auto, cpu, cuda, vulkan or metal. `auto` picks the GPU backend this
+    /// build was compiled with, if any, and the CPU otherwise.
+    #[arg(long, default_value = "auto")]
+    device: String,
 
     /// Quantization for the flow_lm transformer linear weights.
     /// One of: q8|q8_0, q8_1, q8k, q6k, q5|q5_0, q5_1, q5k, q4|q4_0, q4_1, q4k.
@@ -110,18 +103,7 @@ async fn main() -> Result<()> {
 }
 
 async fn build_app_state(args: &Args) -> Result<model::AppState> {
-    if args.cuda as u8 + args.vulkan as u8 + args.metal as u8 > 1 {
-        anyhow::bail!("at most one of --cuda, --vulkan, and --metal can be used");
-    }
-    let device = if args.cuda {
-        DeviceKind::Cuda
-    } else if args.vulkan {
-        DeviceKind::Vulkan
-    } else if args.metal {
-        DeviceKind::Metal
-    } else {
-        DeviceKind::Cpu
-    };
+    let device = DeviceKind::parse(&args.device)?;
     let quant = match args.quant.as_deref() {
         None => Quant::F32,
         Some(name) => Quant::parse(name)?,
@@ -136,8 +118,10 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         DeviceKind::Metal if !cfg!(feature = "metal") => Some("metal"),
         _ => None,
     };
-    if let Some(flag) = unavailable {
-        anyhow::bail!("--{flag} requested but binary was not built with --features {flag}");
+    if let Some(name) = unavailable {
+        anyhow::bail!(
+            "--device {name} requested, but this binary was built without --features {name}"
+        );
     }
     model::load_ptts(
         args.config.as_ref(),
