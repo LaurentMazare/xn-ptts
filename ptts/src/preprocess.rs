@@ -339,14 +339,17 @@ fn is_emoji(c: char) -> bool {
     )
 }
 
-/// Unicode characters that read as a double quotation mark: the curly and
-/// reversed variants, the low-9 ones sitting on the baseline (German/Czech
-/// opening quotes), double primes, dingbat and CJK corner quotes, and the
-/// fullwidth form.
+/// Unicode characters that read as a double quotation mark: guillemets,
+/// including the single-angle `‹ ›` pair, which quotes speech in the same way
+/// the double one does, the curly and reversed variants, the low-9 ones
+/// sitting on the baseline (German/Czech opening quotes), double primes,
+/// dingbat and CJK corner quotes, and the fullwidth form.
 fn is_double_quote(c: char) -> bool {
     matches!(
         c,
         '»' | '«'
+            | '‹'
+            | '›'
             | '“'
             | '”'
             | '„'
@@ -462,6 +465,7 @@ mod tests {
             ("Hello, world!", "Hello, world!"),
             ("", ""),
             ("“hello” world it's", "\"hello\" world it's"),
+            ("«hello» ‹world›", "\"hello\" \"world\""),
             ("a‐b‑c‒d―e", "a-b-c-d-e"),
             ("a–b—c", "a b c"),
             ("foo (bar) [baz] {qux} *quux*", "foo, bar, baz qux quux"),
