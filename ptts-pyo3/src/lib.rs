@@ -496,11 +496,15 @@ impl Tts {
         let mut opts = opts.clone();
         py.detach(move || {
             let synth = inner.lock().map_err(|_| poisoned())?;
-            // Resolved here rather than at construction so a voice registered
-            // afterwards -- `clone_voice` on a repo that ships none -- is used
-            // without having to name it on every call.
+            // The model's own default first (the builder's, or the first voice the
+            // checkpoint bundles). Otherwise resolved here rather than at construction so a
+            // voice registered afterwards -- `clone_voice` on a repo that ships none -- is
+            // used without having to name it on every call.
             if opts.voice.is_none() {
-                opts.voice = synth.voices().first().cloned();
+                opts.voice = synth
+                    .default_voice()
+                    .map(String::from)
+                    .or_else(|| synth.voices().first().cloned());
             }
             synth.stream_with(text, &opts).py()
         })

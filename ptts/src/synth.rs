@@ -339,6 +339,12 @@ impl<Q: BackendQ> SynthOf<Q> {
         self.voices.keys().cloned().collect()
     }
 
+    /// The voice a request that names none uses: the builder's `voice`, else the first voice the
+    /// checkpoint bundles (`TTSConfig::voices`), else the first registered at build by name.
+    pub fn default_voice(&self) -> Option<&str> {
+        self.defaults.voice.as_deref()
+    }
+
     /// True if this checkpoint carries a speaker encoder, which voice cloning
     /// from raw audio requires.
     pub fn supports_voice_cloning(&self) -> bool {
@@ -1789,6 +1795,11 @@ impl Synth {
     /// Registered voice names, sorted.
     pub fn voices(&self) -> Vec<String> {
         dispatch!(&self.0, |s| s.voices())
+    }
+
+    /// The voice a request that names none uses, see [`SynthOf::default_voice`].
+    pub fn default_voice(&self) -> Option<&str> {
+        dispatch!(&self.0, |s| s.default_voice())
     }
 
     /// True if this checkpoint carries a speaker encoder, which
