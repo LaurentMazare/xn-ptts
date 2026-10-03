@@ -14,8 +14,7 @@ use ptts::synth::{SpeechOptions, SpeechStream};
 const MAX_INPUT_CHARS: usize = 4096;
 
 /// The request body OpenAI specifies. `model`, `instructions` and `stream_format` are accepted
-/// and ignored: there is one model, it takes no style prompt, and the reply is always raw audio,
-/// which LiveKit, the one client that asks for SSE, also reads.
+/// and ignored: there is one model, it takes no style prompt, and the reply is always raw audio.
 #[derive(serde::Deserialize)]
 struct SpeechRequest {
     input: String,
@@ -195,8 +194,7 @@ pub async fn models(State(app): State<AppState>) -> Response {
     json(StatusCode::OK, serde_json::json!({ "object": "list", "data": [model] }))
 }
 
-/// The registered voices, in the shape Kokoro-FastAPI uses and Home Assistant's OpenAI TTS
-/// integration reads.
+/// The registered voices, as `{"voices": [...]}`.
 pub async fn voices(State(app): State<AppState>) -> Response {
     json(StatusCode::OK, serde_json::json!({ "voices": app.voices }))
 }
