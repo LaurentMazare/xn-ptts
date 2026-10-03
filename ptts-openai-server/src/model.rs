@@ -3,6 +3,9 @@
 //! Everything about *how* speech is generated lives in `ptts::synth`. What is
 //! left here is deciding which files to load, which voices to register, and
 //! holding the result for the request handlers.
+//!
+//! A trimmed copy of `ptts-ws-server`'s `model.rs`, kept separate on purpose: a fix to one
+//! likely belongs in the other.
 
 use anyhow::{Context as _, Result};
 use ptts::preprocess::Normalize;
@@ -98,7 +101,7 @@ impl LoadedModel {
             parent_dir.join("model.q8.gguf")
         } else {
             anyhow::bail!(
-                "model file not found in directory {parent_dir:?}; expected model.safetensors or model.gguf"
+                "model file not found in directory {parent_dir:?}; expected model.safetensors or model.q8.gguf"
             );
         };
         let tokenizer_path = parent_dir.join("tokenizer.json");

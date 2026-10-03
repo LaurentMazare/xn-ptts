@@ -50,8 +50,9 @@ struct Checked {
 /// Why a request is a 400: the field at fault, if one is, and what to say.
 type Rejection = (Option<&'static str>, String);
 
-/// Check a request body against what this server can do, `voices` being the registered ones.
-fn check(body: &[u8], voices: &[String]) -> Result<Checked, Rejection> {
+/// Check a request body against what this server can do: `voices` are the registered ones, and
+/// `sample_rate` is the checkpoint's.
+fn check(body: &[u8], voices: &[String], sample_rate: u32) -> Result<Checked, Rejection> {
     let req: SpeechRequest =
         serde_json::from_slice(body).map_err(|e| (None, format!("invalid request: {e}")))?;
     if req.input.trim().is_empty() {
@@ -71,11 +72,18 @@ fn check(body: &[u8], voices: &[String]) -> Result<Checked, Rejection> {
         );
         return Err((Some("speed"), message));
     }
-    let (format, content_type) = match req.response_format.as_deref().unwrap_or("mp3") {
+    let format = req.response_format.as_deref().unwrap_or("mp3").to_ascii_lowercase();
+    let (format, content_type) = match format.as_str() {
         "mp3" => (Format::Mp3, "audio/mpeg"),
         "opus" => (Format::Opus, "audio/opus"),
         "wav" => (Format::Wav, "audio/wav"),
-        "pcm" => (Format::Pcm, "audio/pcm"),
+        "pcm" if sample_rate == PCM_RATE => (Format::Pcm, "audio/pcm"),
+        "pcm" => {
+            let message = format!(
+                "pcm is {PCM_RATE} Hz and this checkpoint speaks at {sample_rate} Hz; use wav"
+            );
+            return Err((Some("response_format"), message));
+        }
         other => {
             let message =
                 format!("response_format '{other}' is not supported; use mp3, opus, wav or pcm");
@@ -101,17 +109,11 @@ fn check(body: &[u8], voices: &[String]) -> Result<Checked, Rejection> {
 }
 
 pub async fn speech(State(app): State<AppState>, body: Bytes) -> Response {
-    let Checked { input, voice, format, content_type } = match check(&body, &app.voices) {
-        Ok(checked) => checked,
-        Err((param, message)) => return error(StatusCode::BAD_REQUEST, param, message),
-    };
-    if format == Format::Pcm && app.sample_rate != PCM_RATE {
-        let message = format!(
-            "pcm is {PCM_RATE} Hz and this checkpoint speaks at {} Hz; use wav",
-            app.sample_rate
-        );
-        return error(StatusCode::BAD_REQUEST, Some("response_format"), message);
-    }
+    let Checked { input, voice, format, content_type } =
+        match check(&body, &app.voices, app.sample_rate) {
+            Ok(checked) => checked,
+            Err((param, message)) => return error(StatusCode::BAD_REQUEST, param, message),
+        };
     let mut opts = SpeechOptions::default().seed(next_seed(app.seed_base));
     if let Some(voice) = voice {
         opts = opts.voice(voice);
@@ -228,11 +230,11 @@ mod tests {
     }
 
     fn checked(body: &str) -> Checked {
-        check(body.as_bytes(), &voices(&["Freya", "Toby"])).unwrap()
+        check(body.as_bytes(), &voices(&["Freya", "Toby"]), PCM_RATE).unwrap()
     }
 
     fn rejected(body: &str) -> Option<&'static str> {
-        check(body.as_bytes(), &voices(&["Freya", "Toby"])).unwrap_err().0
+        check(body.as_bytes(), &voices(&["Freya", "Toby"]), PCM_RATE).unwrap_err().0
     }
 
     #[test]
@@ -254,10 +256,14 @@ mod tests {
             let got = checked(&format!(r#"{{"input": "Hi.", "response_format": "{name}"}}"#));
             assert_eq!((got.format, got.content_type), (format, content_type), "{name}");
         }
+        assert_eq!(checked(r#"{"input": "Hi.", "response_format": "WAV"}"#).format, Format::Wav);
         assert_eq!(
             rejected(r#"{"input": "Hi.", "response_format": "aac"}"#),
             Some("response_format")
         );
+        // OpenAI's pcm is 24 kHz, and a checkpoint at another rate is not resampled.
+        let at_16k = check(br#"{"input": "Hi.", "response_format": "pcm"}"#, &[], 16000);
+        assert_eq!(at_16k.unwrap_err().0, Some("response_format"));
     }
 
     #[test]
@@ -273,7 +279,8 @@ mod tests {
         assert_eq!(checked(r#"{"input": "Hi.", "voice": "default"}"#).voice, None);
         assert_eq!(rejected(r#"{"input": "Hi.", "voice": "alloy"}"#), Some("voice"));
         // A voice registered as `default` is that voice, not an alias.
-        let with_default = check(br#"{"input": "Hi.", "voice": "DEFAULT"}"#, &voices(&["default"]));
+        let with_default =
+            check(br#"{"input": "Hi.", "voice": "DEFAULT"}"#, &voices(&["default"]), PCM_RATE);
         assert_eq!(with_default.unwrap().voice.as_deref(), Some("default"));
     }
 
