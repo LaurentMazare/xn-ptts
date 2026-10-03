@@ -35,7 +35,7 @@ enum Voice {
 }
 
 /// OpenAI's `pcm`: headerless 16-bit mono at this rate, which clients assume.
-const PCM_RATE: usize = 24000;
+const PCM_RATE: u32 = 24000;
 
 /// A request that passed every check, ready to synthesize.
 #[derive(Debug, PartialEq)]
@@ -73,10 +73,9 @@ fn check(body: &[u8], voices: &[String]) -> Result<Checked, Rejection> {
     }
     let (format, content_type) = match req.response_format.as_deref().unwrap_or("mp3") {
         "mp3" => (Format::Mp3, "audio/mpeg"),
-        "opus" => (Format::OggOpus, "audio/opus"),
+        "opus" => (Format::Opus, "audio/opus"),
         "wav" => (Format::Wav, "audio/wav"),
-        // Pinned rather than the checkpoint's own: free when that is 24 kHz, resampled if not.
-        "pcm" => (Format::pcm(PCM_RATE), "audio/pcm"),
+        "pcm" => (Format::Pcm, "audio/pcm"),
         other => {
             let message =
                 format!("response_format '{other}' is not supported; use mp3, opus, wav or pcm");
@@ -89,7 +88,7 @@ fn check(body: &[u8], voices: &[String]) -> Result<Checked, Rejection> {
             if let Some(voice) = voices.iter().find(|v| v.eq_ignore_ascii_case(&name)) {
                 Some(voice.clone())
             } else if name.eq_ignore_ascii_case("default") {
-                // `default` means the default voice, as on the WebSocket route.
+                // `default` means the default voice, as on `ptts-ws-server`.
                 None
             } else {
                 let message =
@@ -106,6 +105,13 @@ pub async fn speech(State(app): State<AppState>, body: Bytes) -> Response {
         Ok(checked) => checked,
         Err((param, message)) => return error(StatusCode::BAD_REQUEST, param, message),
     };
+    if format == Format::Pcm && app.sample_rate != PCM_RATE {
+        let message = format!(
+            "pcm is {PCM_RATE} Hz and this checkpoint speaks at {} Hz; use wav",
+            app.sample_rate
+        );
+        return error(StatusCode::BAD_REQUEST, Some("response_format"), message);
+    }
     let mut opts = SpeechOptions::default().seed(next_seed(app.seed_base));
     if let Some(voice) = voice {
         opts = opts.voice(voice);
@@ -116,7 +122,7 @@ pub async fn speech(State(app): State<AppState>, body: Bytes) -> Response {
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<std::io::Result<Vec<u8>>>(16);
     let frame = app.frame_size as usize;
-    let sample_rate = app.sample_rate as usize;
+    let sample_rate = app.sample_rate;
     tokio::task::spawn_blocking(move || {
         let stream = match app.synth.stream_with(&input, &opts) {
             Ok(stream) => stream,
@@ -157,21 +163,18 @@ fn encode(
     stream: SpeechStream,
     format: Format,
     frame: usize,
-    sample_rate: usize,
+    sample_rate: u32,
     tx: &tokio::sync::mpsc::Sender<std::io::Result<Vec<u8>>>,
 ) -> anyhow::Result<()> {
     let send = |bytes: Vec<u8>| bytes.is_empty() || tx.blocking_send(Ok(bytes)).is_ok();
-    let mut encoder = Encoder::new(format, frame, sample_rate)?;
-    if let Some(header) = encoder.header()
-        && !send(header.to_vec())
-    {
+    let mut encoder = Encoder::new(format, sample_rate)?;
+    if !send(encoder.header()?) {
         return Ok(());
     }
-    // A chunk can carry several frames, and the resampling and Opus encoders want one at a
-    // time, as the WebSocket handler feeds them.
+    // A chunk can carry several frames, and the Opus encoder wants one at a time.
     for chunk in stream {
         for pcm in chunk?.chunks(frame) {
-            if !send(encoder.encode(pcm)?.data) {
+            if !send(encoder.encode(pcm)?) {
                 return Ok(());
             }
         }
@@ -180,7 +183,7 @@ fn encode(
     Ok(())
 }
 
-/// A different seed per request, as the WebSocket handler gives each stream.
+/// A different seed per request, as `ptts-ws-server` gives each stream.
 fn next_seed(base: u64) -> u64 {
     static REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -244,9 +247,9 @@ mod tests {
     fn each_format_has_its_encoder_and_type() {
         for (name, format, content_type) in [
             ("mp3", Format::Mp3, "audio/mpeg"),
-            ("opus", Format::OggOpus, "audio/opus"),
+            ("opus", Format::Opus, "audio/opus"),
             ("wav", Format::Wav, "audio/wav"),
-            ("pcm", Format::pcm(24000), "audio/pcm"),
+            ("pcm", Format::Pcm, "audio/pcm"),
         ] {
             let got = checked(&format!(r#"{{"input": "Hi.", "response_format": "{name}"}}"#));
             assert_eq!((got.format, got.content_type), (format, content_type), "{name}");

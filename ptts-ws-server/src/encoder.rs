@@ -10,15 +10,9 @@ pub enum PcmFormat {
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    Pcm {
-        sample_rate: Option<usize>,
-        format: PcmFormat,
-    },
+    Pcm { sample_rate: Option<usize>, format: PcmFormat },
     Wav,
     OggOpus,
-    /// Only through the OpenAI-compatible route: MP3 has to be flushed with
-    /// [`Encoder::finish`] at the end, and a WebSocket session never ends its stream.
-    Mp3,
 }
 
 impl std::str::FromStr for Format {
@@ -62,7 +56,8 @@ impl Format {
     pub fn sample_rate(&self) -> Option<usize> {
         match self {
             Self::Pcm { sample_rate, .. } => *sample_rate,
-            Self::Wav | Self::OggOpus | Self::Mp3 => None,
+            Self::Wav => None,
+            Self::OggOpus => None,
         }
     }
 }
@@ -98,7 +93,6 @@ impl Default for Format {
 }
 
 enum Encoder_ {
-    Mp3(crate::mp3::Mp3Encoder),
     OggOpus(kaudio::ogg_opus::Encoder),
     Pcm { fft: Option<rubato::FftFixedInOut<f32>>, format: PcmFormat },
     Wav { header: Vec<u8> },
@@ -136,7 +130,6 @@ impl Encoder {
                 Ok(Encoder_::Pcm { fft, format })
             }
             Format::Wav => Ok(Self::wav(in_sample_rate)?),
-            Format::Mp3 => Ok(Encoder_::Mp3(crate::mp3::Mp3Encoder::new(in_sample_rate as u32)?)),
         };
         Ok(Self { inner: inner?, samples_encoded: 0, in_sample_rate })
     }
@@ -155,13 +148,12 @@ impl Encoder {
         match &self.inner {
             Encoder_::OggOpus(oo) => Some(oo.header_data()),
             Encoder_::Wav { header } => Some(header.as_slice()),
-            Encoder_::Pcm { fft: _, format: _ } | Encoder_::Mp3(_) => None,
+            Encoder_::Pcm { fft: _, format: _ } => None,
         }
     }
 
     pub fn encode(&mut self, pcm: &[f32]) -> Result<EncodedAudio> {
         let buf = match &mut self.inner {
-            Encoder_::Mp3(mp3) => mp3.encode(pcm)?,
             Encoder_::OggOpus(oo) => oo.encode_page(pcm)?,
             Encoder_::Wav { .. } => {
                 let mut buf = vec![];
@@ -182,15 +174,6 @@ impl Encoder {
         self.samples_encoded += pcm.len();
         let stop_s = self.samples_encoded as f64 / self.in_sample_rate as f64;
         Ok(EncodedAudio { data: buf, start_s, stop_s })
-    }
-
-    /// What the encoder still holds once the audio has ended: MP3's last frames, and nothing
-    /// for the other formats.
-    pub fn finish(&mut self) -> Result<Vec<u8>> {
-        match &mut self.inner {
-            Encoder_::Mp3(mp3) => mp3.finish(),
-            _ => Ok(vec![]),
-        }
     }
 }
 

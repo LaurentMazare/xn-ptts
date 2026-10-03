@@ -3,6 +3,7 @@ members = [
   "ptts",
   "ptts-coreml",
   "ptts-coreml-ffi",
+  "ptts-openai-server",
   "ptts-pyo3",
   "ptts-wasm",
   "ptts-ws-server",
