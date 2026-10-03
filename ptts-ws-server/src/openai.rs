@@ -10,13 +10,6 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ptts::synth::{SpeechOptions, SpeechStream};
 
-/// OpenAI's own voice names. Clients default to them, and Pipecat sends nothing else, so each
-/// one speaks in the checkpoint's default voice unless a voice of that name is registered.
-const OPENAI_VOICES: [&str; 13] = [
-    "alloy", "ash", "ballad", "cedar", "coral", "echo", "fable", "marin", "nova", "onyx", "sage",
-    "shimmer", "verse",
-];
-
 /// OpenAI's limit on `input`.
 const MAX_INPUT_CHARS: usize = 4096;
 
@@ -42,7 +35,7 @@ enum Voice {
     Custom { id: String },
 }
 
-/// OpenAI's `pcm`: headerless 16-bit mono at this rate, which clients such as Pipecat assume.
+/// OpenAI's `pcm`: headerless 16-bit mono at this rate, which clients assume.
 const PCM_RATE: usize = 24000;
 
 /// A request that passed every check, ready to synthesize.
@@ -94,20 +87,14 @@ fn check(body: &[u8], voices: &[String]) -> Result<Checked, Rejection> {
     let voice = match req.voice {
         None => None,
         Some(Voice::Name(name) | Voice::Custom { id: name }) => {
-            // In any case, as OpenAI's own names are matched.
             if let Some(voice) = voices.iter().find(|v| v.eq_ignore_ascii_case(&name)) {
                 Some(voice.clone())
-            } else if name.eq_ignore_ascii_case("default")
-                || OPENAI_VOICES.contains(&name.to_lowercase().as_str())
-            {
+            } else if name.eq_ignore_ascii_case("default") {
                 // `default` means the default voice, as on the WebSocket route.
                 None
             } else {
-                let message = format!(
-                    "unknown voice '{name}'; this server has {}, and takes any OpenAI voice name \
-                     as its default voice",
-                    voices.join(", ")
-                );
+                let message =
+                    format!("unknown voice '{name}'; this server has {}", voices.join(", "));
                 return Err((Some("voice"), message));
             }
         }
@@ -273,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn voices_match_in_any_case_and_openai_names_are_the_default() {
+    fn voices_match_in_any_case_and_unknown_ones_are_rejected() {
         assert_eq!(
             checked(r#"{"input": "Hi.", "voice": "freya"}"#).voice.as_deref(),
             Some("Freya")
@@ -282,9 +269,8 @@ mod tests {
             checked(r#"{"input": "Hi.", "voice": {"id": "Toby"}}"#).voice.as_deref(),
             Some("Toby")
         );
-        assert_eq!(checked(r#"{"input": "Hi.", "voice": "Alloy"}"#).voice, None);
         assert_eq!(checked(r#"{"input": "Hi.", "voice": "default"}"#).voice, None);
-        assert_eq!(rejected(r#"{"input": "Hi.", "voice": "nobody"}"#), Some("voice"));
+        assert_eq!(rejected(r#"{"input": "Hi.", "voice": "alloy"}"#), Some("voice"));
         // A voice registered as `default` is that voice, not an alias.
         let with_default = check(br#"{"input": "Hi.", "voice": "DEFAULT"}"#, &voices(&["default"]));
         assert_eq!(with_default.unwrap().voice.as_deref(), Some("default"));
@@ -297,6 +283,6 @@ mod tests {
         assert_eq!(rejected(r#"{"input": "  "}"#), Some("input"));
         let long = format!(r#"{{"input": "{}"}}"#, "a".repeat(MAX_INPUT_CHARS + 1));
         assert_eq!(rejected(&long), Some("input"));
-        assert_eq!(rejected(r#"{"voice": "alloy"}"#), None, "no input at all");
+        assert_eq!(rejected(r#"{"voice": "Freya"}"#), None, "no input at all");
     }
 }

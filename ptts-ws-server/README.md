@@ -23,7 +23,7 @@ It listens on `0.0.0.0:8080` (`--addr` to change it). There is no authentication
 ```bash
 curl http://localhost:8080/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"model": "tts-1", "input": "Hello from Phonon.", "voice": "alloy"}' \
+  -d '{"model": "tts-1", "input": "Hello from Phonon.", "voice": "default"}' \
   -o hello.mp3
 ```
 
@@ -33,13 +33,13 @@ Or with the OpenAI SDK, pointed at the server:
 from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:8080/v1", api_key="unused")
-client.audio.speech.create(model="tts-1", voice="alloy", input="Hello.").write_to_file("hello.mp3")
+client.audio.speech.create(model="tts-1", voice="default", input="Hello.").write_to_file("hello.mp3")
 ```
 
 | Field | What the server does |
 |---|---|
 | `input` | Required, up to 4096 characters. Long text is split at sentence ends. |
-| `voice` | A voice of this checkpoint (`GET /v1/audio/voices` lists them), or any OpenAI voice name (`alloy`, `ash`, `nova` and the rest), which uses the checkpoint's default voice. Optional. |
+| `voice` | A voice of this checkpoint, in any case (`GET /v1/audio/voices` lists them), or `default`, which is also what a missing `voice` means. OpenAI's own names such as `alloy` are a 400. |
 | `response_format` | `mp3` (the default), `opus`, `wav` or `pcm` (headerless 16-bit mono at 24 kHz). `aac` and `flac` are a 400. |
 | `speed` | Only `1.0`: the model has no rate control yet, so other values are a 400. |
 | `model`, `instructions`, `stream_format` | Accepted and ignored. The reply is always the audio bytes, streamed as they are generated. |
@@ -48,8 +48,7 @@ Errors use OpenAI's shape, `{"error": {"message", "type", "param", "code"}}`, so
 
 ## Clients
 
-- **Open WebUI:** Admin Settings, Audio, Text-to-Speech engine `OpenAI`, API base URL `http://<host>:8080/v1`, any API key. Voice `alloy` works, or a voice from `/v1/audio/voices`.
+- **Open WebUI:** Admin Settings, Audio, Text-to-Speech engine `OpenAI`, API base URL `http://<host>:8080/v1`, any API key. Set the voice to `default` or a voice from `/v1/audio/voices`.
 - **Home Assistant** ([sfortis/openai_tts](https://github.com/sfortis/openai_tts)): Custom endpoint, URL `http://<host>:8080/v1/audio/speech`, model `tts-1`. The voice list is read from `/v1/audio/voices`.
-- **Pipecat:** `OpenAITTSService(base_url="http://<host>:8080/v1", api_key="unused", voice="alloy")`. It requests `pcm` at 24 kHz, which is what the server produces.
-- **LiveKit Agents:** `openai.TTS(base_url="http://<host>:8080/v1", api_key="unused", model="tts-1", voice="alloy")`.
-- **SillyTavern:** TTS provider "OpenAI Compatible", endpoint `http://<host>:8080/v1/audio/speech`, voices `alloy` or the checkpoint's own. Leave the speed at 1.
+- **LiveKit Agents:** `openai.TTS(base_url="http://<host>:8080/v1", api_key="unused", model="tts-1", voice="default")`.
+- **SillyTavern:** TTS provider "OpenAI Compatible", endpoint `http://<host>:8080/v1/audio/speech`, voices `default` or the checkpoint's own. Leave the speed at 1.
