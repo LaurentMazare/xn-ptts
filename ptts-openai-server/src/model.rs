@@ -3,6 +3,9 @@
 //! Everything about *how* speech is generated lives in `ptts::synth`. What is
 //! left here is deciding which files to load, which voices to register, and
 //! holding the result for the request handlers.
+//!
+//! A trimmed copy of `ptts-ws-server`'s `model.rs`, kept separate on purpose: a fix to one
+//! likely belongs in the other.
 
 use anyhow::{Context as _, Result};
 use ptts::preprocess::Normalize;
@@ -16,10 +19,7 @@ pub const VOICES: &[&str] =
 pub const DEFAULT_REPO_ID: &str = "kyutai/pocket-tts";
 pub const DEFAULT_MODEL_FILE: &str = "tts_b6369a24.safetensors";
 
-/// The loaded model and the request defaults, shared by every connection.
-///
-/// `Synth` erases the weight format, so this is one struct rather than the
-/// fourteen-variant enum the handlers used to match on.
+/// The loaded model and the request defaults, shared by every request.
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
 
@@ -28,9 +28,6 @@ pub struct Inner {
     /// The checkpoint that loaded: its repo id, or for a local config the name of its folder.
     pub model_name: String,
     pub voices: Vec<String>,
-    pub default_voice: String,
-    pub max_seq_len: usize,
-    pub temperature: f32,
     pub seed_base: u64,
     pub sample_rate: u32,
     pub frame_size: u32,
@@ -104,7 +101,7 @@ impl LoadedModel {
             parent_dir.join("model.q8.gguf")
         } else {
             anyhow::bail!(
-                "model file not found in directory {parent_dir:?}; expected model.safetensors or model.gguf"
+                "model file not found in directory {parent_dir:?}; expected model.safetensors or model.q8.gguf"
             );
         };
         let tokenizer_path = parent_dir.join("tokenizer.json");
@@ -115,7 +112,6 @@ impl LoadedModel {
 
 /// Load the model named by `config` -- a local `config.json`, a Hub repo id, or
 /// nothing for the published checkpoint.
-#[allow(clippy::too_many_arguments)]
 pub async fn load_ptts(
     config: Option<&std::path::PathBuf>,
     voice_dir: Option<&std::path::PathBuf>,
@@ -123,7 +119,6 @@ pub async fn load_ptts(
     quant: Quant,
     temperature: f32,
     seed_base: u64,
-    max_seq_len: usize,
     normalize: Normalize,
 ) -> Result<AppState> {
     let mut m = match config {
@@ -184,15 +179,5 @@ pub async fn load_ptts(
         }
         Some(repo_id) => repo_id.display().to_string(),
     };
-    Ok(AppState(Arc::new(Inner {
-        synth,
-        model_name,
-        voices,
-        default_voice,
-        max_seq_len,
-        temperature,
-        seed_base,
-        sample_rate,
-        frame_size,
-    })))
+    Ok(AppState(Arc::new(Inner { synth, model_name, voices, seed_base, sample_rate, frame_size })))
 }

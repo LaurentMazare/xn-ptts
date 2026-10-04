@@ -52,13 +52,11 @@ fn run(args: Args) -> Result<()> {
         };
         (cfg, model_path)
     } else {
-        let api = hf_hub::HFClientSync::new()?;
-        let (owner, name) = hf_hub::split_id(&args.config);
-        let repo = api.model(owner, name);
-        let cfg = repo.download_file().filename("config.json").send()?;
+        let repo = model_helpers::HubRepo::open(&args.config)?;
+        let cfg = repo.get("config.json")?;
         let cfg: ptts::tts_model::TTSConfig = serde_json::from_str(&std::fs::read_to_string(cfg)?)?;
         let model_path = match args.weights.as_ref() {
-            None => repo.download_file().filename("model.safetensors").send()?,
+            None => repo.get("model.safetensors")?,
             Some(p) => std::path::PathBuf::from_str(p)?,
         };
         (cfg, model_path)

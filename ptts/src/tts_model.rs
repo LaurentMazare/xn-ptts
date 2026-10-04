@@ -1,10 +1,20 @@
+//! [`TTSModel`], the flow LM and the Mimi decoder together, and [`TTSConfig`], a checkpoint's
+//! `config.json`.
+//!
+//! It exposes generation one step at a time: prompt the state with a voice and text, step out
+//! latents, decode them. [`crate::synth`] drives these steps on two threads. A caller with its
+//! own event loop, such as the browser build, drives them directly.
+
 use crate::conditioners::LUTConditioner;
 use crate::flow_lm::{FlowLM, FlowLMConfig, FlowLMState};
 use crate::mimi::{MimiConfig, MimiDecoder, MimiDecoderState, MimiEncoder};
 use xn::nn::{Linear, var_builder::Path};
 use xn::{BackendQ, Result, Tensor, Unquantized};
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+/// How training's fuser combined each conditioning. Only `sum` is read: it names the summed
+/// conditionings, see [`SumLut`] and [`SumContinuous`].
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct FuserConfig {
     pub sum: Vec<String>,
     pub streaming_sum: Vec<String>,
@@ -48,8 +58,6 @@ fn default_audio_prompt_max_duration() -> f32 {
 pub struct ModelId {
     pub sig: String,
     pub epoch: usize,
-    pub mimi_sig: String,
-    pub mimi_epoch: usize,
 }
 
 /// Optional separate Mimi codec used only for speaker (voice-prompt) encoding.
@@ -66,10 +74,13 @@ pub struct SpeakerMimiConfig {
 pub struct TTSConfig {
     pub flow_lm: FlowLMConfig,
     pub mimi: MimiConfig,
-    pub temp: f32,
     pub lsd_decode_steps: usize,
     pub eos_threshold: f32,
+    /// Read for its summed conditionings (`sum`), see [`SumLut`] and [`SumContinuous`].
+    #[serde(default)]
     pub fuser: FuserConfig,
+    /// The conditioners training had beyond the transcript and the voice prompt.
+    #[serde(default)]
     pub conditioners: Vec<ConditionerConfig>,
     pub model_id: Option<ModelId>,
     /// Minimum allowed duration in seconds for an audio prompt passed to
@@ -114,7 +125,7 @@ pub struct BundledVoice {
 }
 
 impl TTSConfig {
-    pub fn v202601(temp: f32) -> Self {
+    pub fn v202601() -> Self {
         Self {
             flow_lm: FlowLMConfig {
                 d_model: 1024,
@@ -152,16 +163,10 @@ impl TTSConfig {
                 transformer_dim_feedforward: 2048,
                 downsample_channel_wise: false,
             },
-            temp,
             lsd_decode_steps: 1,
             eos_threshold: -4.0,
+            fuser: FuserConfig::default(),
             conditioners: vec![],
-            fuser: FuserConfig {
-                sum: vec![],
-                streaming_sum: vec![],
-                prepend: vec![],
-                cross: vec![],
-            },
             model_id: None,
             audio_prompt_min_duration: 10.0,
             audio_prompt_max_duration: 10.0,
@@ -236,21 +241,11 @@ fn check_sum_lut(name: &str, lut: &LutConditioner) -> Result<()> {
     Ok(())
 }
 
-/// The embedding row for `value` of a summed LUT, or `None` for padding with no learnt padding
-/// row: training multiplies a dropped attribute's embedding by its zero mask and adds the learnt
-/// padding if there is one, so without one the attribute contributes nothing.
-fn lut_id(
-    name: &str,
-    values: &[String],
-    learnt_padding_id: Option<u32>,
-    value: Option<&str>,
-) -> Result<Option<u32>> {
-    match value {
-        None => Ok(learnt_padding_id),
-        Some(value) => match values.iter().position(|v| v == value) {
-            Some(index) => Ok(Some(index as u32)),
-            None => xn::bail!("unknown value '{value}' for '{name}', expected one of {values:?}"),
-        },
+/// The embedding row for `value` of a summed LUT: its position in `possible_values`.
+fn lut_id(name: &str, values: &[String], value: &str) -> Result<u32> {
+    match values.iter().position(|v| v == value) {
+        Some(index) => Ok(index as u32),
+        None => xn::bail!("unknown value '{value}' for '{name}', expected one of {values:?}"),
     }
 }
 
@@ -351,12 +346,16 @@ impl<Q: BackendQ> TTSModel<Q> {
         }
         let mut total: Option<Tensor<Q::T, Q::B>> = None;
         for lut in self.sum_luts.iter() {
-            let value = values.get(&lut.name).and_then(|v| v.as_deref());
-            let Some(id) = lut_id(&lut.name, &lut.values, lut.cond.learnt_padding_id(), value)?
-            else {
-                continue;
+            // A dropped attribute: training multiplies its embedding by the zero mask and adds
+            // the learnt padding if there is one, so without one it contributes nothing. The
+            // padding is taken as is, never looked up by id (`embed_tokens` refuses its row).
+            let emb = match values.get(&lut.name).and_then(|v| v.as_deref()) {
+                Some(value) => lut.cond.embed_tokens(&[lut_id(&lut.name, &lut.values, value)?])?,
+                None => match lut.cond.learnt_padding() {
+                    Some(padding) => padding.clone(),
+                    None => continue,
+                },
             };
-            let emb = lut.cond.embed_tokens(&[id])?;
             total = Some(match total {
                 Some(total) => total.broadcast_add(&emb)?,
                 None => emb,
@@ -382,31 +381,6 @@ impl<Q: BackendQ> TTSModel<Q> {
     /// Run flow LM step with text tokens. Increments state.
     pub fn prompt_text(&self, state: &mut TTSState<Q>, text_tokens: &[u32]) -> Result<()> {
         let text_embeddings = self.flow_lm.conditioner.embed_tokens(text_tokens)?;
-        let dev = text_embeddings.device();
-        let empty_latents = Tensor::zeros((1, 0, self.flow_lm.ldim), dev)?;
-        self.run_backbone_and_increment(state, &text_embeddings, &empty_latents)?;
-        Ok(())
-    }
-
-    /// Run flow LM step with text tokens. Increments state.
-    pub fn prompt_text_with_padding(
-        &self,
-        state: &mut TTSState<Q>,
-        text_tokens: &[u32],
-        pad_to: usize,
-    ) -> Result<()> {
-        let text_embeddings = self.flow_lm.conditioner.embed_tokens(text_tokens)?;
-        let (batch_size, seq_len, dim) = text_embeddings.dims3()?;
-        let padding_required = pad_to.saturating_sub(seq_len);
-        let text_embeddings = if padding_required > 0
-            && let Some(padding_embeds) = self.flow_lm.conditioner.learnt_padding()
-        {
-            let padding_embeds =
-                padding_embeds.expand((batch_size, padding_required, dim))?.contiguous()?;
-            Tensor::cat(&[&text_embeddings, &padding_embeds], 1)?
-        } else {
-            text_embeddings
-        };
         let dev = text_embeddings.device();
         let empty_latents = Tensor::zeros((1, 0, self.flow_lm.ldim), dev)?;
         self.run_backbone_and_increment(state, &text_embeddings, &empty_latents)?;
@@ -699,13 +673,68 @@ mod tests {
 
     #[test]
     fn short_text_is_not_padded() {
-        // pocket-tts prepended 8 spaces to texts of fewer than 5 words; audium-trained models
+        // pocket-tts prepended 8 spaces to texts of fewer than 5 words; Phonon models
         // never see those spaces, and short texts go wrong with them.
         assert_eq!(prepare_text_prompt("not a thing"), ("Not a thing.".to_string(), 3));
         assert_eq!(
             prepare_text_prompt("one two three four five"),
             ("One two three four five.".to_string(), 1)
         );
+    }
+
+    #[test]
+    fn prepare_text_prompt_edge_cases() {
+        let cases: &[(&str, &str, usize)] = &[
+            ("", "", 3),
+            ("  \n ", "", 3),
+            // Only a trailing letter or digit gets a full stop; other punctuation is kept.
+            ("is it?", "Is it?", 3),
+            ("hello world!", "Hello world!", 3),
+            ("call me at 5", "Call me at 5.", 3),
+            // Line breaks, CRLF included, and runs of spaces become one space.
+            ("one\r\ntwo   three\nfour five", "One two three four five.", 1),
+            ("éclair au chocolat", "Éclair au chocolat.", 3),
+        ];
+        for &(input, text, frames) in cases {
+            assert_eq!(prepare_text_prompt(input), (text.to_string(), frames), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn config_round_trips_and_fills_defaults() {
+        let cfg = TTSConfig::v202601();
+        let json = serde_json::to_value(&cfg).unwrap();
+        let back: TTSConfig = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), json);
+
+        // A config written before these fields existed still loads, with their defaults.
+        let mut old = json;
+        let fields = old.as_object_mut().unwrap();
+        for key in [
+            "audio_prompt_min_duration",
+            "audio_prompt_max_duration",
+            "cfg_null_audio_empty",
+            "speaker_mimi",
+        ] {
+            assert!(fields.remove(key).is_some(), "{key} is no longer in the config");
+        }
+        let old: TTSConfig = serde_json::from_value(old).unwrap();
+        assert_eq!(old.audio_prompt_min_duration, default_audio_prompt_min_duration());
+        assert_eq!(old.audio_prompt_max_duration, default_audio_prompt_max_duration());
+        assert!(!old.cfg_null_audio_empty);
+        assert!(old.speaker_mimi.is_none());
+    }
+
+    #[test]
+    fn config_ignores_keys_it_no_longer_reads() {
+        // Published config.json files still carry these, and have to keep loading.
+        let mut json = serde_json::to_value(TTSConfig::v202601()).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        fields.insert("temp".into(), serde_json::json!(0.7));
+        let id = serde_json::json!({"sig": "abc", "epoch": 1, "mimi_sig": "def", "mimi_epoch": 2});
+        fields.insert("model_id".into(), id);
+        let cfg: TTSConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(cfg.model_ext().as_deref(), Some("abc@1"));
     }
 
     fn lut(tokenizer: &str, n_bins: usize, values: &[&str]) -> LutConditioner {
@@ -719,25 +748,22 @@ mod tests {
     }
 
     #[test]
-    fn a_value_is_its_position_and_padding_is_the_learnt_row_or_nothing() {
+    fn a_value_is_its_position() {
         let values = ["a".to_string(), "b".to_string()];
-        assert_eq!(lut_id("v", &values, Some(3), Some("a")).unwrap(), Some(0));
-        assert_eq!(lut_id("v", &values, Some(3), Some("b")).unwrap(), Some(1));
-        // Padding is the learnt row appended after `n_bins`, never row `n_bins` itself.
-        assert_eq!(lut_id("v", &values, Some(3), None).unwrap(), Some(3));
-        assert_eq!(lut_id("v", &values, None, None).unwrap(), None);
+        assert_eq!(lut_id("v", &values, "a").unwrap(), 0);
+        assert_eq!(lut_id("v", &values, "b").unwrap(), 1);
     }
 
     #[test]
     fn an_unknown_value_is_an_error_not_padding() {
         let values = ["a".to_string()];
-        let err = lut_id("v", &values, Some(2), Some("z")).unwrap_err().to_string();
+        let err = lut_id("v", &values, "z").unwrap_err().to_string();
         assert!(err.contains("unknown value 'z'"), "{err}");
     }
 
     #[test]
     fn bundled_voices_are_read_from_the_config() {
-        let mut cfg = serde_json::to_value(TTSConfig::v202601(0.7)).unwrap();
+        let mut cfg = serde_json::to_value(TTSConfig::v202601()).unwrap();
         assert!(cfg.get("voices").is_none(), "an empty list is not written");
         cfg["voices"] = serde_json::json!([
             {"name": "alba", "conditions": {"voice_name": "a@300"},

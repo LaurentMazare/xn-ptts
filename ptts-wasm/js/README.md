@@ -85,7 +85,7 @@ stopButton.onclick = () => controller.abort();
 - `tts.threads`: the CPU threads generation runs on, and `tts.threadsReason` why that many.
 - `tts.dispose()` stops the worker and frees the model's memory.
 
-`temperature` defaults to `0.3` and `seed` to `42`. The same text, voice, temperature and seed always give the same audio.
+`temperature` defaults to `0.3` and `seed` to `4242424242424242`, the same defaults as the Rust and Python packages. The same text, voice, temperature and seed always give the same audio. A seed above `Number.MAX_SAFE_INTEGER` has to be a `bigint`.
 
 Requests on one instance run one at a time, in the order they were made.
 

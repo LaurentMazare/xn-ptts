@@ -123,7 +123,7 @@ async function handleAddVoice(name, source) {
 async function handleGenerate(id, { text, voice, temperature, seed }) {
   const index = await voiceIndex(voice);
   const t0 = performance.now();
-  const chunks = model.start_generation(index, text, temperature, seed >>> 0);
+  const chunks = model.start_generation(index, text, temperature, seed);
 
   const stats = { chunks, tokens: 0, frames: 0, samples: 0, promptMs: 0, stepMs: { avg: 0, min: 0, max: 0 }, firstAudioMs: null, totalMs: 0, cancelled: false };
   let stepMsTotal = 0;

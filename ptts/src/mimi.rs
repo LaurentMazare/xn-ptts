@@ -1,8 +1,14 @@
+//! The Mimi neural audio codec.
+//!
+//! [`MimiDecoder`] turns the flow LM's latents into PCM at the checkpoint's sample rate, one
+//! frame at a time, keeping its streaming state in [`MimiDecoderState`]. [`MimiEncoder`] goes
+//! the other way and is used only to embed a voice prompt from audio.
+
+use crate::conv::StreamingConvTr1dState;
 use crate::conv::pad_for_conv1d;
-use crate::conv::{StreamingConv1dState, StreamingConvTr1dState};
 use crate::dummy_quantizer::DummyQuantizer;
 use crate::resample::{ConvDownsample1d, ConvTrUpsample1d};
-use crate::seanet::{SEANetDecoder, SEANetDecoderState, SEANetEncoder, SEANetEncoderState};
+use crate::seanet::{SEANetDecoder, SEANetDecoderState, SEANetEncoder};
 use crate::transformer::{ProjectedTransformer, StreamingTransformerState};
 use xn::nn::var_builder::Path;
 use xn::{Backend, BackendQ, Result, Tensor, WithDTypeF};
@@ -46,22 +52,9 @@ pub struct MimiDecoder<Q: BackendQ> {
     decoder: SEANetDecoder<Q::T, Q::B>,
     decoder_transformer: ProjectedTransformer<Q>,
     upsample: Option<ConvTrUpsample1d<Q::T, Q::B>>,
-    pub quantizer: DummyQuantizer<Q::T, Q::B>,
+    pub(crate) quantizer: DummyQuantizer<Q::T, Q::B>,
     pub sample_rate: usize,
     pub frame_rate: f64,
-}
-
-pub struct MimiModel<Q: BackendQ> {
-    encoder: MimiEncoder<Q>,
-    decoder: MimiDecoder<Q>,
-    pub sample_rate: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct MimiEncoderState<T: WithDTypeF, B: Backend> {
-    encoder_state: SEANetEncoderState<T, B>,
-    encoder_transformer_state: StreamingTransformerState<T, B>,
-    downsample_state: Option<StreamingConv1dState<T, B>>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,12 +62,6 @@ pub struct MimiDecoderState<T: WithDTypeF, B: Backend> {
     decoder_state: SEANetDecoderState<T, B>,
     decoder_transformer_state: StreamingTransformerState<T, B>,
     upsample_state: Option<StreamingConvTr1dState<T, B>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct MimiState<T: WithDTypeF, B: Backend> {
-    encoder_state: MimiEncoderState<T, B>,
-    decoder_state: MimiDecoderState<T, B>,
 }
 
 impl<Q: BackendQ> MimiEncoder<Q> {
@@ -129,25 +116,6 @@ impl<Q: BackendQ> MimiEncoder<Q> {
         Ok(Self { encoder, encoder_transformer, downsample, frame_size })
     }
 
-    pub fn init_state(
-        &self,
-        batch_size: usize,
-        sequence_length: usize,
-    ) -> Result<MimiEncoderState<Q::T, Q::B>> {
-        let downsample_state = match &self.downsample {
-            Some(ds) => Some(ds.init_state(batch_size)?),
-            None => None,
-        };
-        let s = MimiEncoderState {
-            encoder_state: self.encoder.init_state(batch_size)?,
-            encoder_transformer_state: self
-                .encoder_transformer
-                .init_state(batch_size, sequence_length)?,
-            downsample_state,
-        };
-        Ok(s)
-    }
-
     /// Encode audio to latent (non-streaming). Returns [B, C, T'].
     pub fn encode_to_latent(&self, x: &Tensor<Q::T, Q::B>) -> Result<Tensor<Q::T, Q::B>> {
         let x = pad_for_conv1d(x, self.frame_size, self.frame_size)?;
@@ -161,27 +129,6 @@ impl<Q: BackendQ> MimiEncoder<Q> {
             Some(ds) => ds.forward_no_state(&emb),
             None => Ok(emb),
         }
-    }
-
-    pub fn encode_to_latent_step(
-        &self,
-        x: &Tensor<Q::T, Q::B>,
-        state: &mut MimiEncoderState<Q::T, Q::B>,
-    ) -> Result<Tensor<Q::T, Q::B>> {
-        let x = pad_for_conv1d(x, self.frame_size, self.frame_size)?;
-        let emb = self.encoder.forward(&x, &mut state.encoder_state)?;
-        let mut outs =
-            self.encoder_transformer.forward(&emb, &mut state.encoder_transformer_state)?;
-        let emb = outs.swap_remove(0);
-        // Downsample to frame rate
-        match (&self.downsample, &mut state.downsample_state) {
-            (Some(ds), Some(ds_state)) => ds.forward(&emb, ds_state),
-            _ => Ok(emb),
-        }
-    }
-
-    pub fn frame_size(&self) -> usize {
-        self.frame_size
     }
 }
 
@@ -275,56 +222,5 @@ impl<Q: BackendQ> MimiDecoder<Q> {
 
         let outs = self.decoder_transformer.forward(&emb, &mut state.decoder_transformer_state)?;
         self.decoder.forward(&outs[0], &mut state.decoder_state)
-    }
-
-    pub fn frame_size(&self) -> usize {
-        (self.sample_rate as f64 / self.frame_rate).round() as usize
-    }
-}
-
-impl<Q: BackendQ> MimiModel<Q> {
-    pub fn load(vb: &Path<Q::B>, cfg: &MimiConfig) -> Result<Self> {
-        let encoder = MimiEncoder::load(vb, cfg)?;
-        let decoder = MimiDecoder::load(vb, cfg)?;
-
-        Ok(Self { encoder, decoder, sample_rate: cfg.sample_rate })
-    }
-
-    pub fn frame_size(&self) -> usize {
-        self.encoder.frame_size
-    }
-
-    pub fn init_state(
-        &self,
-        batch_size: usize,
-        sequence_length: usize,
-    ) -> Result<MimiState<Q::T, Q::B>> {
-        let s = MimiState {
-            encoder_state: self.encoder.init_state(batch_size, sequence_length)?,
-            decoder_state: self.decoder.init_state(batch_size, sequence_length)?,
-        };
-        Ok(s)
-    }
-
-    /// Encode audio to latent (non-streaming). Returns [B, C, T'].
-    pub fn encode_to_latent(&self, x: &Tensor<Q::T, Q::B>) -> Result<Tensor<Q::T, Q::B>> {
-        self.encoder.encode_to_latent(x)
-    }
-
-    pub fn encode_to_latent_step(
-        &self,
-        x: &Tensor<Q::T, Q::B>,
-        state: &mut MimiState<Q::T, Q::B>,
-    ) -> Result<Tensor<Q::T, Q::B>> {
-        self.encoder.encode_to_latent_step(x, &mut state.encoder_state)
-    }
-
-    /// Decode from latent to audio (streaming). Input: [B, C, T'].
-    pub fn decode_from_latent_step(
-        &self,
-        latent: &Tensor<Q::T, Q::B>,
-        state: &mut MimiState<Q::T, Q::B>,
-    ) -> Result<Tensor<Q::T, Q::B>> {
-        self.decoder.decode_from_latent_step(latent, &mut state.decoder_state)
     }
 }

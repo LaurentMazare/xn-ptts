@@ -22,8 +22,8 @@ inputs:
     default: ""
   audio-deps:
     description: >
-      Install libopus, which `ptts-ws-server` needs through `kaudio`. Set to "false" for jobs
-      that do not touch that crate.
+      Install libopus and libmp3lame, which the two servers need: libopus through `kaudio`,
+      LAME for `ptts-openai-server`'s MP3 output. Set to "false" for jobs that touch neither.
     required: false
     default: "true"
 
@@ -36,29 +36,30 @@ runs:
       # target-specific flags (the wasm one) set them explicitly instead.
       run: rm -f .cargo/config.toml
 
-    - name: Install libopus
+    - name: Install libopus and libmp3lame
       if: inputs.audio-deps == 'true' && runner.os != 'Windows'
       shell: bash
-      # `ptts-ws-server` -> `kaudio` -> `libopus_sys`, which looks for a system libopus via
-      # pkg-config. Without this the crate cannot be built at all, which is why it used to be
-      # excluded from every CI job.
+      # Both servers -> `kaudio` -> `libopus_sys`, which looks for a system libopus via
+      # pkg-config, and `ptts-openai-server` links LAME itself for MP3 (see its build.rs).
+      # Without these neither can be built, which is why they used to be excluded everywhere.
       run: |
         if [ "${{ runner.os }}" = "Linux" ]; then
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libopus-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libopus-dev libmp3lame-dev pkg-config
         else
           brew list opus >/dev/null 2>&1 || brew install opus
+          brew list lame >/dev/null 2>&1 || brew install lame
           brew list pkg-config >/dev/null 2>&1 || brew install pkg-config
         fi
 
     - name: Work out what this platform can build
       shell: bash
-      # Windows has no one-line libopus, so `ptts-ws-server` is skipped there and only there.
-      # Every job uses $WS_EXCLUDE rather than hardcoding the exclusion, so the crate is
-      # covered everywhere it can be.
+      # Windows has no one-line libopus, so the two servers are skipped there and only there.
+      # Every job uses $WS_EXCLUDE rather than hardcoding the exclusion, so the crates are
+      # covered everywhere they can be.
       run: |
         if [ "${{ runner.os }}" = "Windows" ]; then
-          echo "WS_EXCLUDE=--exclude ptts-ws-server" >> "$GITHUB_ENV"
+          echo "WS_EXCLUDE=--exclude ptts-ws-server --exclude ptts-openai-server" >> "$GITHUB_ENV"
         else
           echo "WS_EXCLUDE=" >> "$GITHUB_ENV"
         fi

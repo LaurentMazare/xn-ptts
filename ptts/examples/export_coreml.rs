@@ -50,6 +50,9 @@ struct Args {
     /// with it the cost of every step, so it is worth keeping near what ptts chunks text into.
     #[arg(long, default_value_t = 48)]
     max_tokens: usize,
+    /// Sampling temperature the app speaks at. The default matches the other frontends.
+    #[arg(long, default_value_t = 0.3)]
+    temperature: f32,
 }
 
 fn write(out: &Path, name: &str, built: fl::Built) -> Result<()> {
@@ -119,15 +122,7 @@ fn main() -> Result<()> {
 
     std::fs::create_dir_all(args.out.join("voices"))?;
     let voices: Vec<(String, PathBuf)> = match args.voices.as_deref() {
-        Some(dir) => {
-            let mut v: Vec<(String, PathBuf)> = std::fs::read_dir(dir)?
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.extension().is_some_and(|x| x == "safetensors"))
-                .map(|p| (p.file_stem().unwrap().to_string_lossy().into(), p))
-                .collect();
-            v.sort();
-            v
-        }
+        Some(dir) => ptts::loader::voices_in(dir),
         None => ck.voices.clone(),
     };
     anyhow::ensure!(!voices.is_empty(), "no voices: pass --voices <dir>");
@@ -226,7 +221,7 @@ fn main() -> Result<()> {
         "max_frames": max_frames,
         "mimi_window": window,
         "eos_threshold": cfg.eos_threshold,
-        "temperature": cfg.temp,
+        "temperature": args.temperature,
         "dims": {
             "d": dims.d, "heads": dims.heads, "layers": dims.layers, "ff": dims.ff,
             "ldim": dims.ldim, "flow_d": dims.flow_d, "flow_blocks": dims.flow_blocks,

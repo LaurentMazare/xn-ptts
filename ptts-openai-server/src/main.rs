@@ -1,12 +1,12 @@
+mod api;
 mod encoder;
-mod handler;
 mod model;
-mod protocol;
+mod mp3;
 mod utils;
 
 use anyhow::Result;
 use axum::Router;
-use axum::routing::any;
+use axum::routing::{get, post};
 use clap::Parser;
 use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant};
@@ -14,10 +14,10 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
-#[command(name = "ptts-ws-server")]
-#[command(about = "WebSocket server for Phonon")]
+#[command(name = "ptts-openai-server")]
+#[command(about = "OpenAI-compatible speech server for Phonon")]
 struct Args {
-    #[arg(long, default_value = "0.0.0.0:8080")]
+    #[arg(long, default_value = "0.0.0.0:8880")]
     addr: String,
 
     #[arg(long)]
@@ -34,9 +34,6 @@ struct Args {
 
     #[arg(long, default_value_t = 4242424242424242)]
     seed: u64,
-
-    #[arg(long, default_value_t = 4096)]
-    max_seq_len: usize,
 
     /// Device to run on: auto, cpu, cuda, vulkan or metal. `auto` picks the GPU backend this
     /// build was compiled with, if any, and the CPU otherwise.
@@ -87,12 +84,15 @@ async fn main() -> Result<()> {
     let app_state = build_app_state(&args).await?;
 
     let app = Router::new()
-        .route("/speech/tts", any(handler::ws_handler))
+        .route("/v1/audio/speech", post(api::speech))
+        .route("/v1/audio/voices", get(api::voices))
+        .route("/v1/models", get(api::models))
+        .route("/health", get(api::health))
         .with_state(app_state)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&args.addr).await?;
-    tracing::info!(addr = %args.addr, "listening on /speech/tts");
+    tracing::info!(addr = %args.addr, "listening on /v1/audio/speech");
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -130,7 +130,6 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         quant,
         args.temperature,
         args.seed,
-        args.max_seq_len,
         normalize,
     )
     .await

@@ -16,7 +16,7 @@ use ptts::synth::{DeviceKind, Quant, SpeechOptions, Synth, SynthBuilder};
 /// before the weights are read, so the config's contents do not matter, and
 /// neither does which language it would have normalized as.
 fn builder(weights: impl Into<std::path::PathBuf>) -> SynthBuilder {
-    Synth::builder(ptts::tts_model::TTSConfig::v202601(0.5), weights, Normalize::for_lang(Lang::En))
+    Synth::builder(ptts::tts_model::TTSConfig::v202601(), weights, Normalize::for_lang(Lang::En))
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn quant_parses_every_spelling_the_clis_accept() {
         ("q4k", Quant::Q4k),
     ];
     for (name, expected) in cases {
-        assert_eq!(Quant::parse(name).unwrap(), expected, "parsing {name}");
+        assert_eq!(name.parse::<Quant>().unwrap(), expected, "parsing {name}");
     }
 }
 
@@ -58,13 +58,14 @@ fn quant_round_trips_through_its_canonical_name() {
         Quant::Q41,
         Quant::Q4k,
     ] {
-        assert_eq!(Quant::parse(quant.as_str()).unwrap(), quant);
+        assert_eq!(quant.as_str().parse::<Quant>().unwrap(), quant);
     }
+    assert_eq!("Q8_0".parse::<Quant>().unwrap(), Quant::Q80, "any case");
 }
 
 #[test]
 fn unknown_quant_lists_the_valid_ones() {
-    let err = Quant::parse("q3k").unwrap_err();
+    let err = "q3k".parse::<Quant>().unwrap_err();
     assert!(matches!(err, Error::InvalidArgument(_)), "{err:?}");
     let err = err.to_string();
     assert!(err.contains("q3k"), "{err}");
@@ -73,12 +74,13 @@ fn unknown_quant_lists_the_valid_ones() {
 
 #[test]
 fn device_parses_and_rejects_unknown_names() {
-    assert_eq!(DeviceKind::parse("auto").unwrap(), DeviceKind::Auto);
-    assert_eq!(DeviceKind::parse("cpu").unwrap(), DeviceKind::Cpu);
-    assert_eq!(DeviceKind::parse("cuda").unwrap(), DeviceKind::Cuda);
-    assert_eq!(DeviceKind::parse("vulkan").unwrap(), DeviceKind::Vulkan);
-    assert_eq!(DeviceKind::parse("metal").unwrap(), DeviceKind::Metal);
-    let err = DeviceKind::parse("tpu").unwrap_err();
+    assert_eq!("auto".parse::<DeviceKind>().unwrap(), DeviceKind::Auto);
+    assert_eq!("cpu".parse::<DeviceKind>().unwrap(), DeviceKind::Cpu);
+    assert_eq!(" CPU ".parse::<DeviceKind>().unwrap(), DeviceKind::Cpu, "trimmed, any case");
+    assert_eq!("cuda".parse::<DeviceKind>().unwrap(), DeviceKind::Cuda);
+    assert_eq!("vulkan".parse::<DeviceKind>().unwrap(), DeviceKind::Vulkan);
+    assert_eq!("metal".parse::<DeviceKind>().unwrap(), DeviceKind::Metal);
+    let err = "tpu".parse::<DeviceKind>().unwrap_err();
     assert!(matches!(err, Error::InvalidArgument(_)), "{err:?}");
     assert!(err.to_string().contains("tpu"), "{err}");
 }
@@ -102,9 +104,7 @@ fn explicit_device_survives_resolution() {
 
 #[test]
 fn missing_weights_are_a_not_found_naming_the_path() {
-    let err = builder("/definitely/not/a/model/weights.safetensors")
-        .load::<xn::Unquantized<f32, xn::CpuDevice>>(xn::CPU)
-        .unwrap_err();
+    let err = builder("/definitely/not/a/model/weights.safetensors").build().unwrap_err();
     assert!(matches!(err, Error::NotFound(_)), "{err:?}");
     assert!(err.to_string().contains("/definitely/not/a/model/weights.safetensors"), "{err}");
 }
@@ -115,7 +115,7 @@ fn a_load_without_a_tokenizer_says_how_to_supply_one() {
     // is not a checkpoint, but the tokenizer is resolved before it is read.
     let weights = std::env::temp_dir().join("ptts-synth-api-no-tokenizer.safetensors");
     std::fs::write(&weights, b"").unwrap();
-    let err = builder(&weights).load::<xn::Unquantized<f32, xn::CpuDevice>>(xn::CPU).unwrap_err();
+    let err = builder(&weights).build().unwrap_err();
     assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
     assert!(err.to_string().contains("SynthBuilder::tokenizer"), "{err}");
     std::fs::remove_file(&weights).ok();
@@ -170,17 +170,10 @@ fn session_is_part_of_the_public_api() {
     }
 }
 
-#[test]
-fn a_generic_session_is_nameable_too() {
-    // `ptts-wasm` and anything else that fixes its weight format at compile
-    // time uses `SessionOf<Q>` rather than the erased `Session`.
-    fn _accepts<Q: xn::BackendQ>(_: &ptts::synth::SessionOf<Q>) {}
-}
-
 /// `Session` needs `Sync` as well as `Send`: `ptts-ws-server` holds a
 /// `&Session` across an await, and tokio requires that future to be `Send`.
 /// That does **not** make concurrent generation from one session safe — see the
-/// note on `SessionOf`, which the type cannot enforce. `SpeechStream` is `Send`
+/// note on `Session`, which the type cannot enforce. `SpeechStream` is `Send`
 /// only: it owns an mpsc receiver, which is why `ptts-pyo3` wraps it in a mutex.
 #[test]
 fn the_types_the_frontends_move_between_threads_still_can() {
@@ -189,9 +182,7 @@ fn the_types_the_frontends_move_between_threads_still_can() {
     // `ptts-ws-server` is built on `anyhow`, which only accepts a `Send + Sync` error.
     send_sync::<ptts::Error>();
     send_sync::<ptts::synth::Synth>();
-    send_sync::<ptts::synth::SynthOf<xn::Unquantized<f32, xn::CpuDevice>>>();
     send_sync::<ptts::synth::Session>();
-    send_sync::<ptts::synth::SessionOf<xn::Unquantized<f32, xn::CpuDevice>>>();
     send::<ptts::synth::SpeechStream>();
 }
 
@@ -200,8 +191,8 @@ fn a_frontend_on_xn_result_still_compiles() {
     // The compatibility bridge: `?` on this crate inside a function returning `xn::Result` is
     // what every existing frontend does, and it has to keep working.
     fn _frontend() -> xn::Result<()> {
-        let _ = Quant::parse("q8_0")?;
-        let _ = DeviceKind::parse("cpu")?;
+        let _ = "q8_0".parse::<Quant>()?;
+        let _ = "cpu".parse::<DeviceKind>()?;
         Ok(())
     }
 }
