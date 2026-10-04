@@ -3,6 +3,7 @@ members = [
   "ptts",
   "ptts-coreml",
   "ptts-coreml-ffi",
+  "ptts-openai-server",
   "ptts-pyo3",
   "ptts-wasm",
   "ptts-ws-server",
@@ -11,10 +12,10 @@ resolver = "3"
 
 [workspace.package]
 version = "0.4.0"
-description = "Phonon text-to-speech inference and serving using xn"
-repository = "https://github.com/LaurentMazare/xn-ptts"
-keywords = ["pytorch", "deep-learning", "machine-learning"]
-categories = ["science"]
+description = "Phonon text-to-speech inference and serving"
+repository = "https://github.com/gradium-ai/xn-ptts"
+keywords = ["tts", "text-to-speech", "speech-synthesis", "voice-cloning", "on-device"]
+categories = ["multimedia::audio"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
@@ -53,9 +54,8 @@ uuid = { version = "1", features = ["v4"] }
 wasm-bindgen = "0.2"
 xn = "0.2.6"
 
-[profile.release]
-debug = true
-
-[profile.release-no-debug]
+# `release` stays lean: it is what the wheels, the xcframework and `cargo install --path` ship.
+# For a profiler, build with `--profile profiling`, which is release plus debug info.
+[profile.profiling]
 inherits = "release"
-debug = false
+debug = true

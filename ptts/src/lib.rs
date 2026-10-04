@@ -9,21 +9,21 @@
 //! [`synth::Synth`] is the whole pipeline behind one call:
 //!
 //! ```no_run
-//! # fn main() -> xn::Result<()> {
-//! use ptts::preprocess::{Lang, Normalize};
+//! # fn main() -> ptts::Result<()> {
+//! use ptts::preprocess::Lang;
 //! use ptts::synth::Synth;
 //! use ptts::tts_model::TTSConfig;
 //!
 //! let tts = Synth::builder(
-//!     TTSConfig::v202601(0.3),
+//!     TTSConfig::v202601(),
 //!     "model/model.safetensors",
-//!     Normalize::for_lang(Lang::En),
+//!     Lang::En,
 //! )
 //! .tokenizer_file("model/tokenizer.json")
 //! .add_voice("alba", "model/voices/alba.safetensors")
 //! .build()?;
 //! let pcm = tts.say("Hello world")?;
-//! ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate() as u32)?;
+//! ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate())?;
 //! # Ok(())
 //! # }
 //! ```
@@ -41,7 +41,7 @@
 //! | [`audio`] | Decoding and resampling audio files for voice cloning, behind `audio`. |
 //! | [`tts_model`] | [`tts_model::TTSModel`], the streaming primitives `synth` drives. |
 //! | [`flow_lm`], [`transformer`] | The token-conditioned flow-matching LM. |
-//! | [`mimi`], [`seanet`] | The neural audio codec. |
+//! | [`mimi`] | The neural audio codec. |
 //!
 //! # Errors
 //!
@@ -62,7 +62,7 @@
 //! doing nothing.
 //!
 //! A voice is conditioned on once per [`synth::Synth`], whichever entry point
-//! is used; [`synth::Synth::session`] additionally pins the KV budget for a
+//! is used; [`synth::SynthApi::session`] additionally pins the KV budget for a
 //! stream of requests.
 //!
 //! Callers that need to drive the loop themselves — a browser build stepping
@@ -74,20 +74,20 @@
 
 #[cfg(feature = "audio")]
 pub mod audio;
-pub mod conditioners;
-pub mod conv;
-pub mod dummy_quantizer;
+mod conditioners;
+mod conv;
+mod dummy_quantizer;
 pub mod error;
 pub mod flow_lm;
-pub mod layer_scale;
+mod layer_scale;
 pub mod loader;
 pub mod mimi;
-pub mod mlp;
+mod mlp;
 pub mod plan;
 pub mod preprocess;
-pub mod resample;
-pub mod rope;
-pub mod seanet;
+mod resample;
+mod rope;
+mod seanet;
 // Not on wasm: `Synth` runs the flow LM and the Mimi decoder on two `std::thread`s, and
 // `wasm32-unknown-unknown` has none -- `spawn` there compiles and then panics. Browser
 // frontends drive `tts_model::TTSModel` directly instead.

@@ -123,8 +123,8 @@ test('rewrites is checked before anything is downloaded, then handed to the work
   assert.equal(FakeWorker.last.init.rewrites, undefined);
 });
 
-test('the rewrites check accepts exactly what Rules::parse accepts', async () => {
-  // `Rules::parse` trims and lowercases, and takes `off` as a synonym for `none`.
+test('the rewrites check accepts exactly what the Rust Rules parser accepts', async () => {
+  // `Rules`'s `FromStr` trims and lowercases, and takes `off` as a synonym for `none`.
   for (const value of ['off', 'ALL', ' none ', 'Numbers', 'numbers']) {
     await PhononTTS.load({ lang: 'en', rewrites: value, model: MODEL, workerUrl: 'worker.js' });
     assert.equal(FakeWorker.last.init.rewrites, value, 'passed through as written');
@@ -153,6 +153,18 @@ test('stream yields every frame in order, then its stats', async () => {
   assert.deepEqual(seen, [0, 1, 2]);
   assert.equal((await stream.done).frames, 3);
   assert.equal(FakeWorker.last.generations[0].voice, 'alba', 'the default voice');
+});
+
+test('the seed defaults to the one Rust and Python use, and goes out as a bigint', async () => {
+  FakeWorker.script = { frames: 1, fail: null };
+  const tts = await load();
+  for (const [seed, sent] of [[undefined, 4242424242424242n], [7, 7n], [2n ** 63n, 2n ** 63n]]) {
+    await tts.synth('Hi.', { seed });
+    assert.equal(FakeWorker.last.generations.at(-1).seed, sent);
+  }
+  for (const seed of [-1, 1.5, 2 ** 60, '7', 2n ** 64n, {}, Symbol('seed')]) {
+    assert.throws(() => tts.stream('Hi.', { seed }), RangeError, String(seed));
+  }
 });
 
 test('synth concatenates, and requests run one at a time in order', async () => {

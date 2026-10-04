@@ -16,6 +16,7 @@
 //! other Python thread wanting the same lock, and Ctrl-C reaches neither.
 
 use numpy::{PyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
+use ptts::loader::{DEFAULT_VOICE_FILE, VOICE_DIRS};
 use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant, SpeechOptions, SpeechStream, Synth, SynthBuilder};
 use ptts::tts_model::TTSConfig;
@@ -74,9 +75,21 @@ struct Artifacts {
     voices: Vec<(String, std::path::PathBuf)>,
 }
 
+/// Weights file names to look for, best first. `model.q8.gguf` is already q8_0, so it leads
+/// only when that is the format asked for: any other format is quantized more faithfully from
+/// the f32 weights than from q8. `tts_b6369a24.safetensors` is what the Pocket TTS repo calls
+/// its weights.
+fn weight_candidates(quant: Quant) -> [&'static str; 3] {
+    if quant == Quant::Q80 {
+        ["model.q8.gguf", "model.safetensors", DEFAULT_MODEL_FILE]
+    } else {
+        ["model.safetensors", DEFAULT_MODEL_FILE, "model.q8.gguf"]
+    }
+}
+
 /// Resolve `config` — a local `config.json`, a Hub repo id, or nothing for the
 /// published checkpoint — into the files needed to load it.
-fn resolve(config: Option<&str>, temperature: f32) -> ptts::Result<Artifacts> {
+fn resolve(config: Option<&str>, quant: Quant) -> ptts::Result<Artifacts> {
     match config {
         // A local config path: load the weights sitting next to it.
         Some(path) if std::path::Path::new(path).is_file() || path.ends_with(".json") => {
@@ -85,56 +98,135 @@ fn resolve(config: Option<&str>, temperature: f32) -> ptts::Result<Artifacts> {
             let parent = config_path
                 .parent()
                 .ok_or_else(|| ptts::Error::NotFound(format!("{path} has no parent directory")))?;
-            // Prefer an unquantized safetensors checkpoint, falling back to a
-            // pre-quantized GGUF if that is what sits next to the config.
-            let model_path = if parent.join("model.safetensors").is_file() {
-                parent.join("model.safetensors")
-            } else {
-                parent.join("model.q8.gguf")
-            };
+            let candidates = weight_candidates(quant);
+            let model_path =
+                candidates.iter().map(|name| parent.join(name)).find(|p| p.is_file()).ok_or_else(
+                    || {
+                        ptts::Error::NotFound(format!(
+                            "no weights next to {path}; expected one of {}",
+                            candidates.join(", ")
+                        ))
+                    },
+                )?;
             let text =
                 std::fs::read_to_string(&config_path).map_err(|e| config_error(&config_path, e))?;
-            let mut cfg: TTSConfig =
+            let cfg: TTSConfig =
                 serde_json::from_str(&text).map_err(|e| config_error(&config_path, e))?;
-            cfg.temp = temperature;
-            let mut voices = vec![];
-            collect_voices(&parent.join("voices"), &mut voices);
+            let voices = ptts::loader::checkpoint_voices(parent);
             Ok(Artifacts { cfg, model_path, tokenizer_path: parent.join("tokenizer.json"), voices })
         }
-        // A Hub repo laid out with config.json and a quantized checkpoint.
-        Some(repo_id) => {
-            let repo = hub(repo_id)?;
-            let config_path = hub_get(&repo, "config.json")?;
-            let text =
-                std::fs::read_to_string(&config_path).map_err(|e| config_error(&config_path, e))?;
-            let mut cfg: TTSConfig =
-                serde_json::from_str(&text).map_err(|e| config_error(&config_path, e))?;
-            cfg.temp = temperature;
-            Ok(Artifacts {
-                cfg,
-                model_path: hub_get(&repo, "model.q8.gguf")?,
-                tokenizer_path: hub_get(&repo, "tokenizer.json")?,
-                voices: vec![],
-            })
+        Some(repo_id) => resolve_hub(&hub(repo_id)?, repo_id, quant),
+        None => resolve_hub(&hub(DEFAULT_REPO_ID)?, DEFAULT_REPO_ID, quant),
+    }
+}
+
+/// A Hub repo: `config.json` (optional, as the Pocket TTS repo has none), weights, a
+/// tokenizer, and voices under `voices/` or `embeddings/` plus an optional
+/// `default-voice.safetensors`. Only the files that are used get downloaded.
+fn resolve_hub(repo: &HubRepo, repo_id: &str, quant: Quant) -> ptts::Result<Artifacts> {
+    // One listing rather than a request per guessed name, and the only way to learn a repo's
+    // voices. Offline it fails, and then every name is tried, which the cache can still serve.
+    let listing: Option<Vec<String>> =
+        repo.list_tree().recursive(true).send().ok().map(|entries| {
+            entries
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    hf_hub::repository::files::RepoTreeEntry::File { path, .. } => Some(path),
+                    _ => None,
+                })
+                .collect()
+        });
+    // Without a listing every name is a guess, and one that was never cached fails offline with
+    // a network error rather than a not-found. So it counts as absent, letting a later name the
+    // cache does hold be found, and the first such error is reported only if no weights resolve.
+    let first_err = std::cell::RefCell::new(None);
+    let get_optional = |name: &str| -> ptts::Result<Option<std::path::PathBuf>> {
+        if listing.as_ref().is_some_and(|files| !files.iter().any(|f| f == name)) {
+            return Ok(None);
         }
-        // The published pocket-tts repo, whose voices sit under `embeddings/`.
-        None => {
-            let repo = hub(DEFAULT_REPO_ID)?;
-            let model_path = hub_get(&repo, DEFAULT_MODEL_FILE)?;
-            let tokenizer_path = hub_get(&repo, "tokenizer.json")?;
-            let mut voices = vec![];
-            for &voice in POCKET_TTS_VOICES {
-                if let Ok(path) = hub_get(&repo, &format!("embeddings/{voice}.safetensors")) {
-                    voices.push((voice.to_string(), path));
-                }
+        match hub_get(repo, name) {
+            Ok(path) => Ok(Some(path)),
+            Err(ptts::Error::NotFound(_)) => Ok(None),
+            Err(e) if listing.is_none() => {
+                first_err.borrow_mut().get_or_insert(e);
+                Ok(None)
             }
-            Ok(Artifacts {
-                cfg: TTSConfig::v202601(temperature),
-                model_path,
-                tokenizer_path,
-                voices,
-            })
+            Err(e) => Err(e),
         }
+    };
+
+    let cfg = match get_optional("config.json")? {
+        Some(path) => {
+            let text = std::fs::read_to_string(&path).map_err(|e| config_error(&path, e))?;
+            serde_json::from_str::<TTSConfig>(&text).map_err(|e| config_error(&path, e))?
+        }
+        None => TTSConfig::v202601(),
+    };
+    let candidates = weight_candidates(quant);
+    let mut model_path = None;
+    for name in candidates {
+        if let Some(path) = get_optional(name)? {
+            model_path = Some(path);
+            break;
+        }
+    }
+    let Some(model_path) = model_path else {
+        return Err(first_err.borrow_mut().take().unwrap_or_else(|| {
+            ptts::Error::NotFound(format!(
+                "no weights in `{repo_id}`; expected one of {}",
+                candidates.join(", ")
+            ))
+        }));
+    };
+    let tokenizer_path = hub_get(repo, "tokenizer.json")?;
+
+    let voice_files: Vec<(String, String)> = match &listing {
+        // Directory by directory, so a name in both resolves the same way every time.
+        Some(files) => VOICE_DIRS
+            .iter()
+            .flat_map(|&dir| {
+                files.iter().filter_map(move |f| {
+                    hub_voice_name(f).filter(|(d, _)| *d == dir).map(|(_, name)| (name, f))
+                })
+            })
+            .map(|(name, f)| (name.to_string(), f.clone()))
+            .collect(),
+        None => POCKET_TTS_VOICES
+            .iter()
+            .map(|v| (v.to_string(), format!("embeddings/{v}.safetensors")))
+            .collect(),
+    };
+    let mut voices = vec![];
+    for (name, file) in
+        voice_files.into_iter().chain([("default".to_string(), DEFAULT_VOICE_FILE.to_string())])
+    {
+        // A voice that will not download is skipped, as one that will not load is: `TTS.voices`
+        // shows which ones made it.
+        if let Ok(Some(path)) = get_optional(&file) {
+            push_voice(&mut voices, name, path);
+        }
+    }
+    Ok(Artifacts { cfg, model_path, tokenizer_path, voices })
+}
+
+/// The directory and voice name of a repo file that is a voice: a `.safetensors` directly
+/// under one of [`VOICE_DIRS`]. Anything deeper, or in another directory, is not.
+fn hub_voice_name(path: &str) -> Option<(&str, &str)> {
+    let (dir, file) = path.split_once('/')?;
+    let name = file.strip_suffix(".safetensors")?;
+    (VOICE_DIRS.contains(&dir) && !name.contains('/')).then_some((dir, name))
+}
+
+/// Add a voice unless one of that name is already there: the first found wins, so `voices/`
+/// beats `embeddings/`, and both beat `default-voice.safetensors`. `Synth` would otherwise keep
+/// whichever it registered last.
+fn push_voice(
+    voices: &mut Vec<(String, std::path::PathBuf)>,
+    name: String,
+    path: std::path::PathBuf,
+) {
+    if !voices.iter().any(|(n, _)| *n == name) {
+        voices.push((name, path));
     }
 }
 
@@ -171,21 +263,6 @@ fn hub_get(repo: &HubRepo, filename: &str) -> ptts::Result<std::path::PathBuf> {
     })
 }
 
-/// Add every `*.safetensors` file in `dir` to `voices`, keyed by file stem.
-/// A missing directory is not an error: voices are optional.
-fn collect_voices(dir: &std::path::Path, voices: &mut Vec<(String, std::path::PathBuf)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("safetensors") {
-            continue;
-        }
-        if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-            voices.push((name.to_string(), path));
-        }
-    }
-}
-
 /// Flatten a conditioning embedding of shape `[T, dim]` or `[1, T, dim]`.
 fn embedding_dims(arr: &PyReadonlyArrayDyn<'_, f32>) -> PyResult<(Vec<f32>, usize, usize)> {
     let (frames, dim) = match arr.shape() {
@@ -211,7 +288,7 @@ struct Tts {
 
 #[pymethods]
 impl Tts {
-    /// `TTS(*, lang, rewrites="all", config=None, device=None, quant=None, voice=None, temperature=0.3, seed=..., cfg_coef=None, eos_threshold=None)`
+    /// `TTS(config=None, device=None, quant=None, voice=None, temperature=0.3, seed=..., cfg_coef=None, eos_threshold=None, *, lang, rewrites=None)`
     ///
     /// `lang` is required and keyword-only: the language text is normalized as
     /// before it is tokenized, one of `"en"`, `"fr"`, `"de"`, `"es"` or
@@ -221,7 +298,7 @@ impl Tts {
     /// as written, for callers that normalize it themselves.
     ///
     /// `rewrites` picks which word rewrites run on the normalized text:
-    /// `"all"` (the default), `"none"`, or a comma-separated list of rule
+    /// `"all"` (what `None` means), `"none"`, or a comma-separated list of rule
     /// names, of which there is one today, `"numbers"`.
     #[new]
     #[pyo3(signature = (
@@ -256,20 +333,20 @@ impl Tts {
         // absent one.
         let normalize = match lang {
             None => Normalize::OFF,
-            Some(lang) => Normalize::parse(lang).py()?,
+            Some(lang) => lang.parse::<Normalize>().py()?,
         };
         let rules = match rewrites {
             None => Rules::ALL,
-            Some(rewrites) => Rules::parse(rewrites).py()?,
+            Some(rewrites) => rewrites.parse::<Rules>().py()?,
         };
         let normalize = normalize.with_rules(rules);
         let device = match device {
             None => DeviceKind::Auto,
-            Some(name) => DeviceKind::parse(name).py()?,
+            Some(name) => name.parse::<DeviceKind>().py()?,
         };
         let quant = match quant {
             None => Quant::F32,
-            Some(name) => Quant::parse(name).py()?,
+            Some(name) => name.parse::<Quant>().py()?,
         };
         // Both checks happen before resolve() downloads anything; `SynthBuilder`
         // would catch them, but only once the checkpoint is on disk.
@@ -288,7 +365,7 @@ impl Tts {
         }
         // Loading reads hundreds of megabytes and runs no Python.
         py.detach(move || {
-            let artifacts = resolve(config.as_deref(), temperature).py()?;
+            let artifacts = resolve(config.as_deref(), quant).py()?;
             let mut builder = SynthBuilder::new(artifacts.cfg, &artifacts.model_path, normalize)
                 .tokenizer_file(&artifacts.tokenizer_path)
                 .device(device)
@@ -324,7 +401,7 @@ impl Tts {
 
     /// Sample rate of the audio this model produces, in Hz.
     #[getter]
-    fn sample_rate(&self) -> PyResult<usize> {
+    fn sample_rate(&self) -> PyResult<u32> {
         Ok(self.lock()?.sample_rate())
     }
 
@@ -348,7 +425,7 @@ impl Tts {
 
     /// Sample rate `clone_voice` expects its PCM in, in Hz.
     #[getter]
-    fn voice_prompt_sample_rate(&self) -> PyResult<usize> {
+    fn voice_prompt_sample_rate(&self) -> PyResult<u32> {
         Ok(self.lock()?.voice_prompt_sample_rate())
     }
 
@@ -400,7 +477,7 @@ impl Tts {
         let sample_rate = stream.sample_rate();
         let pcm = drain(py, stream)?;
         let seconds = pcm.len() as f64 / sample_rate as f64;
-        py.detach(|| ptts::wav::write_wav_file(&path, &pcm, sample_rate as u32).py())?;
+        py.detach(|| ptts::wav::write_wav_file(&path, &pcm, sample_rate).py())?;
         Ok(seconds)
     }
 
@@ -521,19 +598,9 @@ impl Tts {
     /// against any other Python thread calling in.
     fn start(&self, py: Python<'_>, text: &str, opts: &SpeechOptions) -> PyResult<SpeechStream> {
         let inner = Arc::clone(&self.inner);
-        let mut opts = opts.clone();
+        let opts = opts.clone();
         py.detach(move || {
             let synth = inner.lock().map_err(|_| poisoned())?;
-            // The model's own default first (the builder's, or the first voice the
-            // checkpoint bundles). Otherwise resolved here rather than at construction so a
-            // voice registered afterwards -- `clone_voice` on a repo that ships none -- is
-            // used without having to name it on every call.
-            if opts.voice.is_none() {
-                opts.voice = synth
-                    .default_voice()
-                    .map(String::from)
-                    .or_else(|| synth.voices().first().cloned());
-            }
             synth.stream_with(text, &opts).py()
         })
     }
@@ -574,7 +641,7 @@ struct AudioStream {
 impl AudioStream {
     /// Sample rate of the chunks, in Hz.
     #[getter]
-    fn sample_rate(&self) -> PyResult<usize> {
+    fn sample_rate(&self) -> PyResult<u32> {
         match self.inner.lock().map_err(|_| poisoned())?.as_ref() {
             Some(stream) => Ok(stream.sample_rate()),
             None => Err(pyo3::exceptions::PyValueError::new_err("this stream is closed")),
@@ -678,4 +745,40 @@ fn ptts_(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(available_quants, m)?)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_files_directly_in_a_voice_dir_are_voices() {
+        assert_eq!(hub_voice_name("voices/Freya.safetensors"), Some(("voices", "Freya")));
+        assert_eq!(hub_voice_name("embeddings/alba.safetensors"), Some(("embeddings", "alba")));
+        for path in [
+            "embeddings_v2/alba.safetensors",
+            "languages/french/embeddings/alba.safetensors",
+            "voices/sub/alba.safetensors",
+            "voices/readme.md",
+            "default-voice.safetensors",
+        ] {
+            assert_eq!(hub_voice_name(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn q8_weights_lead_only_for_q8() {
+        assert_eq!(weight_candidates(Quant::Q80)[0], "model.q8.gguf");
+        for quant in [Quant::F32, Quant::Q4k, Quant::Q81] {
+            assert_eq!(weight_candidates(quant)[0], "model.safetensors", "{quant:?}");
+        }
+    }
+
+    #[test]
+    fn the_first_voice_of_a_name_wins() {
+        let mut voices = vec![];
+        push_voice(&mut voices, "a".into(), "voices/a.safetensors".into());
+        push_voice(&mut voices, "a".into(), "embeddings/a.safetensors".into());
+        assert_eq!(voices, [("a".to_string(), "voices/a.safetensors".into())]);
+    }
 }

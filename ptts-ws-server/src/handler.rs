@@ -71,17 +71,9 @@ async fn run_session(
         match (&mut sess, req) {
             (
                 SessionState::Awaiting,
-                TtsRequest::Setup { model_name, output_format, voice, voice_id, voice_emb, .. },
-            ) => match handle_setup(
-                &app,
-                model_name,
-                output_format,
-                voice,
-                voice_id,
-                voice_emb,
-                reply_tx,
-            )
-            .await?
+                TtsRequest::Setup { output_format, voice, voice_id, voice_emb, .. },
+            ) => match handle_setup(&app, output_format, voice, voice_id, voice_emb, reply_tx)
+                .await?
             {
                 Some(new_state) => sess = new_state,
                 None => continue,
@@ -148,7 +140,6 @@ async fn flush_buffer(
 
 async fn handle_setup(
     app: &AppState,
-    model_name: String,
     output_format: String,
     voice: Option<String>,
     voice_id: Option<String>,
@@ -205,10 +196,8 @@ async fn handle_setup(
     };
     tracing::info!(?voice_name, "prompted voice embedding");
     let request_id = uuid::Uuid::new_v4().to_string();
-    let model_name =
-        if model_name.is_empty() { "kyutai/pocket-tts".to_string() } else { model_name };
     let ready = TtsReply::Ready {
-        model_name,
+        model_name: app.model_name.clone(),
         sample_rate: app.sample_rate,
         frame_size: app.frame_size,
         audio_stream_names: vec![],

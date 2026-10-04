@@ -1,6 +1,6 @@
 //! Reading audio files, for voice cloning.
 //!
-//! [`crate::synth::SynthOf::add_voice_from_pcm`] wants mono `f32` at the
+//! [`crate::synth::SynthApi::add_voice_from_pcm`] wants mono `f32` at the
 //! speaker codec's sample rate, which means decoding a file and resampling it.
 //! Both examples that clone a voice need exactly that, and so does anything
 //! outside this repo, so it lives here rather than in a private example module
@@ -143,22 +143,40 @@ pub fn resample(pcm: Vec<f32>, sr_in: usize, sr_out: usize) -> Result<Vec<f32>> 
 /// Pair with `voice_prompt_sample_rate`:
 ///
 /// ```no_run
-/// # fn main() -> xn::Result<()> {
+/// # fn main() -> ptts::Result<()> {
 /// # let mut tts: ptts::synth::Synth = todo!();
 /// let pcm = ptts::audio::load_mono_at("voice.wav".as_ref(), tts.voice_prompt_sample_rate())?;
 /// tts.add_voice_from_pcm("mine", &pcm)?;
 /// # Ok(())
 /// # }
 /// ```
-pub fn load_mono_at(path: &std::path::Path, sample_rate: usize) -> Result<Vec<f32>> {
+pub fn load_mono_at(path: &std::path::Path, sample_rate: u32) -> Result<Vec<f32>> {
     let (pcm, file_rate) = decode_file(path)?;
     tracing::info!(?path, samples = pcm.len(), rate = file_rate, "decoded audio");
-    resample(pcm, file_rate as usize, sample_rate)
+    resample(pcm, file_rate as usize, sample_rate as usize)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_written_wav_decodes_to_the_same_samples() {
+        let pcm: Vec<f32> =
+            (0..2400).map(|i| (i as f32 * 0.05).sin() * 0.8).chain([1.0, -1.0, 0.0]).collect();
+        let path =
+            std::env::temp_dir().join(format!("ptts-wav-round-trip-{}.wav", std::process::id()));
+        crate::wav::write_wav_file(&path, &pcm, 24000).unwrap();
+        let decoded = decode_file(&path);
+        std::fs::remove_file(&path).unwrap();
+        let (back, sample_rate) = decoded.unwrap();
+        assert_eq!(sample_rate, 24000);
+        assert_eq!(back.len(), pcm.len());
+        // 16-bit samples, written scaled by 32767 and read back over 32768.
+        for (i, (a, b)) in pcm.iter().zip(&back).enumerate() {
+            assert!((a - b).abs() <= 2.0 / 32767.0, "sample {i}: wrote {a}, read {b}");
+        }
+    }
 
     #[test]
     fn resampling_to_the_same_rate_is_a_copy() {

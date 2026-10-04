@@ -8,8 +8,7 @@ cd "$(dirname "$0")/.."
 
 TARGETS=(aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin)
 TARGET_DIR="${CARGO_TARGET_DIR:-target}"
-# The workspace's release profile keeps debug info, which makes each library ~250 MB.
-PROFILE=release-no-debug
+PROFILE=release
 
 rustup target add "${TARGETS[@]}" >/dev/null
 for t in "${TARGETS[@]}"; do

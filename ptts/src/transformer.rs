@@ -1,3 +1,8 @@
+//! The streaming transformer both the flow LM and Mimi are built on, with its KV caches.
+//!
+//! [`StreamingTransformerState`] holds one cache per layer. [`Kind`] picks which model a layer
+//! belongs to, as the two lay out their attention differently.
+
 use crate::layer_scale::LayerScale;
 use crate::rope::RotaryEmbedding;
 use xn::nn::{LayerNorm, Linear, var_builder::Path};
@@ -60,7 +65,6 @@ pub struct StreamingMultiheadAttention<Q: BackendQ> {
     out_proj: Q::LinearQ,
     pub embed_dim: usize,
     pub num_heads: usize,
-    name: String,
     device: Q::B,
 }
 
@@ -69,13 +73,8 @@ impl<Q: BackendQ> StreamingMultiheadAttention<Q> {
         let out_dim = 3 * embed_dim;
         let in_proj = Q::linear_load(vb.pp("in_proj"), embed_dim, out_dim)?;
         let out_proj = Q::linear_load(vb.pp("out_proj"), embed_dim, embed_dim)?;
-        let name = vb.prefix();
         let device = vb.device().clone();
-        Ok(Self { in_proj, out_proj, embed_dim, num_heads, name, device })
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
+        Ok(Self { in_proj, out_proj, embed_dim, num_heads, device })
     }
 
     pub fn init_state(
@@ -92,7 +91,7 @@ impl<Q: BackendQ> StreamingMultiheadAttention<Q> {
     }
 
     #[tracing::instrument(name = "attn", skip_all)]
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         query: &Tensor<Q::T, Q::B>,
         rope: &RotaryEmbedding<Q::T, Q::B>,
@@ -292,7 +291,7 @@ impl<T: WithDTypeF, B: Backend> MimiStreamingMultiheadAttention<T, B> {
         Ok(KvCache::new(self.context))
     }
 
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         query: &Tensor<T, B>,
         rope: &RotaryEmbedding<T, B>,
@@ -417,7 +416,7 @@ impl<Q: BackendQ> StreamingTransformerLayer<Q> {
     }
 
     #[tracing::instrument(name = "transformer-layer", skip_all)]
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         x: &Tensor<Q::T, Q::B>,
         rope: &RotaryEmbedding<Q::T, Q::B>,
@@ -475,6 +474,9 @@ impl<Q: BackendQ> StreamingTransformer<Q> {
         max_period: f32,
         kind: Kind,
     ) -> Result<Self> {
+        if num_heads == 0 || !d_model.is_multiple_of(num_heads) {
+            xn::bail!("the config's {num_heads} attention heads do not divide its width {d_model}")
+        }
         let head_dim = d_model / num_heads;
         let mut layers = Vec::with_capacity(num_layers);
         for i in 0..num_layers {
@@ -735,5 +737,38 @@ mod with_seq_budget_tests {
         let err = filled_state(4, 3).with_seq_budget(2).unwrap_err().to_string();
         assert!(err.contains("3") && err.contains("2"), "{err}");
         assert!(filled_state(4, 3).with_seq_budget(3).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod bad_config_tests {
+    use super::*;
+    use xn::CpuDevice;
+    use xn::nn::VB;
+
+    fn load(d_model: usize, num_heads: usize) -> Result<()> {
+        // An empty safetensors file: the check runs before any weight is read.
+        let empty = [2u64.to_le_bytes().as_slice(), b"{}"].concat();
+        let vb = VB::from_bytes(vec![empty], CpuDevice)?.root();
+        StreamingTransformer::<xn::Unquantized<f32, CpuDevice>>::load(
+            &vb,
+            d_model,
+            num_heads,
+            1,
+            None,
+            4,
+            None,
+            10_000.,
+            Kind::FlowLm,
+        )
+        .map(drop)
+    }
+
+    #[test]
+    fn heads_that_do_not_divide_the_width_are_an_error() {
+        for heads in [0, 3] {
+            let err = load(8, heads).err().unwrap_or_else(|| panic!("{heads} heads for 8 wide"));
+            assert!(err.to_string().contains("heads"), "{err}");
+        }
     }
 }

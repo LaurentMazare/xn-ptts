@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Workspace layout
 
-Cargo workspace (resolver "3", edition 2024) with six members:
+Cargo workspace (resolver "3", edition 2024) with seven members:
 
 - `ptts/` — core TTS library. Pure Rust, depends on the `xn` tensor/nn crate. Examples live under `ptts/examples/`: `say` (shortest end-to-end call) and `bench` (benchmark harness) require the `hf` feature for the tokenizer, `ptts` (full CLI) requires `hf` and `audio`, `create_voice` (voice embeddings from audio samples) requires `audio`, and `quantize` (safetensors → GGUF converter that selectively quantizes `flow_lm.transformer.layers.*` weights) requires nothing. `model_helpers.rs` is not an example — it is a shared module each example pulls in with `#[path = "..."] mod`, so `autoexamples = false` and every example is listed explicitly in `Cargo.toml`.
 - `ptts-pyo3/` — PyO3 bindings exposing `TTS` to Python. Built with maturin in a mixed layout: `python/ptts/` is the package (`__init__.py`, `__init__.pyi` stubs, `py.typed`, `__main__.py`) and the cdylib lands inside it as `ptts._ptts`, so a pure-Rust layout's lack of anywhere to put `py.typed` is not a problem. `tests/` is a pytest suite that needs no weights except where marked `checkpoint`; run it against a built wheel, not the source tree. Has its own `pyproject.toml` and `uv.lock`.
 - `ptts-wasm/` — browser build via `wasm-bindgen` / `wasm-pack`, published to npm as `phonon-tts`. `src/lib.rs` is the raw frame-at-a-time `Model`; `js/` is the package's public API around it (`PhononTTS`, which runs the model in a worker, downloads and caches the files, and speaks by voice name), with its own `package.json`, `README.md` and node tests. `www/index.html` is a demo page built on the package.
 - `ptts-ws-server/` — WebSocket streaming server (`axum` + `kaudio`). Needs a system libopus through `kaudio` → `libopus_sys`, which is why CI installs it on Linux and macOS and skips this crate on Windows.
+- `ptts-openai-server/` — the OpenAI-compatible `POST /v1/audio/speech` (`src/api.rs`) with `GET /v1/models`, `/v1/audio/voices` and `/health`. Its model loading is a copy of `ptts-ws-server`'s, kept separate on purpose. Needs a system libopus like `ptts-ws-server`, and a system libmp3lame for MP3 (`src/mp3.rs`, linked dynamically since LAME is LGPL; `build.rs` finds it); CI skips it on Windows too.
 - `ptts-coreml/` — CoreML backend, Apple only: the flow LM and Mimi emitted from Rust as ML Program graphs (`mil.rs`, `package.rs`, `blob.rs`, `phonon/flow_lm.rs`, `phonon/mimi.rs`), exported once per checkpoint by `ptts/examples/export_coreml.rs` (sizes from the checkpoint's config, so any single-flow-step Phonon checkpoint works), and driven by `phonon/driver.rs`. The flow LM runs on the Neural Engine, which needs fully static shapes, no CoreML `state` and fp16; its KV cache is a host-managed ring in IOSurface buffers. Mimi stays f32 on the CPU, decoded on a worker thread overlapped with the next flow step. The part of the Core ML protobuf schema it writes is hand-written as `prost` messages in `src/proto.rs`, so there is no codegen or `protoc` in the build.
 - `ptts-coreml-ffi/` — C interface over `ptts-coreml` (empty on non-Apple targets), using `ptts` for text preparation, normalization and the tokenizer. It is what `ios/PhononTTS/`, the Swift package apps integrate (its README is the user guide), wraps, as `PhononCore.xcframework` built by `ios/build-xcframework.sh`. There is no app in the repo: measuring on a device needs a local app on the package.
 
@@ -37,9 +38,10 @@ Three things worth knowing before editing it:
 
 - **`--all-features` never works.** It turns on `cuda`, whose `cudarc` build script shells out to
   `nvcc`. Feature sets are always named explicitly, including in `[package.metadata.docs.rs]`.
-- **`ptts-ws-server` needs a system libopus** (through `kaudio` → `libopus_sys`). CI installs it
-  on Linux and macOS; Windows has no one-line equivalent, so the crate is excluded there and only
-  there, through `$WS_EXCLUDE`. The `vulkan` feature likewise needs `glslc`, installed in the
+- **The two servers need a system libopus, and `ptts-openai-server` also libmp3lame** (libopus
+  through `kaudio` → `libopus_sys`; LAME for MP3, `libmp3lame-dev` / `brew install lame`). CI
+  installs both on Linux and macOS; Windows has no one-line equivalent, so both crates are
+  excluded there and only there, through `$WS_EXCLUDE`. The `vulkan` feature likewise needs `glslc`, installed in the
   `features` job.
 - **CI deletes `.cargo/config.toml`** because it pins `target-cpu=native`, which breaks portable
   dependency builds. If you reproduce a CI failure locally, do the same (`rm -f
@@ -73,7 +75,7 @@ cargo run --release --features hf,accelerate --example bench -- \
   --voice voices/freya.safetensors --threads 8 --iters 20
 ```
 
-`bench` takes explicit paths and a precomputed voice embedding, never downloads, and reports time-to-first-audio, per-frame time, total generate time and RTF over `--iters` runs, excluding the one-off model load and voice conditioning. It decodes each frame on the generating thread rather than overlapping Mimi with the next frame's sampling as the `ptts` example does, so its RTF (generate time over audio duration, lower is better) reads higher than that example for the same weights — don't compare the two directly. `--threads` defaults to xn's one-per-logical-core, usually too many for a single autoregressive stream. For profiling rather than measuring, `ptts --chrome-tracing` writes a Chrome trace for https://ui.perfetto.dev.
+`bench` takes explicit paths and a precomputed voice embedding, never downloads, and reports time-to-first-audio, per-frame time, total generate time and RTF over `--iters` runs, excluding the one-off model load and voice conditioning. It decodes each frame on the generating thread rather than overlapping Mimi with the next frame's sampling as the `ptts` example does, so its RTF (generate time over audio duration, lower is better) reads higher than that example for the same weights — don't compare the two directly. `--threads` defaults to xn's one-per-logical-core, usually too many for a single autoregressive stream. For profiling rather than measuring, `ptts --chrome-tracing` writes a Chrome trace for https://ui.perfetto.dev. For a sampling profiler (samply, Instruments, perf), build with `--profile profiling` instead of `--release`: the release profile carries no debug info, and `profiling` is release plus symbols. Binaries then land in `target/profiling/`. The same goes for a crash that only happens in release: a `--release` backtrace has function names but no file and line numbers.
 
 ## WASM build
 
@@ -122,10 +124,10 @@ than by argparse, so that `--build-info` still works without one.
 and a new CPython release needs no rebuild. abi3 does not load on free-threaded CPython and
 PyPy needs its own ABI; both fall back to the sdist, which `sdist-fallback` compiles and tests
 on `3.14t` and `pypy3.11`. It is deliberately outside `release`'s `needs`: those users compile
-either way, so blocking everyone else's wheels would not help them. Wheels are built `--strip`,
-because `[profile.release]` keeps `debug = true` for profiling and on Linux that debug info
-lands inside the `.so`, which is what made the published 0.2.2 Linux wheels 41 MB against
-3.9 MB for macOS and Windows.
+either way, so blocking everyone else's wheels would not help them. Wheels are built `--strip`:
+on Linux debug info lands inside the `.so`, which is what made the published 0.2.2 Linux wheels
+41 MB against 3.9 MB for macOS and Windows. `[profile.release]` no longer carries debug info,
+so `--strip` is now a guard rather than a fix.
 `pyproject.toml` deliberately has no `features` key under `[tool.maturin]`: a `--features` on
 the maturin command line replaces that list rather than adding to it, so `pyo3/extension-module`
 lives in `ptts-pyo3/Cargo.toml` where the macOS job's `--features accelerate` cannot drop it.
@@ -147,10 +149,10 @@ The library implements Phonon: text → tokens → flow-matching language model 
 
 `ptts/src/lib.rs` exposes a single `Tokenizer` trait (`encode` / `decode`) so each binding plugs in its own implementation:
 
-- `say` / `ptts` / `bench` examples, `ptts-pyo3` and `ptts-ws-server`: `ptts::tok::Tok` (the `hf` feature), a Hugging Face `tokenizers` wrapper. The examples find the file beside the weights and pass it to `SynthBuilder::tokenizer_file`.
+- `say` / `ptts` / `bench` examples, `ptts-pyo3` and the two servers: `ptts::tok::Tok` (the `hf` feature), a Hugging Face `tokenizers` wrapper. The examples find the file beside the weights and pass it to `SynthBuilder::tokenizer_file`.
 - `ptts-wasm`: the same `ptts::tok::Tok`, built from the `tokenizer.json` the `phonon-tts` worker fetches and handed to `Model::new`; the browser passes text, not token ids.
 
-Every frontend loads a `tokenizer.json` and nothing else, and none is bundled or defaulted to: each checkpoint has its own vocabulary, and loading the wrong one yields plausible audio from the wrong ids, so `Tok::open` refuses to guess. `ptts --tokenizer <path>` and `bench --tokenizer <path>` override where the examples look; otherwise they, `ptts-pyo3` and `ptts-ws-server` all expect `tokenizer.json` in the HF repo or beside the config. A checkpoint that carries only a `tokenizer.model` needs converting once with `scripts/convert-tokenizer.py`, which writes the equivalent json.
+Every frontend loads a `tokenizer.json` and nothing else, and none is bundled or defaulted to: each checkpoint has its own vocabulary, and loading the wrong one yields plausible audio from the wrong ids, so `Tok::open` refuses to guess. `ptts --tokenizer <path>` and `bench --tokenizer <path>` override where the examples look; otherwise they, `ptts-pyo3` and the two servers all expect `tokenizer.json` in the HF repo or beside the config. A checkpoint that carries only a `tokenizer.model` needs converting once with `scripts/convert-tokenizer.py`, which writes the equivalent json.
 
 Top-level orchestrator is `tts_model::TTSModel<Q>`, generic over a backend-quantization parameter `Q: BackendQ` from `xn`. It owns:
 
@@ -160,10 +162,9 @@ Top-level orchestrator is `tts_model::TTSModel<Q>`, generic over a backend-quant
 `synth::Synth` sits on top of all of it: `synth::SynthBuilder::new(config, weights)` loads a
 checkpoint whose files the caller has already located and registers voices,
 `plan` supplies the frame/KV budgets and the EOS policy, and `Synth::say` / `Synth::stream`
-run the flow LM and the Mimi decoder on two threads. `Synth` erases the `Q` parameter behind
-an enum so a CLI flag can pick the weight format; `SynthBuilder::load::<Q>` skips that for
-callers who want it fixed at compile time. `ptts-pyo3`, `ptts-wasm` and `ptts-ws-server`
-still drive `TTSModel` directly.
+run the flow LM and the Mimi decoder on two threads. `Synth` erases the `Q` parameter behind a trait object (`Box<dyn SynthApi>`, which it
+dereferences to) so a CLI flag can pick the weight format; the generic `SynthOf<Q>` is
+private. `ptts-wasm` still drives `TTSModel` directly.
 
 A checkpoint can bundle its voices: `config.json`'s `voices` list gives each a `name`, the summed
 LUT `conditions` it selects (e.g. `{"voice_name": "<value>"}`) and an optional `prefix`, the name
@@ -175,7 +176,7 @@ with a single summed LUT registers each LUT value as a prompt-free voice. `TTSMo
 
 Generation is streaming and stateful: callers `init_flow_lm_state(batch, seq_len)`, then `prompt_text*` / `prompt_audio` to seed the state, then step-decode latents and feed them into `MimiDecoderState`. `lsd_decode_steps` controls flow-matching solver steps; `eos_threshold` controls termination. The default `TTSConfig::v202601` configuration is the canonical one consumed by all three frontends.
 
-Text normalization (`ptts/src/preprocess.rs`) is mandatory to choose and has no default. `preprocess::Normalize` is either `For(lang)` or `Off`, and it is a required third argument to `SynthBuilder::new`, a required `--lang` flag on the `ptts` and `bench` examples, and `ptts-ws-server`, a required keyword-only `lang=` on `ptts-pyo3`, and a required `lang` argument to the `ptts-wasm` `Model` constructor and to `PhononTTS.load` in `phonon-tts`. The reason it is not defaulted rather than defaulted to English: normalization makes the model noticeably better, but the spoken forms of `@`, `+` and `=` are per-language, so normalizing German as English says "at" where it should say "ät" -- guessing is worse than doing nothing. `Normalize::Off` (`--lang none`, `lang="none"`) hands text to the tokenizer as written.
+Text normalization (`ptts/src/preprocess.rs`) is mandatory to choose and has no default. `preprocess::Normalize` is either `For(lang)` or `Off`, and it is a required third argument to `SynthBuilder::new`, a required `--lang` flag on the `ptts` and `bench` examples and both servers, a required keyword-only `lang=` on `ptts-pyo3`, and a required `lang` argument to the `ptts-wasm` `Model` constructor and to `PhononTTS.load` in `phonon-tts`. The reason it is not defaulted rather than defaulted to English: normalization makes the model noticeably better, but the spoken forms of `@`, `+` and `=` are per-language, so normalizing German as English says "at" where it should say "ät" -- guessing is worse than doing nothing. `Normalize::Off` (`--lang none`, `lang="none"`) hands text to the tokenizer as written.
 
 `Normalize::apply` is the one implementation, and it has to run before `prepare_text_prompt`, whose leading-space padding of short text it would otherwise collapse. `Synth::normalization` / `Session::normalization` hand it to callers that tokenize by hand (`ptts-ws-server`, `ptts-wasm`) rather than going through `say`/`stream`.
 

@@ -154,16 +154,7 @@ impl Checkpoint {
         let tokenizer =
             TOKENIZER_CANDIDATES.iter().map(|name| dir.join(name)).find(|path| path.is_file());
 
-        let mut voices = vec![];
-        for sub in ["voices", "embeddings"] {
-            collect_voice_dir(&dir.join(sub), &mut voices);
-        }
-        let default_voice = dir.join("default-voice.safetensors");
-        if default_voice.is_file() {
-            voices.push(("default".to_string(), default_voice));
-        }
-        voices.sort();
-        voices.dedup_by(|a, b| a.0 == b.0);
+        let voices = ptts::loader::checkpoint_voices(dir);
 
         Ok(Self { config, weights, tokenizer, voices })
     }
@@ -175,7 +166,7 @@ impl Checkpoint {
     ///
     /// The bundled voices are deliberately not registered here: see
     /// [`Self::register_voices`].
-    pub fn builder(&self, normalize: Normalize) -> SynthBuilder {
+    pub fn builder(&self, normalize: impl Into<Normalize>) -> SynthBuilder {
         let mut builder = SynthBuilder::new(self.config.clone(), &self.weights, normalize);
         if let Some(tokenizer) = self.tokenizer.as_ref() {
             builder = builder.tokenizer_file(tokenizer);
@@ -197,10 +188,9 @@ impl Checkpoint {
 }
 
 /// The config the published checkpoint ships, for repos and directories that carry no
-/// `config.json`. `temp` is not read by the runtime -- sampling temperature reaches the model
-/// through `SynthBuilder::temperature` -- so any value does.
+/// `config.json`.
 fn shipped_config() -> TTSConfig {
-    TTSConfig::v202601(0.5)
+    TTSConfig::v202601()
 }
 
 fn read_config(path: &Path) -> Result<TTSConfig> {
@@ -209,26 +199,11 @@ fn read_config(path: &Path) -> Result<TTSConfig> {
     serde_json::from_str(&text).with_context(|| format!("cannot parse config {}", path.display()))
 }
 
-/// Adds every `*.safetensors` file in `dir` to `voices`, keyed by file stem. A missing or
-/// unreadable directory is not an error: voices are optional.
-fn collect_voice_dir(dir: &Path, voices: &mut Vec<(String, PathBuf)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("safetensors") {
-            continue;
-        }
-        if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-            voices.push((name.to_string(), path));
-        }
-    }
-}
-
 /// A Hugging Face model repo, wrapped so a download failure names the repo and the file --
 /// `hf_hub` does so for a missing file but not for an HTTP or authentication failure, which
 /// makes a gated repo hard to diagnose -- and so the callers need not spell out the download
 /// builder.
-struct HubRepo {
+pub struct HubRepo {
     repo: hf_hub::HFRepositorySync<hf_hub::repository::RepoTypeModel>,
     repo_id: String,
 }
@@ -236,14 +211,14 @@ struct HubRepo {
 impl HubRepo {
     /// The client reads `HF_TOKEN`, `HF_ENDPOINT` and the cache location from the environment,
     /// falling back to the token `huggingface-cli login` stores.
-    fn open(repo_id: &str) -> Result<Self> {
+    pub fn open(repo_id: &str) -> Result<Self> {
         let client = hf_hub::HFClientSync::new().context("cannot reach the Hugging Face Hub")?;
         let (owner, name) = hf_hub::split_id(repo_id);
         Ok(Self { repo: client.model(owner, name), repo_id: repo_id.to_string() })
     }
 
     /// Download `filename`, or find it in the local cache.
-    fn get(&self, filename: &str) -> Result<PathBuf> {
+    pub fn get(&self, filename: &str) -> Result<PathBuf> {
         self.repo.download_file().filename(filename).send().map_err(|e| {
             anyhow::anyhow!(
                 "failed to fetch `{filename}` from `{}`: {e}\n\

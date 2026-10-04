@@ -27,10 +27,7 @@ use ptts::plan::{self, EosPolicy};
 use ptts::preprocess::{Normalize, Rules};
 use ptts::tok::Tok;
 use ptts::transformer::{LayerAttentionState, StreamingMHAState, StreamingTransformerState};
-use ptts::tts_model::{
-    MAX_TOKENS_PER_CHUNK, TTSConfig, TTSModel, TTSState, prepare_text_prompt,
-    split_into_best_sentences,
-};
+use ptts::tts_model::{MAX_TOKENS_PER_CHUNK, TTSConfig, TTSModel, TTSState};
 use xn::nn::{Linear, VB};
 use xn::quantized::Q80F32;
 use xn::{BackendQ, CPU, CpuDevice, Result, Tensor, TypedTensor, Unquantized};
@@ -105,13 +102,6 @@ macro_rules! dispatch {
     };
 }
 
-/// One sentence-aligned piece of the text, ready to prompt.
-struct ChunkPlan {
-    tokens: Vec<u32>,
-    frame_budget: usize,
-    frames_after_eos: usize,
-}
-
 /// The chunk currently being generated.
 struct ChunkState {
     tts_state: StateInner,
@@ -130,7 +120,7 @@ struct GenState {
     /// it, as `ptts::synth` does: chunks run one after the other, so sharing the KV storage
     /// is safe, and each overwrites only what lies past the voice prompt.
     base: RawState,
-    chunks: std::vec::IntoIter<ChunkPlan>,
+    chunks: std::vec::IntoIter<plan::Chunk>,
     current: Option<ChunkState>,
     /// One noise source for the whole text, so a seed fixes every chunk.
     rng: NormalRng,
@@ -159,18 +149,16 @@ impl Model {
     ) -> Result<Model> {
         let quant = Quant::parse(quant)?;
         let rules = match rewrites {
-            Some(rewrites) => Rules::parse(rewrites)?,
+            Some(rewrites) => rewrites.parse::<Rules>()?,
             None => Rules::ALL,
         };
-        let normalize = Normalize::parse(lang)?.with_rules(rules);
+        let normalize = lang.parse::<Normalize>()?.with_rules(rules);
         let cfg = match config_json {
             Some(json) => match serde_json::from_slice(&json) {
                 Ok(cfg) => cfg,
                 Err(e) => xn::bail!("cannot parse config.json: {e}"),
             },
-            // `temp` is not read by the runtime: sampling temperature reaches the model
-            // through `start_generation`.
-            None => TTSConfig::v202601(0.3),
+            None => TTSConfig::v202601(),
         };
         console_log!("[phonon] loading model with quant={quant:?}");
 
@@ -263,14 +251,14 @@ impl Model {
         voice_index: usize,
         text: &str,
         temperature: f32,
-        seed: u32,
+        seed: u64,
     ) -> Result<usize> {
         // Dropped before anything else can fail, so a caller that swallows the error cannot
         // go on stepping and quietly resume the *previous* utterance.
         self.gen_state = None;
         // Built here rather than after planning: a temperature that cannot produce a
         // distribution should be refused before any work is done.
-        let rng = NormalRng::new(temperature, seed as u64)?;
+        let rng = NormalRng::new(temperature, seed)?;
         let Some(voice) = self.voice_states.get(voice_index) else {
             xn::bail!("invalid voice index: {voice_index}")
         };
@@ -289,29 +277,14 @@ impl Model {
         Ok(num_chunks)
     }
 
-    /// Normalize the whole text, split it into sentence-aligned chunks and tokenize each,
-    /// exactly as `ptts::synth` does: normalization first, because it rewrites the characters
-    /// the splitter looks for.
-    fn plan_chunks(&self, text: &str) -> Result<Vec<ChunkPlan>> {
+    /// The same chunks `ptts::synth` makes, from [`plan::chunks`].
+    fn plan_chunks(&self, text: &str) -> Result<Vec<plan::Chunk>> {
         let frame_rate = self.cfg.mimi.frame_rate;
-        let text = self.normalize.apply(text);
         with_model!(&self.inner, |m| {
-            let conditioner = &m.flow_lm.conditioner;
-            let Some(tokenizer) = conditioner.tokenizer.as_deref() else {
+            let Some(tokenizer) = m.flow_lm.conditioner.tokenizer.as_deref() else {
                 xn::bail!("this model was loaded without a tokenizer")
             };
-            let texts = split_into_best_sentences(tokenizer, &text, Some(MAX_TOKENS_PER_CHUNK))?;
-            let mut chunks = Vec::with_capacity(texts.len());
-            for text in texts {
-                let (prepared, frames_after_eos) = prepare_text_prompt(&text);
-                let tokens = conditioner.tokenize(&prepared)?;
-                let frame_budget = plan::frame_budget(tokens.len(), frame_rate);
-                chunks.push(ChunkPlan { tokens, frame_budget, frames_after_eos });
-            }
-            if chunks.is_empty() {
-                xn::bail!("nothing to synthesize: the text is empty")
-            }
-            Ok(chunks)
+            Ok(plan::chunks(tokenizer, text, self.normalize, MAX_TOKENS_PER_CHUNK, frame_rate)?)
         })
     }
 
@@ -404,12 +377,11 @@ impl Model {
     /// the `tokenizer.json` for its vocabulary, and `config_json` its `config.json`, or
     /// `undefined` for the original Pocket TTS architecture.
     ///
-    /// Two things a config cannot ask this build for. Its `temp` is not read: the sampling
-    /// temperature reaches the model through `start_generation`. And there is no
-    /// classifier-free guidance here -- guidance is a caller's option in `ptts::synth`
-    /// (`SynthOpts::cfg_coef`), not a field of the config, and the browser build never turns
-    /// it on, so `cfg_null_audio_empty` is inert. Everything else -- the flow LM and Mimi
-    /// shapes, `lsd_decode_steps`, `eos_threshold`, `model_id`, `speaker_mimi` -- is honored.
+    /// One thing a config cannot ask this build for: classifier-free guidance. Guidance is a
+    /// caller's option in `ptts::synth` (`SpeechOptions::cfg_coef`), not a field of the
+    /// config, and the browser build never turns it on, so `cfg_null_audio_empty` is inert.
+    /// Everything else -- the flow LM and Mimi shapes, `lsd_decode_steps`, `eos_threshold`,
+    /// `model_id`, `speaker_mimi` -- is honored.
     ///
     /// `quant` is `"f32"` or `"q8"`.
     ///
@@ -448,7 +420,7 @@ impl Model {
         voice_index: usize,
         text: &str,
         temperature: f32,
-        seed: u32,
+        seed: u64,
     ) -> std::result::Result<usize, JsError> {
         self.start_generation_(voice_index, text, temperature, seed).map_err(js_err)
     }

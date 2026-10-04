@@ -7,33 +7,33 @@
 //! latents through the Mimi decoder on a second thread.
 //!
 //! ```no_run
-//! # fn main() -> xn::Result<()> {
+//! # fn main() -> ptts::Result<()> {
 //! use ptts::synth::Synth;
 //! use ptts::tts_model::TTSConfig;
 //!
-//! use ptts::preprocess::{Lang, Normalize};
+//! use ptts::preprocess::Lang;
 //!
 //! let tts = Synth::builder(
-//!     TTSConfig::v202601(0.3),
+//!     TTSConfig::v202601(),
 //!     "model/model.safetensors",
-//!     Normalize::for_lang(Lang::En),
+//!     Lang::En,
 //! )
 //! .tokenizer_file("model/tokenizer.json")
 //!     .add_voice("alba", "model/voices/alba.safetensors")
 //!     .build()?;
 //! let pcm = tts.say("Hello world")?;
-//! ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate() as u32)?;
+//! ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate())?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! Audio arrives incrementally from [`Synth::stream`], which is the primitive
-//! [`Synth::say`] is built on:
+//! Audio arrives incrementally from [`SynthApi::stream`], which is the primitive
+//! [`SynthApi::say`] is built on:
 //!
 //! ```no_run
-//! # fn main() -> xn::Result<()> {
-//! # let cfg = ptts::tts_model::TTSConfig::v202601(0.3);
-//! # let norm = ptts::preprocess::Normalize::for_lang(ptts::preprocess::Lang::En);
+//! # fn main() -> ptts::Result<()> {
+//! # let cfg = ptts::tts_model::TTSConfig::v202601();
+//! # let norm = ptts::preprocess::Lang::En;
 //! # let tts = ptts::synth::Synth::builder(cfg, "model/model.safetensors", norm)
 //! #     .tokenizer_file("model/tokenizer.json")
 //! #     .build()?;
@@ -46,7 +46,7 @@
 //! ```
 //!
 //! A voice is conditioned on once per [`Synth`], whichever entry point is used;
-//! [`Synth::session`] additionally pins the KV budget for a stream of requests.
+//! [`SynthApi::session`] additionally pins the KV budget for a stream of requests.
 //!
 //! Text is normalized before it is tokenized — see [`crate::preprocess`]. Which
 //! language, or [`Normalize::OFF`], is a required argument to
@@ -54,20 +54,14 @@
 //! but the spoken forms are per-language, so guessing is worse than doing
 //! nothing.
 //!
-//! Callers that want to name the weight format at compile time — `ptts-wasm`
-//! supports exactly two — can use [`SynthOf<Q>`] directly via
-//! [`SynthBuilder::load`], and skip the runtime dispatch in [`Synth`]. Driving
-//! the loop by hand, from an event loop with no threads to spawn, is what
-//! [`crate::tts_model::TTSModel`]'s primitives are for.
+//! Driving the loop by hand, from an event loop with no threads to spawn, as
+//! `ptts-wasm` does, is what [`crate::tts_model::TTSModel`]'s primitives are for.
 
 use crate::flow_lm::{NormalRng, StepInput};
 use crate::loader;
-use crate::plan::{self, EosPolicy};
+use crate::plan::{self, Chunk, EosPolicy};
 use crate::preprocess::Normalize;
-use crate::tts_model::{
-    MAX_TOKENS_PER_CHUNK, MimiEnc, TTSConfig, TTSModel, TTSState, prepare_text_prompt,
-    split_into_best_sentences,
-};
+use crate::tts_model::{MAX_TOKENS_PER_CHUNK, MimiEnc, TTSConfig, TTSModel, TTSState};
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path as FsPath, PathBuf};
@@ -88,19 +82,6 @@ pub enum DeviceKind {
 }
 
 impl DeviceKind {
-    pub fn parse(name: &str) -> Result<Self> {
-        match name {
-            "auto" => Ok(Self::Auto),
-            "cpu" => Ok(Self::Cpu),
-            "cuda" => Ok(Self::Cuda),
-            "vulkan" => Ok(Self::Vulkan),
-            "metal" => Ok(Self::Metal),
-            other => Err(Error::invalid_argument(format!(
-                "unknown device '{other}'; expected auto, cpu, cuda, vulkan or metal"
-            ))),
-        }
-    }
-
     /// Resolve [`Self::Auto`] against the backends this build was compiled with.
     pub fn resolve(self) -> Self {
         if self != Self::Auto {
@@ -114,6 +95,23 @@ impl DeviceKind {
             Self::Metal
         } else {
             Self::Cpu
+        }
+    }
+}
+
+impl std::str::FromStr for DeviceKind {
+    type Err = crate::Error;
+
+    fn from_str(name: &str) -> crate::Result<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "cpu" => Ok(Self::Cpu),
+            "cuda" => Ok(Self::Cuda),
+            "vulkan" => Ok(Self::Vulkan),
+            "metal" => Ok(Self::Metal),
+            _ => Err(Error::invalid_argument(format!(
+                "unknown device '{name}'; expected auto, cpu, cuda, vulkan or metal"
+            ))),
         }
     }
 }
@@ -136,27 +134,6 @@ pub enum Quant {
 }
 
 impl Quant {
-    /// Parse the spellings the CLIs accept.
-    pub fn parse(name: &str) -> Result<Self> {
-        match name {
-            "f32" | "none" => Ok(Self::F32),
-            "q8" | "q8_0" => Ok(Self::Q80),
-            "q8_1" => Ok(Self::Q81),
-            "q8k" => Ok(Self::Q8k),
-            "q6k" => Ok(Self::Q6k),
-            "q5" | "q5_0" => Ok(Self::Q50),
-            "q5_1" => Ok(Self::Q51),
-            "q5k" => Ok(Self::Q5k),
-            "q4" | "q4_0" => Ok(Self::Q40),
-            "q4_1" => Ok(Self::Q41),
-            "q4k" => Ok(Self::Q4k),
-            other => Err(Error::invalid_argument(format!(
-                "unsupported quantization '{other}'; expected one of \
-                 f32, q8_0, q8_1, q8k, q6k, q5_0, q5_1, q5k, q4_0, q4_1, q4k"
-            ))),
-        }
-    }
-
     /// Error if this weight format cannot run on `device`.
     ///
     /// [`SynthBuilder::build`] checks this too, but a caller that downloads a
@@ -187,6 +164,31 @@ impl Quant {
             Self::Q40 => "q4_0",
             Self::Q41 => "q4_1",
             Self::Q4k => "q4k",
+        }
+    }
+}
+
+/// Parse the spellings the CLIs accept.
+impl std::str::FromStr for Quant {
+    type Err = crate::Error;
+
+    fn from_str(name: &str) -> crate::Result<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "f32" | "none" => Ok(Self::F32),
+            "q8" | "q8_0" => Ok(Self::Q80),
+            "q8_1" => Ok(Self::Q81),
+            "q8k" => Ok(Self::Q8k),
+            "q6k" => Ok(Self::Q6k),
+            "q5" | "q5_0" => Ok(Self::Q50),
+            "q5_1" => Ok(Self::Q51),
+            "q5k" => Ok(Self::Q5k),
+            "q4" | "q4_0" => Ok(Self::Q40),
+            "q4_1" => Ok(Self::Q41),
+            "q4k" => Ok(Self::Q4k),
+            _ => Err(Error::invalid_argument(format!(
+                "unsupported quantization '{name}'; expected one of \
+                 f32, q8_0, q8_1, q8k, q6k, q5_0, q5_1, q5k, q4_0, q4_1, q4k"
+            ))),
         }
     }
 }
@@ -296,11 +298,11 @@ struct Voice<Q: BackendQ> {
     sum: Option<BTreeMap<String, String>>,
 }
 
-/// A loaded model, with the weight format fixed at compile time.
-///
-/// Most callers want [`Synth`], which erases `Q` so the format can be chosen at
-/// runtime.
-pub struct SynthOf<Q: BackendQ> {
+/// A loaded model, with the weight format fixed at compile time. Always reached through
+/// [`Synth`], which erases `Q` so the format can be chosen at runtime.
+struct SynthOf<Q: BackendQ> {
+    /// The weight format it was loaded as.
+    quant: Quant,
     model: Arc<TTSModel<Q>>,
     mimi_enc: Option<MimiEnc<Q>>,
     cfg: TTSConfig,
@@ -326,198 +328,15 @@ struct Primed<Q: BackendQ> {
 }
 
 impl<Q: BackendQ> SynthOf<Q> {
-    pub fn sample_rate(&self) -> usize {
-        self.model.sample_rate()
-    }
-
-    pub fn config(&self) -> &TTSConfig {
-        &self.cfg
-    }
-
-    /// How requests are normalized.
-    ///
-    /// Every text-taking method here applies it already; it is public for
-    /// callers that drive [`SessionOf::stream_tokens`] and so tokenize
-    /// themselves, and want [`Normalize::apply`] first.
-    pub fn normalization(&self) -> Normalize {
-        self.normalize
-    }
-
-    pub fn device_name(&self) -> String {
-        self.model.device().name()
-    }
-
-    /// Registered voice names, sorted.
-    pub fn voices(&self) -> Vec<String> {
-        self.voices.keys().cloned().collect()
-    }
-
-    /// The voice a request that names none uses: the builder's `voice`, else the first voice the
-    /// checkpoint bundles (`TTSConfig::voices`), else the first registered at build by name.
-    pub fn default_voice(&self) -> Option<&str> {
-        self.defaults.voice.as_deref()
-    }
-
-    /// True if this checkpoint carries a speaker encoder, which voice cloning
-    /// from raw audio requires.
-    pub fn supports_voice_cloning(&self) -> bool {
-        self.mimi_enc.is_some()
-    }
-
-    /// The sample rate [`Self::add_voice_from_pcm`] expects.
-    pub fn voice_prompt_sample_rate(&self) -> usize {
-        self.cfg.speaker_mimi_cfg().sample_rate
-    }
-
-    /// Register a precomputed voice embedding, replacing any voice of the same name.
-    pub fn add_voice_file(&mut self, name: &str, path: &FsPath) -> Result<()> {
-        let dev = self.model.device().clone();
-        let model_ext = self.cfg.model_ext();
-        let emb =
-            loader::load_voice_emb(path, model_ext.as_deref(), self.model.speaker_proj(), &dev)?
-                .to::<Q::T>()?;
-        self.forget_primed(name);
-        self.voices.insert(name.to_string(), Voice { emb, null_emb: None, sum: None });
-        Ok(())
-    }
-
-    /// Clone a voice from a mono audio prompt.
-    ///
-    /// `pcm` must be at [`Self::voice_prompt_sample_rate`] and last between
-    /// `audio_prompt_min_duration` and `audio_prompt_max_duration` seconds:
-    /// longer input is trimmed, shorter input is an error. The caller's slice is
-    /// not modified — loudness normalization runs on an internal copy.
-    pub fn add_voice_from_pcm(&mut self, name: &str, pcm: &[f32]) -> Result<()> {
-        let enc = match self.mimi_enc.as_ref() {
-            Some(enc) => enc,
-            None => {
-                return Err(Error::unsupported(
-                    "this checkpoint has no speaker encoder, so it cannot clone voices",
-                ));
-            }
-        };
-        let sr = self.voice_prompt_sample_rate();
-        let min_len = (sr as f32 * self.cfg.audio_prompt_min_duration).round() as usize;
-        let max_len = (sr as f32 * self.cfg.audio_prompt_max_duration).round() as usize;
-        if pcm.len() < min_len {
-            return Err(Error::invalid_argument(format!(
-                "voice prompt is too short: got {} samples ({:.2}s at {sr}Hz), need at least \
-                 {min_len} ({:.2}s)",
-                pcm.len(),
-                pcm.len() as f32 / sr as f32,
-                self.cfg.audio_prompt_min_duration
-            )));
-        }
-        let mut pcm = pcm[..pcm.len().min(max_len)].to_vec();
-        crate::utils::normalize_loudness(&mut pcm, sr as u32)?;
-
-        let dev = self.model.device().clone();
-        let pcm = Tensor::from_vec(pcm, (1, 1, ()), &dev)?.to::<Q::T>()?;
-        let emb = enc.encode_audio(&pcm)?;
-        // Only needed for CFG, and only when the model conditions its null
-        // branch on silence rather than on nothing at all.
-        let null_emb = if self.cfg.cfg_null_audio_empty {
-            None
-        } else {
-            Some(enc.encode_audio(&pcm.zeros_like()?)?)
-        };
-        self.forget_primed(name);
-        self.voices.insert(name.to_string(), Voice { emb, null_emb, sum: None });
-        Ok(())
-    }
-
-    /// Register a voice from a conditioning embedding already in memory, laid
-    /// out as `frames` rows of `dim`.
-    ///
-    /// This is the mimi encoder's output -- what [`Self::add_voice_from_pcm`]
-    /// computes internally. Callers that compute or cache embeddings themselves
-    /// (`ptts-pyo3` hands one over from numpy) use this.
-    ///
-    /// `null_emb`, when given, is the encoding of equal-length silence, which
-    /// CFG needs on models where `cfg_null_audio_empty` is false.
-    pub fn add_voice_from_embedding(
-        &mut self,
-        name: &str,
-        emb: &[f32],
-        frames: usize,
-        dim: usize,
-        null_emb: Option<&[f32]>,
-    ) -> Result<()> {
-        if emb.len() != frames * dim {
-            return Err(Error::invalid_argument(format!(
-                "embedding has {} values, expected {frames} x {dim}",
-                emb.len()
-            )));
-        }
-        let dev = self.model.device().clone();
-        let to_tensor = |data: &[f32]| -> xn::Result<Tensor<Q::T, Q::B>> {
-            Tensor::from_vec(data.to_vec(), (1, frames, dim), &dev)?.to::<Q::T>()
-        };
-        let emb = to_tensor(emb)?;
-        let null_emb = match null_emb {
-            None => None,
-            Some(null) if null.len() != frames * dim => {
-                return Err(Error::invalid_argument(format!(
-                    "null embedding has {} values, expected {frames} x {dim}",
-                    null.len()
-                )));
-            }
-            Some(null) => Some(to_tensor(null)?),
-        };
-        self.forget_primed(name);
-        self.voices.insert(name.to_string(), Voice { emb, null_emb, sum: None });
-        Ok(())
-    }
-
-    /// Synthesize `text` and return the whole waveform.
-    pub fn say(&self, text: &str) -> Result<Vec<f32>> {
-        self.say_with(text, &SpeechOptions::default())
-    }
-
-    /// Synthesize `text` with per-request overrides.
-    pub fn say_with(&self, text: &str, opts: &SpeechOptions) -> Result<Vec<f32>> {
-        let mut pcm = Vec::new();
-        for chunk in self.stream_with(text, opts)? {
-            pcm.extend_from_slice(&chunk?);
-        }
-        Ok(pcm)
-    }
-
-    /// Start generating `text`, yielding PCM as the decoder produces it.
-    pub fn stream(&self, text: &str) -> Result<SpeechStream> {
-        self.stream_with(text, &SpeechOptions::default())
-    }
-
-    /// Prime a voice once and keep it, for callers that generate repeatedly.
-    ///
-    /// ```no_run
-    /// # fn main() -> xn::Result<()> {
-    /// # let tts: ptts::synth::Synth = todo!();
-    /// let session = tts.session(&ptts::synth::SpeechOptions::default().voice("alba"), 1024)?;
-    /// for line in ["First.", "Second.", "Third."] {
-    ///     let pcm = session.say(line)?;
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// `max_seq_len` is the KV budget, allocated up front and held until the
-    /// session is dropped. At 12.5 Hz a full [`MAX_TOKENS_PER_CHUNK`]-token
-    /// chunk needs 796, so 1024 covers any
-    /// single chunk; longer text is split into chunks of that size rather than
-    /// needing more.
-    pub fn session(&self, opts: &SpeechOptions, max_seq_len: usize) -> Result<SessionOf<Q>> {
-        self.session_at(&resolve(&self.defaults, opts)?, max_seq_len)
-    }
-
     /// Build a session, sized to `seq_budget`.
     fn session_at(&self, settings: &Defaults, seq_budget: usize) -> Result<SessionOf<Q>> {
         let voice = settings.voice.as_deref();
         let (mut base, cfg_base) = self.primed_state(voice, seq_budget, settings.cfg_coef)?;
-        // The voice's LUT values, then the request's conditions over them, on the conditioned
-        // branch only and after priming, so a primed prefix is cached without them. The null
-        // branch keeps the dropped-attribute state every fresh state starts with.
-        let voice_sum = voice.and_then(|v| self.voices.get(v)).and_then(|v| v.sum.as_ref());
+        // The voice's LUT values (the default voice's when the request names none), then the
+        // request's conditions over them, on the conditioned branch only and after priming, so
+        // a primed prefix is cached without them. The null branch keeps the dropped-attribute
+        // state every fresh state starts with.
+        let voice_sum = self.voice_for(voice)?.and_then(|(_, v)| v.sum.as_ref());
         let mut values: HashMap<String, Option<String>> = HashMap::new();
         for (k, v) in voice_sum.into_iter().flatten().chain(settings.conditions.iter()) {
             values.insert(k.clone(), Some(v.clone()));
@@ -542,48 +361,22 @@ impl<Q: BackendQ> SynthOf<Q> {
         })
     }
 
-    /// Start generating `text` with per-request overrides.
-    ///
-    /// Generation runs on two background threads — one for the flow-LM, one for
-    /// the Mimi decoder — so decoding overlaps the next backbone step. Dropping
-    /// the returned [`SpeechStream`] stops both.
-    pub fn stream_with(&self, text: &str, opts: &SpeechOptions) -> Result<SpeechStream> {
-        let settings = resolve(&self.defaults, opts)?;
-        let rng = Box::new(NormalRng::new(settings.temperature, settings.seed)?);
-        self.stream_with_rng(text, opts, rng)
-    }
-
-    /// As [`Self::stream_with`], but with an explicit noise source.
-    ///
-    /// The solver's only source of randomness is this trait, so replaying a
-    /// fixed sequence (see [`crate::flow_lm::ReplayRng`]) makes a generation
-    /// reproducible across implementations — which is how this crate is
-    /// compared against the reference one. `temperature` and `seed` are ignored.
-    pub fn stream_with_rng(
-        &self,
-        text: &str,
-        opts: &SpeechOptions,
-        rng: Box<dyn crate::flow_lm::Rng + Send>,
-    ) -> Result<SpeechStream> {
-        let settings = resolve(&self.defaults, opts)?;
-        let chunks = plan_chunks(
-            &self.model,
-            self.cfg.mimi.frame_rate,
-            text,
-            settings.max_tokens_per_chunk,
-            self.normalize,
-        )?;
-        // A one-shot call is a session sized to this text and dropped afterwards,
-        // so there is one generation path rather than two.
-        let seq_budget = chunks.iter().map(|c| c.seq_budget).max().unwrap_or(0);
-        self.session_at(&settings, seq_budget)?.stream_chunks(chunks, rng)
-    }
-
     /// Called whenever a voice is (re)registered, so a replaced embedding is never generated
     /// from the old conditioning.
     fn forget_primed(&self, name: &str) {
         let mut primed = self.primed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         primed.retain(|(voice, _), _| voice != name);
+    }
+
+    /// The voice a request speaks in: the one it names, else the default. `None` when there
+    /// are no voices, and generation is then unconditioned.
+    fn voice_for(&self, name: Option<&str>) -> Result<Option<(&str, &Voice<Q>)>> {
+        let default = if name.is_none() { self.default_voice() } else { None };
+        let Some(name) = name.or(default.as_deref()) else { return Ok(None) };
+        match self.voices.get_key_value(name) {
+            Some((name, voice)) => Ok(Some((name.as_str(), voice))),
+            None => Err(Error::UnknownVoice { name: name.to_string(), known: self.voices() }),
+        }
     }
 
     /// The state every chunk starts from, sized to `seq_budget` and conditioned on the voice.
@@ -598,28 +391,17 @@ impl<Q: BackendQ> SynthOf<Q> {
         seq_budget: usize,
         cfg_coef: Option<f32>,
     ) -> Result<(TTSState<Q>, Option<(f32, TTSState<Q>)>)> {
-        let voice = match voice {
-            None if self.voices.is_empty() => None,
-            None => {
-                return Err(Error::not_found(format!(
-                    "no voice selected; this model has {}",
-                    self.voices.keys().cloned().collect::<Vec<_>>().join(", ")
-                )));
-            }
-            Some(name) => match self.voices.get(name) {
-                Some(v) => Some((name, v)),
-                None => {
-                    return Err(Error::UnknownVoice {
-                        name: name.to_string(),
-                        known: self.voices(),
-                    });
-                }
-            },
+        let Some((name, voice)) = self.voice_for(voice)? else {
+            let state = self.model.init_flow_lm_state(1, seq_budget)?;
+            let cfg_state = match cfg_coef {
+                None => None,
+                Some(coef) => Some((coef, self.model.init_flow_lm_state(1, seq_budget)?)),
+            };
+            return Ok((state, cfg_state));
         };
 
-        if let Some((_, voice)) = voice
-            && voice.emb.dim(1usize)? == 0
-        {
+        let frames = voice.emb.dim(1usize)?;
+        if frames == 0 {
             // A voice with no prompt, e.g. a summed-LUT value: nothing to prime, `session_at`
             // adds its value to every audio frame. The null branch is a fresh state, whose LUTs
             // `init_flow_lm_state` sets as dropped attributes, as training does.
@@ -630,17 +412,6 @@ impl<Q: BackendQ> SynthOf<Q> {
             };
             return Ok((state, cfg_state));
         }
-
-        let Some((name, voice)) = voice else {
-            let state = self.model.init_flow_lm_state(1, seq_budget)?;
-            let cfg_state = match cfg_coef {
-                None => None,
-                Some(coef) => Some((coef, self.model.init_flow_lm_state(1, seq_budget)?)),
-            };
-            return Ok((state, cfg_state));
-        };
-
-        let frames = voice.emb.dim(1usize)?;
         if frames >= seq_budget {
             // Its own variant rather than `SeqBudgetExceeded`: nothing about the text is
             // wrong here, so "split the text" would be useless advice, and the prompt
@@ -720,14 +491,187 @@ impl<Q: BackendQ> SynthOf<Q> {
     }
 }
 
-impl<Q: BackendQ> std::fmt::Debug for SynthOf<Q> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SynthOf")
-            .field("device", &self.device_name())
-            .field("sample_rate", &self.sample_rate())
-            .field("voices", &self.voices())
-            .finish()
+impl<Q: BackendQ> SynthApi for SynthOf<Q> {
+    fn sample_rate(&self) -> u32 {
+        self.model.sample_rate() as u32
     }
+
+    fn config(&self) -> &TTSConfig {
+        &self.cfg
+    }
+
+    fn normalization(&self) -> Normalize {
+        self.normalize
+    }
+
+    fn device_name(&self) -> String {
+        self.model.device().name()
+    }
+
+    fn voices(&self) -> Vec<String> {
+        self.voices.keys().cloned().collect()
+    }
+
+    fn default_voice(&self) -> Option<String> {
+        let found = self.voices.get_key_value("default").or_else(|| self.voices.iter().next());
+        self.defaults.voice.clone().or_else(|| found.map(|(name, _)| name.clone()))
+    }
+
+    fn supports_voice_cloning(&self) -> bool {
+        self.mimi_enc.is_some()
+    }
+
+    fn voice_prompt_sample_rate(&self) -> u32 {
+        self.cfg.speaker_mimi_cfg().sample_rate as u32
+    }
+
+    fn add_voice_file(&mut self, name: &str, path: &FsPath) -> Result<()> {
+        let dev = self.model.device().clone();
+        let model_ext = self.cfg.model_ext();
+        let emb =
+            loader::load_voice_emb(path, model_ext.as_deref(), self.model.speaker_proj(), &dev)?
+                .to::<Q::T>()?;
+        self.forget_primed(name);
+        self.voices.insert(name.to_string(), Voice { emb, null_emb: None, sum: None });
+        Ok(())
+    }
+
+    fn add_voice_from_pcm(&mut self, name: &str, pcm: &[f32]) -> Result<()> {
+        let enc = match self.mimi_enc.as_ref() {
+            Some(enc) => enc,
+            None => {
+                return Err(Error::unsupported(
+                    "this checkpoint has no speaker encoder, so it cannot clone voices",
+                ));
+            }
+        };
+        let sr = self.voice_prompt_sample_rate();
+        let min_len = (sr as f32 * self.cfg.audio_prompt_min_duration).round() as usize;
+        let max_len = (sr as f32 * self.cfg.audio_prompt_max_duration).round() as usize;
+        if pcm.len() < min_len {
+            return Err(Error::invalid_argument(format!(
+                "voice prompt is too short: got {} samples ({:.2}s at {sr}Hz), need at least \
+                 {min_len} ({:.2}s)",
+                pcm.len(),
+                pcm.len() as f32 / sr as f32,
+                self.cfg.audio_prompt_min_duration
+            )));
+        }
+        let mut pcm = pcm[..pcm.len().min(max_len)].to_vec();
+        crate::utils::normalize_loudness(&mut pcm, sr)?;
+
+        let dev = self.model.device().clone();
+        let pcm = Tensor::from_vec(pcm, (1, 1, ()), &dev)?.to::<Q::T>()?;
+        let emb = enc.encode_audio(&pcm)?;
+        // Only needed for CFG, and only when the model conditions its null
+        // branch on silence rather than on nothing at all.
+        let null_emb = if self.cfg.cfg_null_audio_empty {
+            None
+        } else {
+            Some(enc.encode_audio(&pcm.zeros_like()?)?)
+        };
+        self.forget_primed(name);
+        self.voices.insert(name.to_string(), Voice { emb, null_emb, sum: None });
+        Ok(())
+    }
+
+    fn add_voice_from_embedding(
+        &mut self,
+        name: &str,
+        emb: &[f32],
+        frames: usize,
+        dim: usize,
+        null_emb: Option<&[f32]>,
+    ) -> Result<()> {
+        if emb.len() != frames * dim {
+            return Err(Error::invalid_argument(format!(
+                "embedding has {} values, expected {frames} x {dim}",
+                emb.len()
+            )));
+        }
+        let dev = self.model.device().clone();
+        let to_tensor = |data: &[f32]| -> xn::Result<Tensor<Q::T, Q::B>> {
+            Tensor::from_vec(data.to_vec(), (1, frames, dim), &dev)?.to::<Q::T>()
+        };
+        let emb = to_tensor(emb)?;
+        let null_emb = match null_emb {
+            None => None,
+            Some(null) if null.len() != frames * dim => {
+                return Err(Error::invalid_argument(format!(
+                    "null embedding has {} values, expected {frames} x {dim}",
+                    null.len()
+                )));
+            }
+            Some(null) => Some(to_tensor(null)?),
+        };
+        self.forget_primed(name);
+        self.voices.insert(name.to_string(), Voice { emb, null_emb, sum: None });
+        Ok(())
+    }
+
+    fn say(&self, text: &str) -> Result<Vec<f32>> {
+        self.say_with(text, &SpeechOptions::default())
+    }
+
+    fn say_with(&self, text: &str, opts: &SpeechOptions) -> Result<Vec<f32>> {
+        let mut pcm = Vec::new();
+        for chunk in self.stream_with(text, opts)? {
+            pcm.extend_from_slice(&chunk?);
+        }
+        Ok(pcm)
+    }
+
+    fn stream(&self, text: &str) -> Result<SpeechStream> {
+        self.stream_with(text, &SpeechOptions::default())
+    }
+
+    fn session(&self, opts: &SpeechOptions, max_seq_len: usize) -> Result<Session> {
+        Ok(Session(Box::new(self.session_at(&resolve(&self.defaults, opts)?, max_seq_len)?)))
+    }
+
+    fn stream_with(&self, text: &str, opts: &SpeechOptions) -> Result<SpeechStream> {
+        let settings = resolve(&self.defaults, opts)?;
+        let rng = Box::new(NormalRng::new(settings.temperature, settings.seed)?);
+        self.stream_with_rng(text, opts, rng)
+    }
+
+    fn stream_with_rng(
+        &self,
+        text: &str,
+        opts: &SpeechOptions,
+        rng: Box<dyn crate::flow_lm::Rng + Send>,
+    ) -> Result<SpeechStream> {
+        let settings = resolve(&self.defaults, opts)?;
+        let chunks = plan_chunks(
+            &self.model,
+            self.cfg.mimi.frame_rate,
+            text,
+            settings.max_tokens_per_chunk,
+            self.normalize,
+        )?;
+        // A one-shot call is a session sized to this text and dropped afterwards,
+        // so there is one generation path rather than two. The voice prompt gets its
+        // real length, as the session's own check counts it, and never less than
+        // PROMPT_SEQ_HEADROOM: a reserve alone would leave a long prompt no room.
+        let prompt = match self.voice_for(settings.voice.as_deref())? {
+            Some((_, voice)) => voice.emb.dim(1usize)?,
+            None => 0,
+        };
+        let text = chunks.iter().map(|c| c.tokens.len() + c.frame_budget).max().unwrap_or(0);
+        let seq_budget = text + prompt.max(plan::PROMPT_SEQ_HEADROOM);
+        self.session_at(&settings, seq_budget)?.stream_chunks(chunks, rng)
+    }
+
+    fn quant(&self) -> Quant {
+        self.quant
+    }
+}
+
+/// A fresh, independently-owned state at `seq_budget`, seeded with `prefix`'s filled positions.
+fn grow<Q: BackendQ>(prefix: &TTSState<Q>, seq_budget: usize) -> Result<TTSState<Q>> {
+    let transformer_state = prefix.flow_lm_state.transformer_state.with_seq_budget(seq_budget)?;
+    let extra_sum = prefix.flow_lm_state.extra_sum.clone();
+    Ok(TTSState { flow_lm_state: crate::flow_lm::FlowLMState { transformer_state, extra_sum } })
 }
 
 /// The voices `config.voices` lists, in order, with their prefixes read from the weights and
@@ -760,16 +704,9 @@ fn bundled_voices<Q: BackendQ>(
     Ok(voices)
 }
 
-/// A fresh, independently-owned state at `seq_budget`, seeded with `prefix`'s filled positions.
-fn grow<Q: BackendQ>(prefix: &TTSState<Q>, seq_budget: usize) -> Result<TTSState<Q>> {
-    let transformer_state = prefix.flow_lm_state.transformer_state.with_seq_budget(seq_budget)?;
-    let extra_sum = prefix.flow_lm_state.extra_sum.clone();
-    Ok(TTSState { flow_lm_state: crate::flow_lm::FlowLMState { transformer_state, extra_sum } })
-}
-
 /// Split `text` into chunks and work out the budgets for each.
 ///
-/// Free rather than a method because both [`SynthOf`] and [`SessionOf`] need
+/// Free rather than a method because both [`Synth`] and [`Session`] need
 /// it, and it depends only on the tokenizer inside the model and the codec's
 /// frame rate.
 fn plan_chunks<Q: BackendQ>(
@@ -778,7 +715,7 @@ fn plan_chunks<Q: BackendQ>(
     text: &str,
     max_tokens_per_chunk: usize,
     normalize: Normalize,
-) -> Result<Vec<ChunkPlan>> {
+) -> Result<Vec<Chunk>> {
     let tokenizer = match model.flow_lm.conditioner.tokenizer.as_ref() {
         Some(tokenizer) => tokenizer.as_ref(),
         None => {
@@ -789,49 +726,11 @@ fn plan_chunks<Q: BackendQ>(
             ));
         }
     };
-    // Normalization runs first, on the whole input: it rewrites the characters
-    // the sentence splitter looks for.
-    let text = normalize.apply(text);
-    let texts = split_into_best_sentences(tokenizer, &text, Some(max_tokens_per_chunk))?;
-    let mut chunks = Vec::with_capacity(texts.len());
-    for text in texts {
-        let (prepared, frames_after_eos) = prepare_text_prompt(&text);
-        let tokens = model.flow_lm.conditioner.tokenize(&prepared)?;
-        let frame_budget = plan::frame_budget(tokens.len(), frame_rate);
-        let seq_budget = plan::seq_budget(tokens.len(), frame_budget);
-        chunks.push(ChunkPlan { tokens, frame_budget, frames_after_eos, seq_budget });
-    }
-    if chunks.is_empty() {
-        return Err(Error::invalid_argument("nothing to synthesize: the text is empty"));
-    }
-    Ok(chunks)
+    plan::chunks(tokenizer, text, normalize, max_tokens_per_chunk, frame_rate)
 }
 
-/// A voice primed once, ready to generate repeatedly.
-///
-/// # One generation at a time
-///
-/// A session runs one generation at a time, and says so: starting a second
-/// while the first is still running is an error, not silent corruption.
-///
-/// Starting one clones the primed state, and cloning an `xn` tensor shares its
-/// storage rather than copying it, so two overlapping generations would write
-/// into the same KV buffers and each would attend over the other's keys. The
-/// hazard outlives the call — [`SpeechStream`] is `'static` and its workers
-/// keep writing after `stream` returns — so a flag held for the life of those
-/// workers is what actually enforces it; `!Sync` or `&mut self` cannot see it.
-/// Dropping a stream joins its workers, so finishing or dropping one and
-/// starting the next always works.
-///
-/// A server wanting genuine concurrency builds one session per connection,
-/// which is what `ptts-ws-server` does.
-///
-/// Built by [`SynthOf::session`]. Every generation clones the primed state
-/// rather than re-running `prompt_audio` over the voice prompt. A one-shot
-/// caller should just use [`SynthOf::say`].
-///
-/// The KV budget is fixed at construction.
-pub struct SessionOf<Q: BackendQ> {
+/// The generic session behind [`Session`], whose docs cover its concurrency rules.
+struct SessionOf<Q: BackendQ> {
     model: Arc<TTSModel<Q>>,
     frame_rate: f64,
     temperature: f32,
@@ -840,7 +739,7 @@ pub struct SessionOf<Q: BackendQ> {
     base: TTSState<Q>,
     cfg_base: Option<(f32, TTSState<Q>)>,
     seq_budget: usize,
-    /// How text is normalized, inherited from the [`SynthOf`] this session was
+    /// How text is normalized, inherited from the [`Synth`] this session was
     /// built from.
     normalize: Normalize,
     /// Slots the voice prompt already occupies, so the budget check can use it
@@ -851,56 +750,8 @@ pub struct SessionOf<Q: BackendQ> {
 }
 
 impl<Q: BackendQ> SessionOf<Q> {
-    /// The KV budget this session was primed with.
-    pub fn seq_budget(&self) -> usize {
-        self.seq_budget
-    }
-
-    pub fn sample_rate(&self) -> usize {
-        self.model.sample_rate()
-    }
-
-    /// How text is normalized.
-    ///
-    /// [`Self::stream`] and [`Self::say`] apply it themselves. Callers that
-    /// tokenize by hand for [`Self::stream_tokens`] should run their text
-    /// through [`Normalize::apply`] first, before [`prepare_text_prompt`].
-    pub fn normalization(&self) -> Normalize {
-        self.normalize
-    }
-
-    /// Synthesize `text`, returning the whole waveform.
-    pub fn say(&self, text: &str) -> Result<Vec<f32>> {
-        let mut pcm = Vec::new();
-        for chunk in self.stream(text)? {
-            pcm.extend_from_slice(&chunk?);
-        }
-        Ok(pcm)
-    }
-
-    /// Synthesize `text`, yielding PCM as the decoder produces it.
-    pub fn stream(&self, text: &str) -> Result<SpeechStream> {
-        let rng = Box::new(NormalRng::new(self.temperature, self.seed)?);
-        self.stream_with_rng(text, rng)
-    }
-
-    /// As [`Self::stream`], with an explicit seed for this request.
-    pub fn stream_seeded(&self, text: &str, seed: u64) -> Result<SpeechStream> {
-        let rng = Box::new(NormalRng::new(self.temperature, seed)?);
-        self.stream_with_rng(text, rng)
-    }
-
-    /// As [`Self::say`], with an explicit seed for this request.
-    pub fn say_seeded(&self, text: &str, seed: u64) -> Result<Vec<f32>> {
-        let mut pcm = Vec::new();
-        for chunk in self.stream_seeded(text, seed)? {
-            pcm.extend_from_slice(&chunk?);
-        }
-        Ok(pcm)
-    }
-
     /// As [`Self::stream`], with an explicit noise source.
-    pub fn stream_with_rng(
+    fn stream_with_rng(
         &self,
         text: &str,
         rng: Box<dyn crate::flow_lm::Rng + Send>,
@@ -915,44 +766,16 @@ impl<Q: BackendQ> SessionOf<Q> {
         self.stream_chunks(chunks, rng)
     }
 
-    /// Tokenize `text` as given, with none of the preparation [`Self::stream`]
-    /// does first — no [`prepare_text_prompt`], no sentence splitting.
-    ///
-    /// Paired with [`Self::stream_tokens`] for callers that want one utterance
-    /// per request and prepare the text themselves.
-    pub fn tokenize(&self, text: &str) -> Result<Vec<u32>> {
-        Ok(self.model.flow_lm.conditioner.tokenize(text)?)
-    }
-
-    /// Synthesize from tokens produced elsewhere, as one chunk.
-    ///
-    /// `frames_after_eos` is the tail [`prepare_text_prompt`] would have
-    /// chosen: 3 for a very short prompt, 1 otherwise.
-    pub fn stream_tokens(
-        &self,
-        tokens: Vec<u32>,
-        frames_after_eos: usize,
-        rng: Box<dyn crate::flow_lm::Rng + Send>,
-    ) -> Result<SpeechStream> {
-        if tokens.is_empty() {
-            return Err(Error::invalid_argument("nothing to synthesize: no tokens"));
-        }
-        let frame_budget = plan::frame_budget(tokens.len(), self.frame_rate);
-        let seq_budget = plan::seq_budget(tokens.len(), frame_budget);
-        let chunk = ChunkPlan { tokens, frame_budget, frames_after_eos, seq_budget };
-        self.stream_chunks(vec![chunk], rng)
-    }
-
     /// Start the two worker threads for an already-planned set of chunks.
     ///
-    /// The single place generation is driven from: [`SynthOf::stream_with_rng`]
+    /// The single place generation is driven from: [`SynthApi::stream_with_rng`]
     /// reaches it through an ephemeral session.
     fn stream_chunks(
         &self,
-        chunks: Vec<ChunkPlan>,
+        chunks: Vec<Chunk>,
         rng: Box<dyn crate::flow_lm::Rng + Send>,
     ) -> Result<SpeechStream> {
-        // `c.seq_budget` reserves PROMPT_SEQ_HEADROOM for a voice prompt whose
+        // `Chunk::seq_budget` reserves PROMPT_SEQ_HEADROOM for a voice prompt whose
         // real length this session knows, so it over-states what is needed for
         // a short prompt and under-states it for a long one.
         let needed = chunks
@@ -1067,6 +890,64 @@ impl<Q: BackendQ> SessionOf<Q> {
     }
 }
 
+impl<Q: BackendQ> SessionApi for SessionOf<Q> {
+    fn seq_budget(&self) -> usize {
+        self.seq_budget
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.model.sample_rate() as u32
+    }
+
+    fn normalization(&self) -> Normalize {
+        self.normalize
+    }
+
+    fn say(&self, text: &str) -> Result<Vec<f32>> {
+        let mut pcm = Vec::new();
+        for chunk in self.stream(text)? {
+            pcm.extend_from_slice(&chunk?);
+        }
+        Ok(pcm)
+    }
+
+    fn stream(&self, text: &str) -> Result<SpeechStream> {
+        let rng = Box::new(NormalRng::new(self.temperature, self.seed)?);
+        self.stream_with_rng(text, rng)
+    }
+
+    fn stream_seeded(&self, text: &str, seed: u64) -> Result<SpeechStream> {
+        let rng = Box::new(NormalRng::new(self.temperature, seed)?);
+        self.stream_with_rng(text, rng)
+    }
+
+    fn say_seeded(&self, text: &str, seed: u64) -> Result<Vec<f32>> {
+        let mut pcm = Vec::new();
+        for chunk in self.stream_seeded(text, seed)? {
+            pcm.extend_from_slice(&chunk?);
+        }
+        Ok(pcm)
+    }
+
+    fn tokenize(&self, text: &str) -> Result<Vec<u32>> {
+        Ok(self.model.flow_lm.conditioner.tokenize(text)?)
+    }
+
+    fn stream_tokens(
+        &self,
+        tokens: Vec<u32>,
+        frames_after_eos: usize,
+        rng: Box<dyn crate::flow_lm::Rng + Send>,
+    ) -> Result<SpeechStream> {
+        if tokens.is_empty() {
+            return Err(Error::invalid_argument("nothing to synthesize: no tokens"));
+        }
+        let frame_budget = plan::frame_budget(tokens.len(), self.frame_rate);
+        let chunk = Chunk { text: String::new(), tokens, frames_after_eos, frame_budget };
+        self.stream_chunks(vec![chunk], rng)
+    }
+}
+
 /// Slots the primed state already occupies — the voice prompt's frames.
 ///
 /// Read off the first flow-LM layer: every layer advances together, and a Mimi
@@ -1097,14 +978,6 @@ impl Drop for InFlight {
     }
 }
 
-/// What one text chunk will need.
-struct ChunkPlan {
-    tokens: Vec<u32>,
-    frame_budget: usize,
-    frames_after_eos: usize,
-    seq_budget: usize,
-}
-
 /// Messages from the flow-LM thread to the decoder thread.
 enum Frame<Q: BackendQ> {
     Latent(Tensor<Q::T, Q::B>),
@@ -1114,7 +987,7 @@ enum Frame<Q: BackendQ> {
 /// The autoregressive loop, shared by every frontend and every chunk.
 fn run_backbone<Q: BackendQ>(
     model: &TTSModel<Q>,
-    chunks: Vec<ChunkPlan>,
+    chunks: Vec<Chunk>,
     base_state: TTSState<Q>,
     cfg_base: Option<(f32, TTSState<Q>)>,
     mut rng: Box<dyn crate::flow_lm::Rng + Send>,
@@ -1170,7 +1043,7 @@ pub struct SpeechStream {
     /// unbounded, so a worker only notices it should stop once the receiver is
     /// gone, and fields drop after `Drop::drop` has run.
     rx: Option<std::sync::mpsc::Receiver<Result<Vec<f32>>>>,
-    sample_rate: usize,
+    sample_rate: u32,
     failed: bool,
     /// The flow-LM and decoder threads, joined once the channel closes so that
     /// a panic in either surfaces as an error rather than as truncated audio.
@@ -1178,7 +1051,7 @@ pub struct SpeechStream {
 }
 
 impl SpeechStream {
-    pub fn sample_rate(&self) -> usize {
+    pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
 }
@@ -1231,7 +1104,7 @@ impl Iterator for SpeechStream {
     }
 }
 
-/// Configures and loads a [`SynthOf`].
+/// Configures and loads a [`Synth`].
 ///
 /// The config, the weights path and the normalization policy are required, and
 /// none has a default. Which files a checkpoint ships, what they are called and
@@ -1268,26 +1141,30 @@ impl SynthBuilder {
     /// to the tokenizer as written.
     ///
     /// ```no_run
-    /// # fn main() -> xn::Result<()> {
-    /// use ptts::preprocess::{Lang, Normalize};
+    /// # fn main() -> ptts::Result<()> {
+    /// use ptts::preprocess::Lang;
     /// use ptts::synth::SynthBuilder;
     /// use ptts::tts_model::TTSConfig;
     ///
     /// let tts = SynthBuilder::new(
-    ///     TTSConfig::v202601(0.3),
+    ///     TTSConfig::v202601(),
     ///     "model/model.safetensors",
-    ///     Normalize::for_lang(Lang::De),
+    ///     Lang::De,
     /// )
     /// .tokenizer_file("model/tokenizer.model")
     /// .build()?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new(config: TTSConfig, weights: impl Into<PathBuf>, normalize: Normalize) -> Self {
+    pub fn new(
+        config: TTSConfig,
+        weights: impl Into<PathBuf>,
+        normalize: impl Into<Normalize>,
+    ) -> Self {
         Self {
             config,
             weights: weights.into(),
-            normalize,
+            normalize: normalize.into(),
             tokenizer_file: None,
             device: DeviceKind::Auto,
             quant: Quant::F32,
@@ -1351,8 +1228,8 @@ impl SynthBuilder {
         self
     }
 
-    /// Default voice for requests that do not name one. Defaults to the first
-    /// registered voice by name.
+    /// Default voice for requests that do not name one. Without it,
+    /// [`SynthApi::default_voice`] picks one.
     pub fn voice(mut self, voice: impl Into<String>) -> Self {
         self.voice = Some(voice.into());
         self
@@ -1368,7 +1245,7 @@ impl SynthBuilder {
     /// Register a precomputed voice embedding at load time. A voice that fails
     /// to load fails the whole load; a frontend registering a checkpoint's own
     /// voices, where one bad embedding should not make the model unusable, can
-    /// instead loop over [`SynthOf::add_voice_file`] afterwards and warn.
+    /// instead loop over [`SynthApi::add_voice_file`] afterwards and warn.
     pub fn add_voice(mut self, name: impl Into<String>, path: impl Into<PathBuf>) -> Self {
         self.voices.push((name.into(), path.into()));
         self
@@ -1390,47 +1267,52 @@ impl SynthBuilder {
 
     fn build_cpu(self) -> Result<Synth> {
         macro_rules! cpu {
-            ($variant:ident, $q:ty) => {{
-                let synth = self.load::<$q>(xn::CPU)?;
-                Ok(Synth(SynthV::$variant(synth)))
-            }};
+            ($q:ty) => {
+                Ok(Synth(Box::new(self.load::<$q>(xn::CPU)?)))
+            };
         }
         match self.quant {
-            Quant::F32 => cpu!(Cpu, xn::Unquantized<f32, xn::CpuDevice>),
-            Quant::Q80 => cpu!(Q80, xn::quantized::Q80F32),
-            Quant::Q81 => cpu!(Q81, xn::quantized::Q81F32),
-            Quant::Q8k => cpu!(Q8k, xn::quantized::Q8kF32),
-            Quant::Q6k => cpu!(Q6k, xn::quantized::Q6kF32),
-            Quant::Q50 => cpu!(Q50, xn::quantized::Q50F32),
-            Quant::Q51 => cpu!(Q51, xn::quantized::Q51F32),
-            Quant::Q5k => cpu!(Q5k, xn::quantized::Q5kF32),
-            Quant::Q40 => cpu!(Q40, xn::quantized::Q40F32),
-            Quant::Q41 => cpu!(Q41, xn::quantized::Q41F32),
-            Quant::Q4k => cpu!(Q4k, xn::quantized::Q4kF32),
+            Quant::F32 => cpu!(xn::Unquantized<f32, xn::CpuDevice>),
+            Quant::Q80 => cpu!(xn::quantized::Q80F32),
+            Quant::Q81 => cpu!(xn::quantized::Q81F32),
+            Quant::Q8k => cpu!(xn::quantized::Q8kF32),
+            Quant::Q6k => cpu!(xn::quantized::Q6kF32),
+            Quant::Q50 => cpu!(xn::quantized::Q50F32),
+            Quant::Q51 => cpu!(xn::quantized::Q51F32),
+            Quant::Q5k => cpu!(xn::quantized::Q5kF32),
+            Quant::Q40 => cpu!(xn::quantized::Q40F32),
+            Quant::Q41 => cpu!(xn::quantized::Q41F32),
+            Quant::Q4k => cpu!(xn::quantized::Q4kF32),
         }
     }
 
     #[cfg(feature = "cuda")]
     fn build_cuda(self) -> Result<Synth> {
+        // `quant()` reports `self.quant`, which `check_device` keeps at F32 here.
+        debug_assert_eq!(self.quant, Quant::F32);
         let dev = xn::cuda_backend::Device::new(0)?;
         // Event tracking costs a few percent and this workload never queries events.
         unsafe { dev.disable_event_tracking() };
         let synth = self.load::<xn::Unquantized<half::bf16, _>>(dev)?;
-        Ok(Synth(SynthV::Cuda(synth)))
+        Ok(Synth(Box::new(synth)))
     }
 
     #[cfg(feature = "vulkan")]
     fn build_vulkan(self) -> Result<Synth> {
+        // `quant()` reports `self.quant`, which `check_device` keeps at F32 here.
+        debug_assert_eq!(self.quant, Quant::F32);
         let dev = xn::vulkan_backend::Device::new(0)?;
         let synth = self.load::<xn::Unquantized<f32, _>>(dev)?;
-        Ok(Synth(SynthV::Vulkan(synth)))
+        Ok(Synth(Box::new(synth)))
     }
 
     #[cfg(feature = "metal")]
     fn build_metal(self) -> Result<Synth> {
+        // `quant()` reports `self.quant`, which `check_device` keeps at F32 here.
+        debug_assert_eq!(self.quant, Quant::F32);
         let dev = xn::metal_backend::Device::new(0)?;
         let synth = self.load::<xn::Unquantized<half::bf16, _>>(dev)?;
-        Ok(Synth(SynthV::Metal(synth)))
+        Ok(Synth(Box::new(synth)))
     }
 
     #[cfg(not(feature = "cuda"))]
@@ -1451,7 +1333,7 @@ impl SynthBuilder {
     }
 
     /// Load the weights and register the voices.
-    pub fn load<Q: BackendQ>(mut self, device: Q::B) -> Result<SynthOf<Q>> {
+    fn load<Q: BackendQ>(mut self, device: Q::B) -> Result<SynthOf<Q>> {
         if !self.weights.is_file() {
             return Err(Error::not_found(format!(
                 "weights file not found: {}",
@@ -1476,6 +1358,7 @@ impl SynthBuilder {
         vb.check_all_used_with_ignore(loader::is_unused_by_tts_model)?;
 
         let mut synth = SynthOf {
+            quant: self.quant,
             model: Arc::new(model),
             mimi_enc,
             cfg: config,
@@ -1515,11 +1398,6 @@ impl SynthBuilder {
             synth.add_voice_file(name, path)?;
         }
 
-        // Default to the first voice by name when the caller named none, so a
-        // bare `say` works out of the box.
-        if synth.defaults.voice.is_none() {
-            synth.defaults.voice = synth.voices.keys().next().cloned();
-        }
         if let Some(name) = synth.defaults.voice.as_ref()
             && !synth.voices.contains_key(name)
         {
@@ -1552,159 +1430,212 @@ impl SynthBuilder {
     }
 }
 
-/// Every weight format and device this build supports.
+mod sealed {
+    /// Lets only this module implement [`super::SynthApi`] and [`super::SessionApi`], so
+    /// methods can be added to them without breaking anyone.
+    pub trait Sealed {}
+    impl<Q: xn::BackendQ> Sealed for super::SynthOf<Q> {}
+    impl<Q: xn::BackendQ> Sealed for super::SessionOf<Q> {}
+}
+
+/// What a loaded model does, whatever its weight format and device.
 ///
-/// [`Synth`] exists so that a caller who picks a format from a command-line
-/// flag or a config file does not have to be generic over `Q`. The runtime
-/// dispatch happens once per method call and costs nothing next to a
-/// transformer step.
-enum SynthV {
-    Cpu(SynthOf<xn::Unquantized<f32, xn::CpuDevice>>),
-    Q80(SynthOf<xn::quantized::Q80F32>),
-    Q81(SynthOf<xn::quantized::Q81F32>),
-    Q8k(SynthOf<xn::quantized::Q8kF32>),
-    Q6k(SynthOf<xn::quantized::Q6kF32>),
-    Q50(SynthOf<xn::quantized::Q50F32>),
-    Q51(SynthOf<xn::quantized::Q51F32>),
-    Q5k(SynthOf<xn::quantized::Q5kF32>),
-    Q40(SynthOf<xn::quantized::Q40F32>),
-    Q41(SynthOf<xn::quantized::Q41F32>),
-    Q4k(SynthOf<xn::quantized::Q4kF32>),
-    #[cfg(feature = "cuda")]
-    Cuda(SynthOf<xn::Unquantized<half::bf16, xn::cuda_backend::Device>>),
-    #[cfg(feature = "vulkan")]
-    Vulkan(SynthOf<xn::Unquantized<f32, xn::vulkan_backend::Device>>),
-    #[cfg(feature = "metal")]
-    Metal(SynthOf<xn::Unquantized<half::bf16, xn::metal_backend::Device>>),
+/// [`Synth`] dereferences to this, so these are called on a `Synth` directly, with no import.
+pub trait SynthApi: sealed::Sealed + Send + Sync {
+    /// Sample rate of the audio this model produces, in Hz.
+    fn sample_rate(&self) -> u32;
+
+    /// The config the model was loaded with.
+    fn config(&self) -> &TTSConfig;
+
+    /// How requests are normalized.
+    ///
+    /// Every text-taking method here applies it already; it is public for
+    /// callers that drive [`SessionApi::stream_tokens`] and so tokenize
+    /// themselves, and want [`Normalize::apply`] first.
+    fn normalization(&self) -> Normalize;
+
+    /// Name of the device the model is running on, e.g. `"cpu"` or `"cuda:0"`.
+    fn device_name(&self) -> String;
+
+    /// Registered voice names, sorted.
+    fn voices(&self) -> Vec<String>;
+
+    /// The voice a request that names none speaks in: the builder's [`SynthBuilder::voice`],
+    /// else `default` (a checkpoint's own `default-voice.safetensors`), else the first by name.
+    /// Decided per request, so a voice registered after the build counts. `None` when there
+    /// are no voices, and generation is then unconditioned.
+    fn default_voice(&self) -> Option<String>;
+
+    /// True if this checkpoint carries a speaker encoder, which voice cloning
+    /// from raw audio requires.
+    fn supports_voice_cloning(&self) -> bool;
+
+    /// The sample rate [`Self::add_voice_from_pcm`] expects.
+    fn voice_prompt_sample_rate(&self) -> u32;
+
+    /// Register a precomputed voice embedding, replacing any voice of the same name.
+    fn add_voice_file(&mut self, name: &str, path: &FsPath) -> Result<()>;
+
+    /// Clone a voice from a mono audio prompt.
+    ///
+    /// `pcm` must be at [`Self::voice_prompt_sample_rate`] and last between
+    /// `audio_prompt_min_duration` and `audio_prompt_max_duration` seconds:
+    /// longer input is trimmed, shorter input is an error. The caller's slice is
+    /// not modified — loudness normalization runs on an internal copy.
+    fn add_voice_from_pcm(&mut self, name: &str, pcm: &[f32]) -> Result<()>;
+
+    /// Register a voice from a conditioning embedding already in memory, laid
+    /// out as `frames` rows of `dim`.
+    ///
+    /// This is the mimi encoder's output -- what [`Self::add_voice_from_pcm`]
+    /// computes internally. Callers that compute or cache embeddings themselves
+    /// (`ptts-pyo3` hands one over from numpy) use this.
+    ///
+    /// `null_emb`, when given, is the encoding of equal-length silence, which
+    /// CFG needs on models where `cfg_null_audio_empty` is false.
+    fn add_voice_from_embedding(
+        &mut self,
+        name: &str,
+        emb: &[f32],
+        frames: usize,
+        dim: usize,
+        null_emb: Option<&[f32]>,
+    ) -> Result<()>;
+
+    /// Synthesize `text` and return the whole waveform, as mono `f32` at
+    /// [`Self::sample_rate`].
+    fn say(&self, text: &str) -> Result<Vec<f32>>;
+
+    /// Synthesize `text` with per-request overrides.
+    fn say_with(&self, text: &str, opts: &SpeechOptions) -> Result<Vec<f32>>;
+
+    /// Start generating `text`, yielding PCM as the decoder produces it.
+    fn stream(&self, text: &str) -> Result<SpeechStream>;
+
+    /// Prime a voice once and keep it, for callers that generate repeatedly.
+    ///
+    /// ```no_run
+    /// # fn main() -> ptts::Result<()> {
+    /// # let tts: ptts::synth::Synth = todo!();
+    /// let session = tts.session(&ptts::synth::SpeechOptions::default().voice("alba"), 1024)?;
+    /// for line in ["First.", "Second.", "Third."] {
+    ///     let pcm = session.say(line)?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// `max_seq_len` is the KV budget, allocated up front and held until the
+    /// session is dropped. At 12.5 Hz a full [`MAX_TOKENS_PER_CHUNK`]-token
+    /// chunk needs 796, so 1024 covers any
+    /// single chunk; longer text is split into chunks of that size rather than
+    /// needing more. Text that would need more is rejected rather than silently
+    /// re-primed.
+    fn session(&self, opts: &SpeechOptions, max_seq_len: usize) -> Result<Session>;
+
+    /// Start generating `text` with per-request overrides.
+    ///
+    /// Generation runs on two background threads — one for the flow-LM, one for
+    /// the Mimi decoder — so decoding overlaps the next backbone step. Dropping
+    /// the returned [`SpeechStream`] stops both.
+    fn stream_with(&self, text: &str, opts: &SpeechOptions) -> Result<SpeechStream>;
+
+    /// As [`Self::stream_with`], but with an explicit noise source.
+    ///
+    /// The solver's only source of randomness is this trait, so replaying a
+    /// fixed sequence (see [`crate::flow_lm::ReplayRng`]) makes a generation
+    /// reproducible across implementations — which is how this crate is
+    /// compared against the reference one. `temperature` and `seed` are ignored.
+    fn stream_with_rng(
+        &self,
+        text: &str,
+        opts: &SpeechOptions,
+        rng: Box<dyn crate::flow_lm::Rng + Send>,
+    ) -> Result<SpeechStream>;
+
+    /// The weight format actually loaded. GPU backends are always unquantized.
+    fn quant(&self) -> Quant;
 }
 
-/// Forward a method to whichever [`SynthOf`] is inside, binding it to `$s`.
-macro_rules! dispatch {
-    ($synth:expr, |$s:ident| $body:expr) => {
-        match $synth {
-            SynthV::Cpu($s) => $body,
-            SynthV::Q80($s) => $body,
-            SynthV::Q81($s) => $body,
-            SynthV::Q8k($s) => $body,
-            SynthV::Q6k($s) => $body,
-            SynthV::Q50($s) => $body,
-            SynthV::Q51($s) => $body,
-            SynthV::Q5k($s) => $body,
-            SynthV::Q40($s) => $body,
-            SynthV::Q41($s) => $body,
-            SynthV::Q4k($s) => $body,
-            #[cfg(feature = "cuda")]
-            SynthV::Cuda($s) => $body,
-            #[cfg(feature = "vulkan")]
-            SynthV::Vulkan($s) => $body,
-            #[cfg(feature = "metal")]
-            SynthV::Metal($s) => $body,
-        }
-    };
-}
-
-/// The erased counterpart of [`SessionOf`], for callers that chose their weight
-/// format at runtime.
-enum SessionV {
-    Cpu(SessionOf<xn::Unquantized<f32, xn::CpuDevice>>),
-    Q80(SessionOf<xn::quantized::Q80F32>),
-    Q81(SessionOf<xn::quantized::Q81F32>),
-    Q8k(SessionOf<xn::quantized::Q8kF32>),
-    Q6k(SessionOf<xn::quantized::Q6kF32>),
-    Q50(SessionOf<xn::quantized::Q50F32>),
-    Q51(SessionOf<xn::quantized::Q51F32>),
-    Q5k(SessionOf<xn::quantized::Q5kF32>),
-    Q40(SessionOf<xn::quantized::Q40F32>),
-    Q41(SessionOf<xn::quantized::Q41F32>),
-    Q4k(SessionOf<xn::quantized::Q4kF32>),
-    #[cfg(feature = "cuda")]
-    Cuda(SessionOf<xn::Unquantized<half::bf16, xn::cuda_backend::Device>>),
-    #[cfg(feature = "vulkan")]
-    Vulkan(SessionOf<xn::Unquantized<f32, xn::vulkan_backend::Device>>),
-    #[cfg(feature = "metal")]
-    Metal(SessionOf<xn::Unquantized<half::bf16, xn::metal_backend::Device>>),
-}
-
-macro_rules! dispatch_session {
-    ($session:expr, |$s:ident| $body:expr) => {
-        match $session {
-            SessionV::Cpu($s) => $body,
-            SessionV::Q80($s) => $body,
-            SessionV::Q81($s) => $body,
-            SessionV::Q8k($s) => $body,
-            SessionV::Q6k($s) => $body,
-            SessionV::Q50($s) => $body,
-            SessionV::Q51($s) => $body,
-            SessionV::Q5k($s) => $body,
-            SessionV::Q40($s) => $body,
-            SessionV::Q41($s) => $body,
-            SessionV::Q4k($s) => $body,
-            #[cfg(feature = "cuda")]
-            SessionV::Cuda($s) => $body,
-            #[cfg(feature = "vulkan")]
-            SessionV::Vulkan($s) => $body,
-            #[cfg(feature = "metal")]
-            SessionV::Metal($s) => $body,
-        }
-    };
-}
-
-/// A voice primed once, ready to generate repeatedly.
+/// What a [`Session`] does: generate repeatedly from one primed voice.
 ///
-/// Runs one generation at a time: starting a second while the first is still
-/// running is an error. See [`SessionOf`] for why, and for the concurrency
-/// story.
-pub struct Session(SessionV);
-
-impl Session {
+/// [`Session`] dereferences to this, so these are called on a `Session` directly.
+pub trait SessionApi: sealed::Sealed + Send + Sync {
     /// The KV budget this session was primed with.
-    pub fn seq_budget(&self) -> usize {
-        dispatch_session!(&self.0, |s| s.seq_budget())
-    }
+    fn seq_budget(&self) -> usize;
 
-    pub fn sample_rate(&self) -> usize {
-        dispatch_session!(&self.0, |s| s.sample_rate())
-    }
+    fn sample_rate(&self) -> u32;
 
-    /// How text is normalized — see [`SessionOf::normalization`].
-    pub fn normalization(&self) -> Normalize {
-        dispatch_session!(&self.0, |s| s.normalization())
-    }
+    /// How text is normalized.
+    ///
+    /// [`Self::stream`] and [`Self::say`] apply it themselves. Callers that
+    /// tokenize by hand for [`Self::stream_tokens`] should run their text
+    /// through [`Normalize::apply`] first, before [`crate::tts_model::prepare_text_prompt`].
+    fn normalization(&self) -> Normalize;
 
     /// Synthesize `text`, returning the whole waveform.
-    pub fn say(&self, text: &str) -> Result<Vec<f32>> {
-        dispatch_session!(&self.0, |s| s.say(text))
-    }
+    fn say(&self, text: &str) -> Result<Vec<f32>>;
 
     /// Synthesize `text`, yielding PCM as the decoder produces it.
-    pub fn stream(&self, text: &str) -> Result<SpeechStream> {
-        dispatch_session!(&self.0, |s| s.stream(text))
-    }
+    fn stream(&self, text: &str) -> Result<SpeechStream>;
+
+    /// As [`Self::stream`], with an explicit seed for this request.
+    fn stream_seeded(&self, text: &str, seed: u64) -> Result<SpeechStream>;
 
     /// As [`Self::say`], with an explicit seed for this request. Every call on a
     /// session otherwise draws the same noise, since the seed is the session's.
-    pub fn say_seeded(&self, text: &str, seed: u64) -> Result<Vec<f32>> {
-        dispatch_session!(&self.0, |s| s.say_seeded(text, seed))
-    }
+    fn say_seeded(&self, text: &str, seed: u64) -> Result<Vec<f32>>;
 
-    /// As [`Self::stream`], with an explicit seed for this request.
-    pub fn stream_seeded(&self, text: &str, seed: u64) -> Result<SpeechStream> {
-        dispatch_session!(&self.0, |s| s.stream_seeded(text, seed))
-    }
-
-    /// Tokenize `text` as given — see [`SessionOf::tokenize`].
-    pub fn tokenize(&self, text: &str) -> Result<Vec<u32>> {
-        dispatch_session!(&self.0, |s| s.tokenize(text))
-    }
+    /// Tokenize `text` as given, with none of the preparation [`Self::stream`]
+    /// does first — no [`crate::tts_model::prepare_text_prompt`], no sentence splitting.
+    ///
+    /// Paired with [`Self::stream_tokens`] for callers that want one utterance
+    /// per request and prepare the text themselves.
+    fn tokenize(&self, text: &str) -> Result<Vec<u32>>;
 
     /// Synthesize from tokens produced elsewhere, as one chunk.
-    pub fn stream_tokens(
+    ///
+    /// `frames_after_eos` is the tail [`crate::tts_model::prepare_text_prompt`] would have
+    /// chosen: 3 for a very short prompt, 1 otherwise.
+    fn stream_tokens(
         &self,
         tokens: Vec<u32>,
         frames_after_eos: usize,
         rng: Box<dyn crate::flow_lm::Rng + Send>,
-    ) -> Result<SpeechStream> {
-        dispatch_session!(&self.0, |s| s.stream_tokens(tokens, frames_after_eos, rng))
+    ) -> Result<SpeechStream>;
+}
+
+/// A voice primed once, ready to generate repeatedly. Its methods are on [`SessionApi`].
+///
+/// # One generation at a time
+///
+/// A session runs one generation at a time, and says so: starting a second
+/// while the first is still running is an error, not silent corruption.
+///
+/// Starting one clones the primed state, and cloning an `xn` tensor shares its
+/// storage rather than copying it, so two overlapping generations would write
+/// into the same KV buffers and each would attend over the other's keys. The
+/// hazard outlives the call — [`SpeechStream`] is `'static` and its workers
+/// keep writing after `stream` returns — so a flag held for the life of those
+/// workers is what actually enforces it; `!Sync` or `&mut self` cannot see it.
+/// Dropping a stream joins its workers, so finishing or dropping one and
+/// starting the next always works.
+///
+/// A server wanting genuine concurrency builds one session per connection,
+/// which is what `ptts-ws-server` does.
+///
+/// Built by [`SynthApi::session`]. Every generation clones the primed state
+/// rather than re-running `prompt_audio` over the voice prompt. A one-shot
+/// caller should just use [`SynthApi::say`].
+///
+/// The KV budget is fixed at construction.
+pub struct Session(Box<dyn SessionApi>);
+
+impl std::ops::Deref for Session {
+    type Target = dyn SessionApi;
+    fn deref(&self) -> &Self::Target {
+        &*self.0
     }
 }
 
@@ -1719,9 +1650,10 @@ impl std::fmt::Debug for Session {
 
 /// A loaded Phonon model, ready to synthesize speech.
 ///
-/// See the [module docs](self) for the short version. The weight format and
-/// device are chosen at load time by [`SynthBuilder`] and erased here.
-pub struct Synth(SynthV);
+/// See the [module docs](self) for the short version. The weight format and device are chosen
+/// at load time by [`SynthBuilder`]; the methods are on [`SynthApi`], which `Synth`
+/// dereferences to.
+pub struct Synth(Box<dyn SynthApi>);
 
 impl Synth {
     /// A builder over a checkpoint's config and weights file.
@@ -1731,153 +1663,22 @@ impl Synth {
     pub fn builder(
         config: TTSConfig,
         weights: impl Into<PathBuf>,
-        normalize: Normalize,
+        normalize: impl Into<Normalize>,
     ) -> SynthBuilder {
         SynthBuilder::new(config, weights, normalize)
     }
+}
 
-    /// Prime a voice once and keep it, for callers that generate repeatedly.
-    ///
-    /// See [`SynthOf::session`]. `max_seq_len` is the KV budget allocated up
-    /// front; text needing more is rejected rather than silently re-primed.
-    pub fn session(&self, opts: &SpeechOptions, max_seq_len: usize) -> Result<Session> {
-        Ok(Session(match &self.0 {
-            SynthV::Cpu(s) => SessionV::Cpu(s.session(opts, max_seq_len)?),
-            SynthV::Q80(s) => SessionV::Q80(s.session(opts, max_seq_len)?),
-            SynthV::Q81(s) => SessionV::Q81(s.session(opts, max_seq_len)?),
-            SynthV::Q8k(s) => SessionV::Q8k(s.session(opts, max_seq_len)?),
-            SynthV::Q6k(s) => SessionV::Q6k(s.session(opts, max_seq_len)?),
-            SynthV::Q50(s) => SessionV::Q50(s.session(opts, max_seq_len)?),
-            SynthV::Q51(s) => SessionV::Q51(s.session(opts, max_seq_len)?),
-            SynthV::Q5k(s) => SessionV::Q5k(s.session(opts, max_seq_len)?),
-            SynthV::Q40(s) => SessionV::Q40(s.session(opts, max_seq_len)?),
-            SynthV::Q41(s) => SessionV::Q41(s.session(opts, max_seq_len)?),
-            SynthV::Q4k(s) => SessionV::Q4k(s.session(opts, max_seq_len)?),
-            #[cfg(feature = "cuda")]
-            SynthV::Cuda(s) => SessionV::Cuda(s.session(opts, max_seq_len)?),
-            #[cfg(feature = "vulkan")]
-            SynthV::Vulkan(s) => SessionV::Vulkan(s.session(opts, max_seq_len)?),
-            #[cfg(feature = "metal")]
-            SynthV::Metal(s) => SessionV::Metal(s.session(opts, max_seq_len)?),
-        }))
+impl std::ops::Deref for Synth {
+    type Target = dyn SynthApi;
+    fn deref(&self) -> &Self::Target {
+        &*self.0
     }
+}
 
-    /// Synthesize `text` and return the whole waveform as mono `f32` at
-    /// [`Self::sample_rate`].
-    pub fn say(&self, text: &str) -> Result<Vec<f32>> {
-        dispatch!(&self.0, |s| s.say(text))
-    }
-
-    /// Synthesize `text` with per-request overrides.
-    pub fn say_with(&self, text: &str, opts: &SpeechOptions) -> Result<Vec<f32>> {
-        dispatch!(&self.0, |s| s.say_with(text, opts))
-    }
-
-    /// Start generating `text`, yielding PCM as the decoder produces it.
-    pub fn stream(&self, text: &str) -> Result<SpeechStream> {
-        dispatch!(&self.0, |s| s.stream(text))
-    }
-
-    /// Start generating `text` with per-request overrides.
-    pub fn stream_with(&self, text: &str, opts: &SpeechOptions) -> Result<SpeechStream> {
-        dispatch!(&self.0, |s| s.stream_with(text, opts))
-    }
-
-    /// As [`Self::stream_with`], but with an explicit noise source — see
-    /// [`SynthOf::stream_with_rng`].
-    pub fn stream_with_rng(
-        &self,
-        text: &str,
-        opts: &SpeechOptions,
-        rng: Box<dyn crate::flow_lm::Rng + Send>,
-    ) -> Result<SpeechStream> {
-        dispatch!(&self.0, |s| s.stream_with_rng(text, opts, rng))
-    }
-
-    pub fn sample_rate(&self) -> usize {
-        dispatch!(&self.0, |s| s.sample_rate())
-    }
-
-    pub fn config(&self) -> &TTSConfig {
-        dispatch!(&self.0, |s| s.config())
-    }
-
-    /// How requests are normalized — see [`SynthOf::normalization`].
-    pub fn normalization(&self) -> Normalize {
-        dispatch!(&self.0, |s| s.normalization())
-    }
-
-    /// Name of the device the model is running on, e.g. `"cpu"` or `"cuda:0"`.
-    pub fn device_name(&self) -> String {
-        dispatch!(&self.0, |s| s.device_name())
-    }
-
-    /// Registered voice names, sorted.
-    pub fn voices(&self) -> Vec<String> {
-        dispatch!(&self.0, |s| s.voices())
-    }
-
-    /// The voice a request that names none uses, see [`SynthOf::default_voice`].
-    pub fn default_voice(&self) -> Option<&str> {
-        dispatch!(&self.0, |s| s.default_voice())
-    }
-
-    /// True if this checkpoint carries a speaker encoder, which
-    /// [`Self::add_voice_from_pcm`] requires.
-    pub fn supports_voice_cloning(&self) -> bool {
-        dispatch!(&self.0, |s| s.supports_voice_cloning())
-    }
-
-    /// The sample rate [`Self::add_voice_from_pcm`] expects.
-    pub fn voice_prompt_sample_rate(&self) -> usize {
-        dispatch!(&self.0, |s| s.voice_prompt_sample_rate())
-    }
-
-    /// Register a precomputed voice embedding, replacing any voice of the same name.
-    pub fn add_voice_file(&mut self, name: &str, path: &FsPath) -> Result<()> {
-        dispatch!(&mut self.0, |s| s.add_voice_file(name, path))
-    }
-
-    /// Clone a voice from a mono audio prompt at
-    /// [`Self::voice_prompt_sample_rate`].
-    pub fn add_voice_from_pcm(&mut self, name: &str, pcm: &[f32]) -> Result<()> {
-        dispatch!(&mut self.0, |s| s.add_voice_from_pcm(name, pcm))
-    }
-
-    /// Register a voice from a conditioning embedding already in memory -- see
-    /// [`SynthOf::add_voice_from_embedding`].
-    pub fn add_voice_from_embedding(
-        &mut self,
-        name: &str,
-        emb: &[f32],
-        frames: usize,
-        dim: usize,
-        null_emb: Option<&[f32]>,
-    ) -> Result<()> {
-        dispatch!(&mut self.0, |s| s.add_voice_from_embedding(name, emb, frames, dim, null_emb))
-    }
-
-    /// The weight format actually loaded. GPU backends are always unquantized.
-    pub fn quant(&self) -> Quant {
-        match &self.0 {
-            SynthV::Cpu(_) => Quant::F32,
-            SynthV::Q80(_) => Quant::Q80,
-            SynthV::Q81(_) => Quant::Q81,
-            SynthV::Q8k(_) => Quant::Q8k,
-            SynthV::Q6k(_) => Quant::Q6k,
-            SynthV::Q50(_) => Quant::Q50,
-            SynthV::Q51(_) => Quant::Q51,
-            SynthV::Q5k(_) => Quant::Q5k,
-            SynthV::Q40(_) => Quant::Q40,
-            SynthV::Q41(_) => Quant::Q41,
-            SynthV::Q4k(_) => Quant::Q4k,
-            #[cfg(feature = "cuda")]
-            SynthV::Cuda(_) => Quant::F32,
-            #[cfg(feature = "vulkan")]
-            SynthV::Vulkan(_) => Quant::F32,
-            #[cfg(feature = "metal")]
-            SynthV::Metal(_) => Quant::F32,
-        }
+impl std::ops::DerefMut for Synth {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.0
     }
 }
 
@@ -1960,7 +1761,7 @@ mod tests {
     #[test]
     fn the_builder_keeps_the_policy_it_was_given() {
         for norm in [Normalize::for_lang(Lang::En), Normalize::for_lang(Lang::De), Normalize::OFF] {
-            let b = SynthBuilder::new(TTSConfig::v202601(0.5), "model.safetensors", norm);
+            let b = SynthBuilder::new(TTSConfig::v202601(), "model.safetensors", norm);
             assert_eq!(b.normalize, norm);
         }
     }
