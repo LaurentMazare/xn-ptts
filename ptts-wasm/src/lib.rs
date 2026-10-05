@@ -175,8 +175,12 @@ impl Model {
         let speaker_proj = load_speaker_proj(&root, &cfg)?;
 
         let inner = match quant {
-            Quant::F32 => ModelInner::F32(TTSModel::load(&root, tokenizer, &cfg)?),
-            Quant::Q8 => ModelInner::Q8(TTSModel::load(&root, tokenizer, &cfg)?),
+            Quant::F32 => {
+                ModelInner::F32(TTSModel::load(&root, tokenizer, &cfg, &Default::default())?)
+            }
+            Quant::Q8 => {
+                ModelInner::Q8(TTSModel::load(&root, tokenizer, &cfg, &Default::default())?)
+            }
         };
 
         Ok(Model { inner, cfg, speaker_proj, gen_state: None, voice_states: Vec::new(), normalize })

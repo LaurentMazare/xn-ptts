@@ -12,7 +12,7 @@
 #[path = "model_helpers.rs"]
 mod model_helpers;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant, SpeechOptions};
@@ -76,6 +76,13 @@ struct Args {
     #[arg(long)]
     cfg_coef: Option<f32>,
 
+    #[arg(
+        long = "condition",
+        value_name = "NAME=VALUE",
+        help = "Set a conditioner, e.g. padding_bonus=0.5; repeatable"
+    )]
+    conditions: Vec<String>,
+
     /// Replay noise from a JSON array of floats instead of sampling it, so a
     /// run can be compared against the reference implementation step for step.
     #[arg(long, help_heading = "Developer")]
@@ -138,6 +145,10 @@ fn main() -> Result<()> {
     }
     if let Some(cfg_coef) = args.cfg_coef {
         builder = builder.cfg_coef(cfg_coef);
+    }
+    for condition in &args.conditions {
+        let (name, value) = condition.split_once('=').context("--condition takes NAME=VALUE")?;
+        builder = builder.condition(name, value);
     }
     // An embedding file can be registered before the model loads; an audio file
     // has to wait until the speaker codec's sample rate is known.

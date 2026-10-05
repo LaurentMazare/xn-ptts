@@ -53,6 +53,7 @@ class TTS:
         *,
         lang: str | None,
         rewrites: str | None = None,
+        conditions: dict[str, str | float] | None = None,
     ) -> None: ...
     @property
     def sample_rate(self) -> int:

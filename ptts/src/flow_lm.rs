@@ -8,6 +8,8 @@
 pub use crate::conditioners::LUTConditioner;
 use crate::mlp::SimpleMLPAdaLN;
 use crate::transformer::{StreamingTransformer, StreamingTransformerState};
+use crate::tts_model::TTSConfig;
+use std::collections::HashMap;
 use xn::nn::{Linear, var_builder::Path};
 use xn::{Backend, BackendQ, Result, Tensor, WithDTypeF};
 
@@ -120,7 +122,7 @@ pub struct FlowLMConfig {
 /// Transformer-based flow language model.
 pub struct FlowLM<Q: BackendQ> {
     pub conditioner: LUTConditioner<Q::T, Q::B>,
-    pub num_speakers: Option<Tensor<Q::T, Q::B>>,
+    pub condition_providers: Option<Tensor<Q::T, Q::B>>,
     flow_net: SimpleMLPAdaLN<Q::T, Q::B>,
     pub transformer: StreamingTransformer<Q>,
     pub emb_std: Tensor<Q::T, Q::B>,
@@ -157,8 +159,10 @@ impl<Q: BackendQ> FlowLM<Q> {
     pub fn load(
         vb: &Path<Q::B>,
         tokenizer: Box<dyn crate::Tokenizer + Send + Sync>,
-        cfg: &FlowLMConfig,
+        config: &TTSConfig,
+        conditions: &HashMap<String, String>,
     ) -> Result<Self> {
+        let cfg = &config.flow_lm;
         let conditioner = LUTConditioner::load(
             &vb.pp("conditioner"),
             cfg.n_bins,
@@ -166,16 +170,11 @@ impl<Q: BackendQ> FlowLM<Q> {
             cfg.lut_dim,
             cfg.d_model,
         )?;
-        let num_speakers = {
-            let vb = vb.pp("condition_provider.conditioners.num_speakers");
-            if vb.contains("embed.weight") {
-                let conditioner = LUTConditioner::load(&vb, 31, None, 16, cfg.d_model)?;
-                let condition_tensor = conditioner.embed_tokens(&[1])?;
-                Some(condition_tensor)
-            } else {
-                None
-            }
-        };
+        let condition_providers = crate::conditioners::load_summed_conditions(
+            &vb.pp("condition_provider.conditioners"),
+            config,
+            conditions,
+        )?;
 
         let flow_net = SimpleMLPAdaLN::load(
             &vb.pp("flow_net"),
@@ -209,7 +208,7 @@ impl<Q: BackendQ> FlowLM<Q> {
 
         Ok(Self {
             conditioner,
-            num_speakers,
+            condition_providers,
             flow_net,
             transformer,
             emb_std,
@@ -237,7 +236,7 @@ impl<Q: BackendQ> FlowLM<Q> {
         seq_len: usize,
         state: &mut FlowLMState<Q>,
     ) -> Result<Tensor<Q::T, Q::B>> {
-        let input = match self.num_speakers.as_ref() {
+        let input = match self.condition_providers.as_ref() {
             Some(ns) => input.broadcast_add(ns)?,
             None => input.clone(),
         };

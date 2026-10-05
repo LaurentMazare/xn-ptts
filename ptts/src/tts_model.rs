@@ -5,8 +5,12 @@
 //! latents, decode them. [`crate::synth`] drives these steps on two threads. A caller with its
 //! own event loop, such as the browser build, drives them directly.
 
+pub use crate::conditioners::{
+    ConditionerConfig, ContinuousConditionerConfig, FuserConfig, LutConditionerConfig,
+};
 use crate::flow_lm::{FlowLM, FlowLMConfig, FlowLMState};
 use crate::mimi::{MimiConfig, MimiDecoder, MimiDecoderState, MimiEncoder};
+use std::collections::HashMap;
 use xn::nn::{Linear, var_builder::Path};
 use xn::{BackendQ, Result, Tensor, Unquantized};
 
@@ -61,6 +65,10 @@ pub struct TTSConfig {
     /// this dedicated `MimiConfig` rather than the main `mimi` codec.
     #[serde(default)]
     pub speaker_mimi: Option<SpeakerMimiConfig>,
+    #[serde(default)]
+    pub conditioners: Vec<ConditionerConfig>,
+    #[serde(default)]
+    pub fuser: Option<FuserConfig>,
 }
 
 impl TTSConfig {
@@ -109,6 +117,8 @@ impl TTSConfig {
             audio_prompt_max_duration: 10.0,
             cfg_null_audio_empty: false,
             speaker_mimi: None,
+            conditioners: vec![],
+            fuser: None,
         }
     }
 
@@ -152,8 +162,9 @@ impl<Q: BackendQ> TTSModel<Q> {
         vb: &Path<Q::B>,
         tokenizer: Box<dyn crate::Tokenizer + Send + Sync>,
         cfg: &TTSConfig,
+        conditions: &HashMap<String, String>,
     ) -> Result<Self> {
-        let flow_lm = FlowLM::load(&vb.pp("flow_lm"), tokenizer, &cfg.flow_lm)?;
+        let flow_lm = FlowLM::load(&vb.pp("flow_lm"), tokenizer, cfg, conditions)?;
         let mimi = MimiDecoder::load(&vb.pp("mimi"), &cfg.mimi)?;
         let speaker_proj = crate::loader::load_speaker_proj(vb, cfg)?;
 
@@ -522,6 +533,8 @@ mod tests {
             "audio_prompt_max_duration",
             "cfg_null_audio_empty",
             "speaker_mimi",
+            "conditioners",
+            "fuser",
         ] {
             assert!(fields.remove(key).is_some(), "{key} is no longer in the config");
         }
@@ -530,6 +543,7 @@ mod tests {
         assert_eq!(old.audio_prompt_max_duration, default_audio_prompt_max_duration());
         assert!(!old.cfg_null_audio_empty);
         assert!(old.speaker_mimi.is_none());
+        assert!(old.conditioners.is_empty() && old.fuser.is_none());
     }
 
     #[test]
@@ -540,7 +554,6 @@ mod tests {
         fields.insert("temp".into(), serde_json::json!(0.7));
         let fuser = serde_json::json!({"sum": [], "streaming_sum": [], "prepend": [], "cross": []});
         fields.insert("fuser".into(), fuser);
-        fields.insert("conditioners".into(), serde_json::json!([]));
         let id = serde_json::json!({"sig": "abc", "epoch": 1, "mimi_sig": "def", "mimi_epoch": 2});
         fields.insert("model_id".into(), id);
         let cfg: TTSConfig = serde_json::from_value(json).unwrap();
