@@ -86,7 +86,8 @@ jobs:
       - name: Doctests
         run: cargo test -p ptts --doc && cargo test -p ptts --features hf,audio --doc
         shell: bash
-      # The two backends that only exist on this platform, so nowhere else can check them.
+      # Features that only build on this platform's hardware or SDK. The macOS runners are
+      # also the only arm64 ones, which is what `kai` needs.
       - name: macOS-only backends compile
         if: runner.os == 'macOS'
         shell: bash
@@ -94,6 +95,7 @@ jobs:
           set -euo pipefail
           cargo check -p ptts --features metal
           cargo check -p ptts --features accelerate
+          cargo check -p ptts --features kai
 
   features:
     name: Feature combinations
