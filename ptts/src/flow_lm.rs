@@ -7,7 +7,8 @@
 // Re-exported because `FlowLM::conditioner` is public and frontends tokenize through it.
 pub use crate::conditioners::LUTConditioner;
 use crate::mlp::SimpleMLPAdaLN;
-use crate::transformer::{StreamingTransformer, StreamingTransformerState};
+pub use crate::mlp::TimeRmsNorm;
+use crate::transformer::{Gelu, StreamingTransformer, StreamingTransformerState};
 use xn::nn::{Linear, var_builder::Path};
 use xn::{Backend, BackendQ, Result, Tensor, WithDTypeF};
 
@@ -115,6 +116,20 @@ pub struct FlowLMConfig {
     pub flow_dim: usize,
     pub flow_depth: usize,
     pub ldim: usize,
+    /// The transformer's GELU, see [`Gelu`]: `erf` for audiocraft-trained checkpoints, `tanh`
+    /// for pocket-tts-trained ones.
+    #[serde(default)]
+    pub gelu: Gelu,
+    /// The flow net's time-embedding RMS norm, see [`TimeRmsNorm`]: `var` for pocket-tts-trained
+    /// checkpoints, `rms` for audiocraft-trained ones; `legacy`, the default, is what this crate
+    /// computed before the choice existed.
+    #[serde(default)]
+    pub time_rms_norm: TimeRmsNorm,
+    /// pocket-tts's `insert_bos_before_voice`: a learnt `[1, 1, d_model]` token,
+    /// `flow_lm.bos_before_voice`, opens every voice prompt, and alone makes the CFG null
+    /// prefix. See [`crate::tts_model::TTSModel::prompt_audio`].
+    #[serde(default)]
+    pub insert_bos_before_voice: bool,
 }
 
 /// Transformer-based flow language model.
@@ -133,6 +148,9 @@ pub struct FlowLM<Q: BackendQ> {
     out_eos: Linear<Q::T, Q::B>,
     pub dim: usize,
     pub ldim: usize,
+    /// Opens every voice prompt when the checkpoint has one, see
+    /// [`FlowLMConfig::insert_bos_before_voice`].
+    pub bos_before_voice: Option<Tensor<Q::T, Q::B>>,
 }
 
 /// What a sampling step is conditioned on.
@@ -189,6 +207,7 @@ impl<Q: BackendQ> FlowLM<Q> {
             cfg.d_model,    // cond_channels
             cfg.flow_depth, // num_res_blocks
             2,              // num_time_conds
+            cfg.time_rms_norm,
         )?;
 
         let transformer = StreamingTransformer::load(
@@ -201,6 +220,7 @@ impl<Q: BackendQ> FlowLM<Q> {
             None,
             cfg.max_period,
             crate::transformer::Kind::FlowLm,
+            cfg.gelu,
         )?;
 
         let emb_std = vb.tensor("emb_std", (cfg.ldim,))?;
@@ -210,6 +230,11 @@ impl<Q: BackendQ> FlowLM<Q> {
         let out_norm_weight = vb.pp("out_norm").tensor("weight", (cfg.d_model,))?;
         let out_norm_bias = vb.pp("out_norm").tensor("bias", (cfg.d_model,))?;
         let out_eos = Linear::load_b(vb.pp("out_eos"), cfg.d_model, 1)?;
+        let bos_before_voice = if cfg.insert_bos_before_voice {
+            Some(vb.tensor("bos_before_voice", (1, 1, cfg.d_model))?)
+        } else {
+            None
+        };
 
         Ok(Self {
             conditioner,
@@ -225,6 +250,7 @@ impl<Q: BackendQ> FlowLM<Q> {
             out_eos,
             dim: cfg.d_model,
             ldim: cfg.ldim,
+            bos_before_voice,
         })
     }
 

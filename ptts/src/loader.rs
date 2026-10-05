@@ -150,7 +150,7 @@ pub fn load_speaker_proj<B: Backend>(
     if !vb.contains(SPEAKER_PROJ_WEIGHT) {
         return Ok(None);
     }
-    let shape = (cfg.flow_lm.d_model, cfg.speaker_mimi_cfg().dimension);
+    let shape = (cfg.flow_lm.d_model, cfg.speaker_mimi_cfg().latent_dim());
     let weight = vb.tensor(SPEAKER_PROJ_WEIGHT, shape)?;
     Ok(Some(Linear::new(weight)))
 }

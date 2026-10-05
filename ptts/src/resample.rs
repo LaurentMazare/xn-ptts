@@ -10,12 +10,20 @@ pub struct ConvDownsample1d<T: WithDTypeF, B: Backend> {
 }
 
 impl<T: WithDTypeF, B: Backend> ConvDownsample1d<T, B> {
-    pub fn load(vb: &Path<B>, stride: usize, dimension: usize, depthwise: bool) -> Result<Self> {
+    /// `out_dimension` narrows the output (pocket-tts `inner_dim`); equal to `dimension` for
+    /// a codec that keeps its width.
+    pub fn load(
+        vb: &Path<B>,
+        stride: usize,
+        dimension: usize,
+        out_dimension: usize,
+        depthwise: bool,
+    ) -> Result<Self> {
         let groups = if depthwise { dimension } else { 1 };
         let conv = StreamingConv1d::load(
             &vb.pp("conv"),
             dimension,
-            dimension,
+            out_dimension,
             2 * stride,
             stride,
             1,
@@ -43,10 +51,17 @@ pub struct ConvTrUpsample1d<T: WithDTypeF, B: Backend> {
 }
 
 impl<T: WithDTypeF, B: Backend> ConvTrUpsample1d<T, B> {
-    pub fn load(vb: &Path<B>, stride: usize, dimension: usize) -> Result<Self> {
+    /// `in_dimension` is the width it reads (pocket-tts `outer_dim`); equal to `dimension` for
+    /// a codec that keeps its width.
+    pub fn load(
+        vb: &Path<B>,
+        stride: usize,
+        in_dimension: usize,
+        dimension: usize,
+    ) -> Result<Self> {
         let convtr = StreamingConvTranspose1d::load(
             &vb.pp("convtr"),
-            dimension,
+            in_dimension,
             dimension,
             2 * stride,
             stride,

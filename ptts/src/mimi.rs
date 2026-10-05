@@ -9,7 +9,7 @@ use crate::conv::pad_for_conv1d;
 use crate::dummy_quantizer::DummyQuantizer;
 use crate::resample::{ConvDownsample1d, ConvTrUpsample1d};
 use crate::seanet::{SEANetDecoder, SEANetDecoderState, SEANetEncoder};
-use crate::transformer::{ProjectedTransformer, StreamingTransformerState};
+use crate::transformer::{Gelu, ProjectedTransformer, StreamingTransformerState};
 use xn::nn::var_builder::Path;
 use xn::{Backend, BackendQ, Result, Tensor, WithDTypeF};
 
@@ -39,6 +39,24 @@ pub struct MimiConfig {
     pub transformer_dim_feedforward: usize,
     #[serde(default)]
     pub downsample_channel_wise: bool,
+    /// Width of the latents the encoder's downsample writes, when it narrows them (pocket-tts
+    /// `inner_dim`, e.g. 32). Voice prompts are these latents, so it is also the speaker
+    /// projection's input width. `None`: `dimension`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_dim: Option<usize>,
+    /// Width the decoder's upsample reads (pocket-tts `outer_dim`). `None`: `dimension`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outer_dim: Option<usize>,
+    /// The GELU of the codec's transformers. See [`Gelu`].
+    #[serde(default)]
+    pub gelu: Gelu,
+}
+
+impl MimiConfig {
+    /// Width of the encoder's latents, which is what a voice prompt is made of.
+    pub fn latent_dim(&self) -> usize {
+        self.inner_dim.unwrap_or(self.dimension)
+    }
 }
 
 pub struct MimiEncoder<Q: BackendQ> {
@@ -95,6 +113,7 @@ impl<Q: BackendQ> MimiEncoder<Q> {
             cfg.transformer_context,
             cfg.transformer_max_period,
             cfg.transformer_dim_feedforward,
+            cfg.gelu,
         )?;
 
         let hop_length: usize = cfg.ratios.iter().product();
@@ -106,6 +125,7 @@ impl<Q: BackendQ> MimiEncoder<Q> {
                 &vb.pp("downsample"),
                 downsample_stride,
                 cfg.dimension,
+                cfg.latent_dim(),
                 cfg.downsample_channel_wise,
             )?;
             Some(ds)
@@ -168,13 +188,20 @@ impl<Q: BackendQ> MimiDecoder<Q> {
             cfg.transformer_context,
             cfg.transformer_max_period,
             cfg.transformer_dim_feedforward,
+            cfg.gelu,
         )?;
         let hop_length: usize = cfg.ratios.iter().product();
         let encoder_frame_rate = cfg.sample_rate as f64 / hop_length as f64;
 
         let upsample = if (encoder_frame_rate - cfg.frame_rate).abs() > 0.01 {
             let downsample_stride = (encoder_frame_rate / cfg.frame_rate) as usize;
-            let us = ConvTrUpsample1d::load(&vb.pp("upsample"), downsample_stride, cfg.dimension)?;
+            let in_dim = cfg.outer_dim.unwrap_or(cfg.dimension);
+            let us = ConvTrUpsample1d::load(
+                &vb.pp("upsample"),
+                downsample_stride,
+                in_dim,
+                cfg.dimension,
+            )?;
             Some(us)
         } else {
             None

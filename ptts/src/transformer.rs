@@ -348,6 +348,33 @@ pub enum Kind {
     FlowLm,
 }
 
+/// The GELU in each layer's feed-forward block, which has to be the one the checkpoint was
+/// trained with. audiocraft (audium) uses the exact form; pocket-tts switched to the tanh
+/// approximation, and its released English weights were trained with it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Gelu {
+    /// `0.5 x (1 + erf(x / sqrt 2))`.
+    #[default]
+    Erf,
+    /// `0.5 x (1 + tanh(sqrt(2 / pi) (x + 0.044715 x^3)))`.
+    Tanh,
+}
+
+impl Gelu {
+    fn apply<T: xn::WithDTypeF, B: xn::Backend>(self, x: &Tensor<T, B>) -> Result<Tensor<T, B>> {
+        match self {
+            Self::Erf => x.gelu_erf(),
+            Self::Tanh => {
+                let c = |v: f32| T::from_f32(v);
+                let inner = x.sqr()?.mul(x)?.scale(c(0.044715))?.add(x)?;
+                let t = inner.scale(c((2.0f32 / std::f32::consts::PI).sqrt()))?.tanh()?;
+                t.scale_add(c(0.5), c(0.5))?.mul(x)
+            }
+        }
+    }
+}
+
 pub struct StreamingTransformerLayer<Q: BackendQ> {
     self_attn: AttentionKind<Q>,
     norm1: LayerNorm<Q::T, Q::B>,
@@ -356,9 +383,11 @@ pub struct StreamingTransformerLayer<Q: BackendQ> {
     linear2: Q::LinearQ,
     layer_scale_1: Option<LayerScale<Q::T, Q::B>>,
     layer_scale_2: Option<LayerScale<Q::T, Q::B>>,
+    gelu: Gelu,
 }
 
 impl<Q: BackendQ> StreamingTransformerLayer<Q> {
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         vb: &Path<Q::B>,
         d_model: usize,
@@ -367,6 +396,7 @@ impl<Q: BackendQ> StreamingTransformerLayer<Q> {
         context: Option<usize>,
         layer_scale: Option<f64>,
         kind: Kind,
+        gelu: Gelu,
     ) -> Result<Self> {
         let self_attn = match kind {
             Kind::Mimi => AttentionKind::Mimi(MimiStreamingMultiheadAttention::load(
@@ -398,7 +428,7 @@ impl<Q: BackendQ> StreamingTransformerLayer<Q> {
             None
         };
 
-        Ok(Self { self_attn, norm1, norm2, linear1, linear2, layer_scale_1, layer_scale_2 })
+        Ok(Self { self_attn, norm1, norm2, linear1, linear2, layer_scale_1, layer_scale_2, gelu })
     }
 
     pub fn init_state(
@@ -444,7 +474,7 @@ impl<Q: BackendQ> StreamingTransformerLayer<Q> {
         // FF block: x + layer_scale_2(ff(norm2(x)))
         let norm2 = self.norm2.forward(&x)?;
         let mut ff_out = self.linear1.forward(&norm2)?;
-        ff_out = ff_out.gelu_erf()?;
+        ff_out = self.gelu.apply(&ff_out)?;
         ff_out = self.linear2.forward(&ff_out)?;
         if let Some(ls) = &self.layer_scale_2 {
             ff_out = ls.forward(&ff_out)?;
@@ -473,6 +503,7 @@ impl<Q: BackendQ> StreamingTransformer<Q> {
         context: Option<usize>,
         max_period: f32,
         kind: Kind,
+        gelu: Gelu,
     ) -> Result<Self> {
         if num_heads == 0 || !d_model.is_multiple_of(num_heads) {
             xn::bail!("the config's {num_heads} attention heads do not divide its width {d_model}")
@@ -488,6 +519,7 @@ impl<Q: BackendQ> StreamingTransformer<Q> {
                 context,
                 layer_scale,
                 kind,
+                gelu,
             )?);
         }
 
@@ -592,6 +624,7 @@ impl<Q: BackendQ> ProjectedTransformer<Q> {
         context: usize,
         max_period: f32,
         dim_feedforward: usize,
+        gelu: Gelu,
     ) -> Result<Self> {
         let transformer = StreamingTransformer::load(
             &vb.pp("transformer"),
@@ -603,6 +636,7 @@ impl<Q: BackendQ> ProjectedTransformer<Q> {
             Some(context),
             max_period,
             Kind::Mimi,
+            gelu,
         )?;
 
         let input_proj = if d_model != input_dimension {
@@ -760,6 +794,7 @@ mod bad_config_tests {
             None,
             10_000.,
             Kind::FlowLm,
+            Gelu::Erf,
         )
         .map(drop)
     }
@@ -770,5 +805,34 @@ mod bad_config_tests {
             let err = load(8, heads).err().unwrap_or_else(|| panic!("{heads} heads for 8 wide"));
             assert!(err.to_string().contains("heads"), "{err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod gelu_tests {
+    use super::Gelu;
+    use xn::{CpuDevice, Tensor};
+
+    #[test]
+    fn both_gelus_match_their_formulas() {
+        let xs = [-3.0f32, -1.0, -0.1, 0.0, 0.5, 1.0, 2.5];
+        let x = Tensor::from_vec(xs.to_vec(), xs.len(), &CpuDevice).unwrap();
+        let tanh: Vec<f32> = Gelu::Tanh.apply(&x).unwrap().to_vec().unwrap();
+        let erf: Vec<f32> = Gelu::Erf.apply(&x).unwrap().to_vec().unwrap();
+        for (i, &v) in xs.iter().enumerate() {
+            let k = (2.0f32 / std::f32::consts::PI).sqrt();
+            let want = 0.5 * v * (1.0 + (k * (v + 0.044715 * v * v * v)).tanh());
+            assert!((tanh[i] - want).abs() < 1e-6, "tanh gelu({v}) = {}, want {want}", tanh[i]);
+            // The two agree to about 1e-3, which is exactly the gap a wrong choice leaves.
+            assert!((tanh[i] - erf[i]).abs() < 2e-3, "{v}: {} vs {}", tanh[i], erf[i]);
+        }
+        assert_ne!(tanh, erf);
+    }
+
+    #[test]
+    fn the_config_spells_them_in_lowercase_and_defaults_to_erf() {
+        assert_eq!(serde_json::from_str::<Gelu>("\"tanh\"").unwrap(), Gelu::Tanh);
+        assert_eq!(serde_json::from_str::<Gelu>("\"erf\"").unwrap(), Gelu::Erf);
+        assert_eq!(Gelu::default(), Gelu::Erf);
     }
 }

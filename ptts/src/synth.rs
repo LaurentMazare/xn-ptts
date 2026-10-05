@@ -399,15 +399,15 @@ impl<Q: BackendQ> SynthOf<Q> {
         cfg_coef: Option<f32>,
     ) -> Result<(TTSState<Q>, Option<(f32, TTSState<Q>)>)> {
         let Some((name, voice)) = self.voice_for(voice)? else {
-            let state = self.model.init_flow_lm_state(1, seq_budget)?;
+            let state = self.unprompted_state(seq_budget)?;
             let cfg_state = match cfg_coef {
                 None => None,
-                Some(coef) => Some((coef, self.model.init_flow_lm_state(1, seq_budget)?)),
+                Some(coef) => Some((coef, self.unprompted_state(seq_budget)?)),
             };
             return Ok((state, cfg_state));
         };
 
-        let frames = voice.emb.dim(1usize)?;
+        let frames = self.model.voice_prompt_len(voice.emb.dim(1usize)?);
         if frames == 0 {
             // A voice with no prompt, e.g. a summed-LUT value: nothing to prime, `session_at`
             // adds its value to every audio frame. The null branch is a fresh state, whose LUTs
@@ -463,6 +463,22 @@ impl<Q: BackendQ> SynthOf<Q> {
         Ok((state, cfg_state))
     }
 
+    /// A state at `seq_budget` with no voice: bare, or `[bos_before_voice]` alone on a
+    /// checkpoint that opens every prompt with it, as pocket-tts does for a dropped voice.
+    fn unprompted_state(&self, seq_budget: usize) -> Result<TTSState<Q>> {
+        let mut state = self.model.init_flow_lm_state(1, seq_budget)?;
+        if self.model.prompts_empty_voice() {
+            self.model.prompt_audio(&mut state, &self.empty_prompt()?)?;
+        }
+        Ok(state)
+    }
+
+    /// A zero-frame voice prompt, for [`TTSModel::prompt_audio`] to open with
+    /// `bos_before_voice` alone.
+    fn empty_prompt(&self) -> Result<Tensor<Q::T, Q::B>> {
+        Ok(Tensor::zeros((1, 0, self.cfg.flow_lm.d_model), self.model.device())?)
+    }
+
     /// Run the voice prompt, and with guidance on the null branch, into states just large
     /// enough to hold them.
     fn prime(&self, voice: &Voice<Q>, cfg_on: bool, frames: usize) -> Result<Primed<Q>> {
@@ -475,11 +491,16 @@ impl<Q: BackendQ> SynthOf<Q> {
             // Sized to what the null branch will consume, so the `emb`/`null_emb` length
             // invariant stays local to registration rather than load-bearing here.
             let null_frames = match voice.null_emb.as_ref() {
-                Some(null_emb) if !self.cfg.cfg_null_audio_empty => null_emb.dim(1usize)?,
+                Some(null_emb) if !self.cfg.cfg_null_audio_empty => {
+                    self.model.voice_prompt_len(null_emb.dim(1usize)?)
+                }
                 _ => frames,
             };
             let mut null_state = self.model.init_flow_lm_state(1, null_frames)?;
-            if !self.cfg.cfg_null_audio_empty {
+            if self.cfg.cfg_null_audio_empty && self.model.prompts_empty_voice() {
+                // pocket-tts's null prefix: `bos_before_voice` alone.
+                self.model.prompt_audio(&mut null_state, &self.empty_prompt()?)?;
+            } else if !self.cfg.cfg_null_audio_empty {
                 match voice.null_emb.as_ref() {
                     Some(null_emb) => self.model.prompt_audio(&mut null_state, null_emb)?,
                     None => {

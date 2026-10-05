@@ -153,6 +153,9 @@ impl TTSConfig {
                 flow_dim: 512,
                 flow_depth: 6,
                 ldim: 32,
+                gelu: Default::default(),
+                time_rms_norm: Default::default(),
+                insert_bos_before_voice: false,
             },
             mimi: MimiConfig {
                 channels: 1,
@@ -177,6 +180,9 @@ impl TTSConfig {
                 transformer_max_period: 10000.0,
                 transformer_dim_feedforward: 2048,
                 downsample_channel_wise: false,
+                inner_dim: None,
+                outer_dim: None,
+                gelu: Default::default(),
             },
             lsd_decode_steps: 1,
             eos_threshold: -4.0,
@@ -487,10 +493,11 @@ impl<Q: BackendQ> TTSModel<Q> {
         Ok(())
     }
 
+    /// The CFG null branch's text: the text conditioner's learnt padding, or no text at all
+    /// for a checkpoint without one, which is how pocket-tts drops the transcript.
     pub fn prompt_text_null(&self, state: &mut TTSState<Q>) -> Result<()> {
-        let empty_text = match self.flow_lm.conditioner.learnt_padding() {
-            None => xn::bail!("Model does not support null text prompt"),
-            Some(p) => p,
+        let Some(empty_text) = self.flow_lm.conditioner.learnt_padding() else {
+            return Ok(());
         };
         let dev = empty_text.device();
         let empty_latents = Tensor::zeros((1, 0, self.flow_lm.ldim), dev)?;
@@ -498,20 +505,40 @@ impl<Q: BackendQ> TTSModel<Q> {
         Ok(())
     }
 
-    /// Run flow LM step with audio conditioning. Increments state.
+    /// Positions [`Self::prompt_audio`] fills for a `frames`-long voice prompt: one more when
+    /// the checkpoint opens prompts with `bos_before_voice`.
+    pub fn voice_prompt_len(&self, frames: usize) -> usize {
+        frames + usize::from(self.flow_lm.bos_before_voice.is_some())
+    }
+
+    /// Whether a state needs prompting even with no voice: true when the checkpoint opens
+    /// every prompt, an empty one included, with `bos_before_voice`.
+    pub fn prompts_empty_voice(&self) -> bool {
+        self.flow_lm.bos_before_voice.is_some()
+    }
+
+    /// Run flow LM step with audio conditioning, preceded by `bos_before_voice` when the
+    /// checkpoint has one. Increments state.
     pub fn prompt_audio(
         &self,
         state: &mut TTSState<Q>,
         audio_conditioning: &Tensor<Q::T, Q::B>,
     ) -> Result<()> {
+        let bos = self.flow_lm.bos_before_voice.as_ref();
         // Nothing to prompt, e.g. a model conditioned on a summed voice with no voice prefix.
         // Running the backbone on zero frames fails on CUDA (CUDA_ERROR_INVALID_VALUE).
-        if audio_conditioning.dims3()?.1 == 0 {
+        if audio_conditioning.dims3()?.1 == 0 && bos.is_none() {
             return Ok(());
         }
         let dev = audio_conditioning.device();
         let empty_latents = Tensor::zeros((1, 0, self.flow_lm.ldim), dev)?;
-        let text_embeddings = Tensor::cat(&[&self.empty_text()?, audio_conditioning], 1)?;
+        let empty_text = self.empty_text()?;
+        // pocket-tts opens every voice prompt with `bos_before_voice`, an empty one included:
+        // a dropped voice, and the CFG null branch, are `[bos_before_voice]` alone.
+        let text_embeddings = match bos {
+            Some(bos) => Tensor::cat(&[&empty_text, bos, audio_conditioning], 1)?,
+            None => Tensor::cat(&[&empty_text, audio_conditioning], 1)?,
+        };
         self.run_backbone_and_increment(state, &text_embeddings, &empty_latents)?;
         Ok(())
     }
@@ -654,7 +681,7 @@ impl<Q: BackendQ> MimiEnc<Q> {
         }
         let weights = vb.tensor(
             crate::loader::SPEAKER_PROJ_WEIGHT,
-            (cfg.flow_lm.d_model, mimi_cfg.dimension),
+            (cfg.flow_lm.d_model, mimi_cfg.latent_dim()),
         )?;
         Ok(Self { speaker_proj: Linear::new(weights), mimi })
     }

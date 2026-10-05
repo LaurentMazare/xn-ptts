@@ -174,6 +174,18 @@ default, so `synth(voice=name)` applies both the prefix and the LUT value. Witho
 with a single summed LUT registers each LUT value as a prompt-free voice. `TTSModel` alone ignores
 `voices.*` tensors.
 
+Checkpoints from the two training codebases differ in small ways that `config.json` spells out,
+all defaulting to what this crate computed before, so older exports load unchanged:
+`flow_lm.gelu` (`erf` | `tanh`: audiocraft/audium is exact, pocket-tts is tanh since its
+#278) and `mimi.gelu` likewise; `flow_lm.time_rms_norm` (`legacy` | `var` | `rms`: the flow
+net's time-embedding norm, `var` for pocket-tts, `rms` for audiocraft, `legacy` being xn's
+historical approximation of `var`); `flow_lm.insert_bos_before_voice` (pocket-tts's learnt
+`flow_lm.bos_before_voice` token opening every voice prompt, an empty one included, and alone
+making the CFG null prefix when `cfg_null_audio_empty` is set); and `mimi.inner_dim` /
+`mimi.outer_dim` (pocket-tts's narrowed latents: the encoder's downsample writes `inner_dim`
+channels, which is also the speaker projection's input width). A text conditioner without a
+learnt padding gives the CFG null branch no text, as pocket-tts drops the transcript.
+
 Generation is streaming and stateful: callers `init_flow_lm_state(batch, seq_len)`, then `prompt_text*` / `prompt_audio` to seed the state, then step-decode latents and feed them into `MimiDecoderState`. `lsd_decode_steps` controls flow-matching solver steps; `eos_threshold` controls termination. The default `TTSConfig::v202601` configuration is the canonical one consumed by all three frontends.
 
 Text normalization (`ptts/src/preprocess.rs`) is mandatory to choose and has no default. `preprocess::Normalize` is either `For(lang)` or `Off`, and it is a required third argument to `SynthBuilder::new`, a required `--lang` flag on the `ptts` and `bench` examples and both servers, a required keyword-only `lang=` on `ptts-pyo3`, and a required `lang` argument to the `ptts-wasm` `Model` constructor and to `PhononTTS.load` in `phonon-tts`. The reason it is not defaulted rather than defaulted to English: normalization makes the model noticeably better, but the spoken forms of `@`, `+` and `=` are per-language, so normalizing German as English says "at" where it should say "ät" -- guessing is worse than doing nothing. `Normalize::Off` (`--lang none`, `lang="none"`) hands text to the tokenizer as written.
