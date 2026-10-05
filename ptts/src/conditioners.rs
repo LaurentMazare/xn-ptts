@@ -49,6 +49,7 @@ pub struct FuserConfig {
 fn default_condition(name: &str) -> Option<&'static str> {
     match name {
         "num_speakers" => Some("1"),
+        "duration_delta" | "padding_bonus" => Some("0.0"),
         _ => None,
     }
 }

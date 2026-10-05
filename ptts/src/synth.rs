@@ -278,6 +278,7 @@ fn resolve(defaults: &Defaults, opts: &SpeechOptions) -> Result<Defaults> {
 struct Voice<Q: BackendQ> {
     emb: Tensor<Q::T, Q::B>,
     null_emb: Option<Tensor<Q::T, Q::B>>,
+    conditions: Option<Tensor<Q::T, Q::B>>,
 }
 
 /// A loaded model, with the weight format fixed at compile time. Always reached through
@@ -417,6 +418,7 @@ impl<Q: BackendQ> SynthOf<Q> {
     /// enough to hold them.
     fn prime(&self, voice: &Voice<Q>, cfg_on: bool, frames: usize) -> Result<Primed<Q>> {
         let mut state = self.model.init_flow_lm_state(1, frames)?;
+        state.flow_lm_state.conditions = voice.conditions.clone();
         self.model.prompt_audio(&mut state, &voice.emb)?;
 
         let null_state = if !cfg_on {
@@ -429,6 +431,7 @@ impl<Q: BackendQ> SynthOf<Q> {
                 _ => frames,
             };
             let mut null_state = self.model.init_flow_lm_state(1, null_frames)?;
+            null_state.flow_lm_state.conditions = voice.conditions.clone();
             if !self.cfg.cfg_null_audio_empty {
                 match voice.null_emb.as_ref() {
                     Some(null_emb) => self.model.prompt_audio(&mut null_state, null_emb)?,
@@ -489,7 +492,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
             loader::load_voice_emb(path, model_ext.as_deref(), self.model.speaker_proj(), &dev)?
                 .to::<Q::T>()?;
         self.forget_primed(name);
-        self.voices.insert(name.to_string(), Voice { emb, null_emb: None });
+        self.voices.insert(name.to_string(), Voice { emb, null_emb: None, conditions: None });
         Ok(())
     }
 
@@ -528,7 +531,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
             Some(enc.encode_audio(&pcm.zeros_like()?)?)
         };
         self.forget_primed(name);
-        self.voices.insert(name.to_string(), Voice { emb, null_emb });
+        self.voices.insert(name.to_string(), Voice { emb, null_emb, conditions: None });
         Ok(())
     }
 
@@ -562,7 +565,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
             Some(null) => Some(to_tensor(null)?),
         };
         self.forget_primed(name);
-        self.voices.insert(name.to_string(), Voice { emb, null_emb });
+        self.voices.insert(name.to_string(), Voice { emb, null_emb, conditions: None });
         Ok(())
     }
 
@@ -627,7 +630,8 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
 /// A fresh, independently-owned state at `seq_budget`, seeded with `prefix`'s filled positions.
 fn grow<Q: BackendQ>(prefix: &TTSState<Q>, seq_budget: usize) -> Result<TTSState<Q>> {
     let transformer_state = prefix.flow_lm_state.transformer_state.with_seq_budget(seq_budget)?;
-    Ok(TTSState { flow_lm_state: crate::flow_lm::FlowLMState { transformer_state } })
+    let conditions = prefix.flow_lm_state.conditions.clone();
+    Ok(TTSState { flow_lm_state: crate::flow_lm::FlowLMState { transformer_state, conditions } })
 }
 
 /// Split `text` into chunks and work out the budgets for each.
@@ -1277,7 +1281,13 @@ impl SynthBuilder {
         let tokenizer = self.take_tokenizer()?;
 
         let vb = loader::load_weights::<Q>(&self.weights, &device)?;
-        let model = TTSModel::<Q>::load(&vb, tokenizer, &config, &self.conditions)?;
+        let mut conditions = self.conditions.clone();
+        if let Some(voice) = config.voices.first() {
+            for (k, v) in voice.conditions.iter() {
+                conditions.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        let model = TTSModel::<Q>::load(&vb, tokenizer, &config, &conditions)?;
         let model = match self.eos_threshold {
             Some(threshold) => model.with_eos_threshold(threshold),
             None => model,
@@ -1307,8 +1317,13 @@ impl SynthBuilder {
             normalize: self.normalize,
         };
 
-        for (name, emb) in baked_voices {
-            synth.voices.insert(name, Voice { emb: emb.to::<Q::T>()?, null_emb: None });
+        let conditioners = vb.pp("flow_lm.condition_provider.conditioners");
+        for (voice, (name, emb)) in synth.cfg.voices.iter().zip(baked_voices) {
+            let mut values = self.conditions.clone();
+            values.extend(voice.conditions.clone());
+            let conditions =
+                crate::conditioners::load_summed_conditions(&conditioners, &synth.cfg, &values)?;
+            synth.voices.insert(name, Voice { emb: emb.to::<Q::T>()?, null_emb: None, conditions });
         }
         for (name, path) in self.voices.iter() {
             synth.add_voice_file(name, path)?;
