@@ -222,30 +222,67 @@ fn voice_emb_from_vb<B: Backend>(
     };
     let emb = match kind {
         VoiceTensor::Emb => tensor,
-        VoiceTensor::Latents => {
-            // [1, C, T] -> [1, T, C]
-            let latents = tensor.transpose(1, 2)?.contiguous()?;
-            let Some(proj) = speaker_proj else {
-                return Err(Error::invalid_data(format!(
-                    "{label} holds `{SPEAKER_WAVS_TENSOR}` latents, but this checkpoint has no \
-                     speaker projection (`{SPEAKER_PROJ_WEIGHT}`) to turn them into a voice \
-                     embedding. A GGUF written by an older `quantize --no-mimi-encoder` dropped \
-                     it: regenerate the GGUF from the safetensors checkpoint, or use a \
-                     precomputed `{EMB_TENSOR}` voice."
-                )));
-            };
-            let channels = latents.dim(2usize)?;
-            let in_dim = proj.weight().dims()[1];
-            if channels != in_dim {
-                return Err(Error::invalid_data(format!(
-                    "`{SPEAKER_WAVS_TENSOR}` in {label} has {channels} channels but the speaker \
-                     projection takes {in_dim}"
-                )));
-            }
-            proj.forward(&latents)?
-        }
+        VoiceTensor::Latents => project_latents(&tensor, label, speaker_proj)?,
     };
     Ok(emb)
+}
+
+pub fn load_config_voices<B: Backend>(
+    vb: &Path<B>,
+    cfg: &TTSConfig,
+    speaker_proj: Option<&Linear<f32, B>>,
+) -> Result<Vec<(String, Tensor<f32, B>)>> {
+    let mut voices = Vec::with_capacity(cfg.voices.len());
+    for voice in cfg.voices.iter() {
+        let label = format!("baked-in voice {:?}", voice.name);
+        let Some(shape) = vb.shape(&voice.prefix).cloned() else {
+            return Err(Error::invalid_data(format!(
+                "{label}: tensor `{}` not found in the weights",
+                voice.prefix
+            )));
+        };
+        let dims = shape.dims().to_vec();
+        let tensor: Tensor<f32, B> = vb.tensor(&voice.prefix, shape)?;
+        let tensor = match dims.as_slice() {
+            [a, b] => tensor.reshape((1, *a, *b))?,
+            [1, _, _] => tensor,
+            _ => {
+                return Err(Error::invalid_data(format!(
+                    "{label}: tensor `{}` has shape {dims:?}, expected [C, T] or [1, C, T]",
+                    voice.prefix
+                )));
+            }
+        };
+        voices.push((voice.name.clone(), project_latents(&tensor, &label, speaker_proj)?));
+    }
+    Ok(voices)
+}
+
+fn project_latents<B: Backend>(
+    tensor: &Tensor<f32, B>,
+    label: &str,
+    speaker_proj: Option<&Linear<f32, B>>,
+) -> Result<Tensor<f32, B>> {
+    // [1, C, T] -> [1, T, C]
+    let latents = tensor.transpose(1, 2)?.contiguous()?;
+    let Some(proj) = speaker_proj else {
+        return Err(Error::invalid_data(format!(
+            "{label} holds `{SPEAKER_WAVS_TENSOR}` latents, but this checkpoint has no \
+             speaker projection (`{SPEAKER_PROJ_WEIGHT}`) to turn them into a voice \
+             embedding. A GGUF written by an older `quantize --no-mimi-encoder` dropped \
+             it: regenerate the GGUF from the safetensors checkpoint, or use a \
+             precomputed `{EMB_TENSOR}` voice."
+        )));
+    };
+    let channels = latents.dim(2usize)?;
+    let in_dim = proj.weight().dims()[1];
+    if channels != in_dim {
+        return Err(Error::invalid_data(format!(
+            "`{SPEAKER_WAVS_TENSOR}` in {label} has {channels} channels but the speaker \
+             projection takes {in_dim}"
+        )));
+    }
+    Ok(proj.forward(&latents)?)
 }
 
 /// Fails if the voice file's safetensors `header` records a `model_ext` other than

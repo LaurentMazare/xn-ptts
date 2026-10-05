@@ -153,6 +153,7 @@ pub enum StepInput<'a, Q: BackendQ> {
 #[derive(Clone, Debug)]
 pub struct FlowLMState<Q: BackendQ> {
     pub transformer_state: StreamingTransformerState<Q::T, Q::B>,
+    pub conditions: Option<Tensor<Q::T, Q::B>>,
 }
 
 impl<Q: BackendQ> FlowLM<Q> {
@@ -225,7 +226,7 @@ impl<Q: BackendQ> FlowLM<Q> {
 
     pub fn init_state(&self, batch_size: usize, sequence_length: usize) -> Result<FlowLMState<Q>> {
         let transformer_state = self.transformer.init_state(batch_size, sequence_length)?;
-        Ok(FlowLMState { transformer_state })
+        Ok(FlowLMState { transformer_state, conditions: None })
     }
 
     /// Run the backbone: concat text_embeddings + input, run transformer, strip prefix.
@@ -236,7 +237,7 @@ impl<Q: BackendQ> FlowLM<Q> {
         seq_len: usize,
         state: &mut FlowLMState<Q>,
     ) -> Result<Tensor<Q::T, Q::B>> {
-        let input = match self.condition_providers.as_ref() {
+        let input = match state.conditions.as_ref().or(self.condition_providers.as_ref()) {
             Some(ns) => input.broadcast_add(ns)?,
             None => input.clone(),
         };

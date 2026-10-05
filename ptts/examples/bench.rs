@@ -34,7 +34,7 @@ struct Args {
     #[arg(long)]
     tokenizer: Option<std::path::PathBuf>,
 
-    /// Precomputed voice embedding safetensors.
+    /// Precomputed voice embedding safetensors, or the name of a baked-in voice.
     #[arg(long)]
     voice: std::path::PathBuf,
 
@@ -216,15 +216,35 @@ impl Bench<'_> {
         let t_load = Instant::now();
         let tokenizer = Tok::open(&tokenizer_path)?;
         let vb = model_helpers::load_weights::<Q>(&args.model, &dev)?;
-        let model: TTSModel<Q> =
-            TTSModel::load(&vb, Box::new(tokenizer), &cfg, &Default::default())?;
-        vb.check_all_used_with_ignore(model_helpers::is_unused_by_tts_model)?;
-        let voice_emb = model_helpers::load_voice_emb(
-            &args.voice,
-            cfg.model_ext().as_deref(),
-            model.speaker_proj(),
-            &dev,
-        )?
+        let baked = cfg.voices.iter().find(|v| args.voice.as_os_str() == v.name.as_str());
+        if baked.is_none() && !cfg.voices.is_empty() {
+            let known: Vec<&str> = cfg.voices.iter().map(|v| v.name.as_str()).collect();
+            anyhow::bail!(
+                "unknown voice {:?}: this checkpoint has baked-in voices and supports no other \
+                 voice, known voices: {known:?}",
+                args.voice
+            );
+        }
+        let conditions = baked.map(|v| v.conditions.clone()).unwrap_or_default();
+        let model: TTSModel<Q> = TTSModel::load(&vb, Box::new(tokenizer), &cfg, &conditions)?;
+        let baked_voices = ptts::loader::load_config_voices(&vb, &cfg, model.speaker_proj())?;
+        let speaker_prefix = format!("{}.", cfg.speaker_mimi_prefix());
+        vb.check_all_used_with_ignore(|name| {
+            model_helpers::is_unused_by_tts_model(name) || name.starts_with(&speaker_prefix)
+        })?;
+        let voice_emb = match baked {
+            Some(voice) => baked_voices
+                .into_iter()
+                .find(|(name, _)| *name == voice.name)
+                .map(|(_, emb)| emb)
+                .context("baked-in voice not loaded")?,
+            None => model_helpers::load_voice_emb(
+                &args.voice,
+                cfg.model_ext().as_deref(),
+                model.speaker_proj(),
+                &dev,
+            )?,
+        }
         .to::<Q::T>()?;
         let load_ms = ms(t_load.elapsed());
 
