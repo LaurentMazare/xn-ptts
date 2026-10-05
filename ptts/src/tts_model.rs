@@ -293,6 +293,12 @@ fn sin_embedding(pos: f32, dim: usize, max_period: f32) -> Vec<f32> {
     phases.iter().map(|p| p.cos()).chain(phases.iter().map(|p| p.sin())).collect()
 }
 
+/// The summed LUT whose values are voices when a checkpoint does not list its voices
+/// (`TTSConfig::voices`): audium's `voice_name` (`config/conditioner/tts_voice_lut.yaml`). No other
+/// LUT is ever taken for a voice, whatever it is or however many there are; a voice LUT under
+/// another name is named through the config's `voices` list instead.
+pub const VOICE_LUT: &str = "voice_name";
+
 /// Refuse a summed LUT whose ids this crate would get wrong. Training's `noop` and `whitespace`
 /// tokenizers give a known value its position in `possible_values` and put padding at `n_bins`
 /// (audiocraft `conditioners/text.py`, `_WordToToken`); `whitespace` also splits a value on
@@ -358,6 +364,16 @@ impl<Q: BackendQ> TTSModel<Q> {
             };
             check_sum_lut(&cond.name, lut)?;
             let vb = vb.pp(format!("flow_lm.condition_provider.conditioners.{}", cond.name));
+            // Rows are added to `d_model`-wide frames, so a LUT without an output projection has
+            // to be that wide already; caught here rather than on every generation.
+            if !vb.contains("output_proj.weight") && lut.dim != cfg.flow_lm.d_model {
+                xn::bail!(
+                    "summed LUT '{}' is {} wide with no output_proj, but frames are {} wide",
+                    cond.name,
+                    lut.dim,
+                    cfg.flow_lm.d_model
+                )
+            }
             let lut_cond =
                 LUTConditioner::load(&vb, lut.n_bins, None, lut.dim, cfg.flow_lm.d_model)?;
             sum_luts.push(SumLut {
@@ -366,14 +382,6 @@ impl<Q: BackendQ> TTSModel<Q> {
                 cond: lut_cond,
             });
         }
-        if sum_luts.len() > 1 {
-            let names: Vec<_> = sum_luts.iter().map(|lut| lut.name.as_str()).collect();
-            tracing::warn!(
-                "several summed LUT conditionings {names:?}: `Synth` registers no voices for \
-                 them, pick values with `TTSModel::set_sum_conditions`"
-            );
-        }
-
         Ok(Self {
             flow_lm,
             mimi,
@@ -468,6 +476,19 @@ impl<Q: BackendQ> TTSModel<Q> {
             });
         }
         Ok(total)
+    }
+
+    /// A state around `transformer_state`, e.g. a copy of a primed prefix taken without its
+    /// [`TTSState`], with every summed conditioning as a dropped attribute like a fresh state.
+    /// Building a [`FlowLMState`] by hand would leave them out.
+    pub fn state_from_transformer(
+        &self,
+        transformer_state: crate::transformer::StreamingTransformerState<Q::T, Q::B>,
+    ) -> Result<TTSState<Q>> {
+        let mut state =
+            TTSState { flow_lm_state: FlowLMState { transformer_state, extra_sum: None } };
+        self.set_sum_conditions(&mut state, &Default::default())?;
+        Ok(state)
     }
 
     /// Initialize flow LM state with the given sequence length budget. Every per-state summed
@@ -966,6 +987,34 @@ mod tests {
         let ConditionerInnerConfig::Continuous { continuous } = cfg.inner else { panic!() };
         assert_eq!((continuous.scale_factor, continuous.dim), (1000.0, 128));
         assert_eq!(continuous.max_period, 10000.0);
+    }
+
+    #[test]
+    fn a_summed_lut_embeds_its_values_and_its_padding() {
+        // A 2-value LUT, dim 2, projected to 2 by the identity; learnt padding [9, 9].
+        let dev = xn::CpuDevice;
+        let path = std::env::temp_dir().join("ptts-sum-lut-test.safetensors");
+        let t =
+            |v: Vec<f32>, s: &[usize]| xn::TypedTensor::F32(Tensor::from_vec(v, s, &dev).unwrap());
+        let tensors = std::collections::HashMap::from([
+            ("v.embed.weight".to_string(), t(vec![1., 2., 3., 4., 5., 6.], &[3, 2])),
+            ("v.output_proj.weight".to_string(), t(vec![1., 0., 0., 1.], &[2, 2])),
+            ("v.learnt_padding".to_string(), t(vec![9., 9.], &[1, 1, 2])),
+        ]);
+        xn::safetensors::save_with_data_info(&tensors, None, &path).unwrap();
+        let vb = xn::nn::VB::load(&[&path], dev).unwrap().root();
+        let cond = LUTConditioner::<f32, xn::CpuDevice>::load(&vb.pp("v"), 2, None, 2, 2).unwrap();
+        let values = ["a".to_string(), "b".to_string()];
+        let row = |id: u32| -> Vec<f32> {
+            cond.embed_tokens(&[id]).unwrap().flatten_all().unwrap().to_vec1().unwrap()
+        };
+        assert_eq!(row(lut_id("v", &values, "a").unwrap()), [1., 2.]);
+        assert_eq!(row(lut_id("v", &values, "b").unwrap()), [3., 4.]);
+        // A dropped attribute adds the learnt padding itself, never a looked-up row.
+        let pad: Vec<f32> =
+            cond.learnt_padding().unwrap().flatten_all().unwrap().to_vec1().unwrap();
+        assert_eq!(pad, [9., 9.]);
+        assert!(cond.embed_tokens(&[cond.learnt_padding_id().unwrap()]).is_err());
     }
 
     #[test]

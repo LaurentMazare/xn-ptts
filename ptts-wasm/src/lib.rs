@@ -20,7 +20,7 @@ macro_rules! console_log {
     ($($t:tt)*) => (log(&format!($($t)*)))
 }
 
-use ptts::flow_lm::{FlowLMState, NormalRng, StepInput};
+use ptts::flow_lm::{NormalRng, StepInput};
 use ptts::loader::{load_speaker_proj, load_voice_emb_from_bytes, remap_key};
 use ptts::mimi::MimiDecoderState;
 use ptts::plan::{self, EosPolicy};
@@ -30,15 +30,11 @@ use ptts::transformer::{LayerAttentionState, StreamingMHAState, StreamingTransfo
 use ptts::tts_model::{MAX_TOKENS_PER_CHUNK, TTSConfig, TTSModel, TTSState};
 use xn::nn::{Linear, VB};
 use xn::quantized::Q80F32;
-use xn::{BackendQ, CPU, CpuDevice, Result, Tensor, TypedTensor, Unquantized};
+use xn::{CPU, CpuDevice, Result, Tensor, TypedTensor, Unquantized};
 
 /// Underlying type-erased transformer state, shared across all supported quantizations
 /// (all of them use `T = f32, B = CpuDevice`).
 type RawState = StreamingTransformerState<f32, CpuDevice>;
-
-fn wrap_state<Q: BackendQ<T = f32, B = CpuDevice>>(raw: RawState) -> TTSState<Q> {
-    TTSState { flow_lm_state: FlowLMState { transformer_state: raw, extra_sum: None } }
-}
 
 /// Slots a voice state already occupies: the voice prompt's frames. Every flow-LM layer
 /// advances together, so the first one says it for all of them.
@@ -296,13 +292,12 @@ impl Model {
             return Ok(None);
         };
         let raw = gen_state.base.clone();
+        // Through the model, so summed LUTs start as dropped attributes like any fresh state.
         let mut tts_state = match &self.inner {
-            ModelInner::F32(_) => StateInner::F32(wrap_state(raw)),
-            ModelInner::Q8(_) => StateInner::Q8(wrap_state(raw)),
+            ModelInner::F32(m) => StateInner::F32(m.state_from_transformer(raw)?),
+            ModelInner::Q8(m) => StateInner::Q8(m.state_from_transformer(raw)?),
         };
         let mimi_state = dispatch!(&self.inner, &mut tts_state, |m, s| {
-            // `wrap_state` has no model to ask, so summed LUTs start as dropped attributes here.
-            m.set_sum_conditions(s, &Default::default())?;
             m.prompt_text(s, &chunk.tokens)?;
             m.init_mimi_state(1)?
         });

@@ -61,7 +61,7 @@ use crate::flow_lm::{NormalRng, StepInput};
 use crate::loader;
 use crate::plan::{self, Chunk, EosPolicy};
 use crate::preprocess::Normalize;
-use crate::tts_model::{MAX_TOKENS_PER_CHUNK, MimiEnc, TTSConfig, TTSModel, TTSState};
+use crate::tts_model::{MAX_TOKENS_PER_CHUNK, MimiEnc, TTSConfig, TTSModel, TTSState, VOICE_LUT};
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path as FsPath, PathBuf};
@@ -1404,18 +1404,18 @@ impl SynthBuilder {
         };
 
         // Voices the checkpoint lists in its config come first, and its first one is the
-        // default. Without a list, a model whose voice is a summed LUT (no speaker prompt) gets
-        // each of its values as a voice, named by the value; only with a single summed LUT, as
-        // with several a voice would have to pick a value in each. A voice added below or later
-        // under the same name replaces either kind.
+        // default. Without a list, the summed LUT named `VOICE_LUT`, if there is one, gets each
+        // of its values as a voice, named by the value; any other summed LUT is a conditioning,
+        // never a voice. `''` is training's padding slot, not a voice. A voice added below or
+        // later under the same name replaces either kind.
         if !bundled.is_empty() {
             if synth.defaults.voice.is_none() {
                 synth.defaults.voice = bundled.first().map(|(name, _)| name.clone());
             }
             synth.voices.extend(bundled);
-        } else if let [lut] = synth.model.sum_luts() {
+        } else if let Some(lut) = synth.model.sum_luts().iter().find(|l| l.name == VOICE_LUT) {
             let empty = Tensor::zeros((1, 0, synth.cfg.flow_lm.d_model), &device)?;
-            for value in lut.values.iter() {
+            for value in lut.values.iter().filter(|v| !v.is_empty()) {
                 let sum = BTreeMap::from([(lut.name.clone(), value.clone())]);
                 let voice = Voice { emb: empty.clone(), null_emb: None, sum: Some(sum) };
                 synth.voices.insert(value.clone(), voice);
