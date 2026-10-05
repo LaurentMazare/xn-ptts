@@ -170,15 +170,16 @@ A checkpoint can bundle its voices: `config.json`'s `voices` list gives each a `
 LUT `conditions` it selects (e.g. `{"voice_name": "<value>"}`) and an optional `prefix`, the name
 of a tensor in the weights file (`voices.<name>.speaker_wavs` latents, run through the speaker
 projection, or `voices.<name>.emb`). `SynthBuilder` registers them in order, the first being the
-default, so `synth(voice=name)` applies both the prefix and the LUT value. Without a list, a model
-with a single summed LUT registers each LUT value as a prompt-free voice. `TTSModel` alone ignores
+default, so `synth(voice=name)` applies both the prefix and the LUT value. Without a list, the summed LUT named `voice_name`
+(`tts_model::VOICE_LUT`), if any, registers each of its values as a prompt-free voice; no other
+LUT is ever taken for a voice. `TTSModel` alone ignores
 `voices.*` tensors.
 
 Generation is streaming and stateful: callers `init_flow_lm_state(batch, seq_len)`, then `prompt_text*` / `prompt_audio` to seed the state, then step-decode latents and feed them into `MimiDecoderState`. `lsd_decode_steps` controls flow-matching solver steps; `eos_threshold` controls termination. The default `TTSConfig::v202601` configuration is the canonical one consumed by all three frontends.
 
 Text normalization (`ptts/src/preprocess.rs`) is mandatory to choose and has no default. `preprocess::Normalize` is either `For(lang)` or `Off`, and it is a required third argument to `SynthBuilder::new`, a required `--lang` flag on the `ptts` and `bench` examples and both servers, a required keyword-only `lang=` on `ptts-pyo3`, and a required `lang` argument to the `ptts-wasm` `Model` constructor and to `PhononTTS.load` in `phonon-tts`. The reason it is not defaulted rather than defaulted to English: normalization makes the model noticeably better, but the spoken forms of `@`, `+` and `=` are per-language, so normalizing German as English says "at" where it should say "ät" -- guessing is worse than doing nothing. `Normalize::Off` (`--lang none`, `lang="none"`) hands text to the tokenizer as written.
 
-`Normalize::apply` is the one implementation, and it has to run before `prepare_text_prompt`, whose leading-space padding of short text it would otherwise collapse. `Synth::normalization` / `Session::normalization` hand it to callers that tokenize by hand (`ptts-ws-server`, `ptts-wasm`) rather than going through `say`/`stream`.
+`Normalize::apply` is the one implementation, and it runs before `prepare_text_prompt` and before sentence splitting, since it rewrites the characters the splitter looks for. `Synth::normalization` / `Session::normalization` hand it to callers that tokenize by hand (`ptts-ws-server`, `ptts-wasm`) rather than going through `say`/`stream`.
 
 Quantization story: only `flow_lm.transformer.layers.*.{linear1,linear2,self_attn.in_proj,self_attn.out_proj}.weight` get GGML-quantized (see `examples/quantize.rs`); Mimi stays in `Unquantized<f32>`. The Mimi quantizer codebook tensors (`mimi.quantizer.*` except `output_proj`) are excluded from output GGUFs since the runtime uses `dummy_quantizer.rs`.
 
