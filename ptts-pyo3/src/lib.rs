@@ -553,10 +553,26 @@ impl Tts {
 }
 
 /// A summed conditioning's value from Python: a LUT value, or a number for a continuous one.
-#[derive(FromPyObject)]
 enum Condition {
     Str(String),
     Num(f64),
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Condition {
+    type Error = PyErr;
+
+    fn extract(ob: pyo3::Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        // `bool` is an `int`, so it would otherwise pass as 1.0 or 0.0 without a word.
+        if ob.is_instance_of::<pyo3::types::PyBool>() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "a condition takes a str or a number, not a bool",
+            ));
+        }
+        if let Ok(s) = ob.extract::<String>() {
+            return Ok(Self::Str(s));
+        }
+        Ok(Self::Num(ob.extract::<f64>()?))
+    }
 }
 
 impl Condition {

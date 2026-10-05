@@ -4,7 +4,7 @@ Hand-written rather than generated: the surface is small, and the docstrings her
 editor shows on hover. Keep in step with `ptts-pyo3/src/lib.rs`.
 """
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from os import PathLike
 from types import TracebackType
 from typing import Any
@@ -86,7 +86,7 @@ class TTS:
         temperature: float | None = None,
         seed: int | None = None,
         cfg_coef: float | None = None,
-        conditions: Mapping[str, str | float] | None = None,
+        conditions: dict[str, str | float] | None = None,
     ) -> NDArray[np.float32]:
         """Synthesize `text` and return the waveform as a 1-D float32 array.
 
@@ -104,11 +104,11 @@ class TTS:
         temperature: float | None = None,
         seed: int | None = None,
         cfg_coef: float | None = None,
-        conditions: Mapping[str, str | float] | None = None,
+        conditions: dict[str, str | float] | None = None,
     ) -> float:
         """Synthesize `text` straight to a mono 16-bit WAV file.
 
-        Returns the duration written, in seconds.
+        Returns the duration written, in seconds. `conditions` is as for `synth`.
         """
 
     def stream(
@@ -119,7 +119,7 @@ class TTS:
         temperature: float | None = None,
         seed: int | None = None,
         cfg_coef: float | None = None,
-        conditions: Mapping[str, str | float] | None = None,
+        conditions: dict[str, str | float] | None = None,
     ) -> AudioStream:
         """Synthesize `text`, yielding float32 chunks as the decoder produces them."""
 

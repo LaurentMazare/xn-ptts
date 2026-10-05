@@ -282,7 +282,11 @@ fn resolve(defaults: &Defaults, opts: &SpeechOptions) -> Result<Defaults> {
             _ => None,
         },
         max_tokens_per_chunk: opts.max_tokens_per_chunk.unwrap_or(defaults.max_tokens_per_chunk),
-        conditions: opts.conditions.clone(),
+        conditions: {
+            let mut conditions = defaults.conditions.clone();
+            conditions.extend(opts.conditions.iter().map(|(k, v)| (k.clone(), v.clone())));
+            conditions
+        },
     })
 }
 
@@ -333,9 +337,12 @@ impl<Q: BackendQ> SynthOf<Q> {
         let voice = settings.voice.as_deref();
         let (mut base, cfg_base) = self.primed_state(voice, seq_budget, settings.cfg_coef)?;
         // The voice's LUT values (the default voice's when the request names none), then the
-        // request's conditions over them, on the conditioned branch only and after priming, so
-        // a primed prefix is cached without them. The null branch keeps the dropped-attribute
-        // state every fresh state starts with.
+        // request's conditions over them, on the conditioned branch only. Applying them after
+        // priming is not a shortcut: training sums these onto the audio frames only, and the
+        // voice prompt is a prepended condition joined after the sum, so it never sees them
+        // (`prompt_audio` likewise bypasses `extra_sum`). A primed prefix is therefore the same
+        // whatever the conditions, and is cached without them. The null branch keeps the
+        // dropped-attribute state every fresh state starts with.
         let voice_sum = self.voice_for(voice)?.and_then(|(_, v)| v.sum.as_ref());
         let mut values: HashMap<String, Option<String>> = HashMap::new();
         for (k, v) in voice_sum.into_iter().flatten().chain(settings.conditions.iter()) {

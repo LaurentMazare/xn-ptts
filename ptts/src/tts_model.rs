@@ -892,6 +892,44 @@ mod tests {
     }
 
     #[test]
+    fn a_continuous_value_is_embedded_projected_or_padded() {
+        type Q = xn::Unquantized<f32, xn::CpuDevice>;
+        let dev = xn::CpuDevice;
+        let cfg = ContinuousConditioner { scale_factor: 1000.0, dim: 4, max_period: 10000.0 };
+        // A 2-wide output that keeps the first and third embedding entries: cos and sin of the
+        // first phase, which is the scaled value itself.
+        let w = Tensor::from_vec(vec![1., 0., 0., 0., 0., 0., 1., 0.], (2, 4), &dev).unwrap();
+        let padding = Tensor::from_vec(vec![7f32, 8.], (1, 1, 2), &dev).unwrap();
+        let mut cond = SumContinuous::<Q> {
+            name: "duration_delta".into(),
+            cfg,
+            output_proj: Linear::new(w),
+            learnt_padding: Some(padding),
+        };
+
+        let v = cond.embed(Some("0.001")).unwrap().unwrap();
+        assert_eq!(v.dims(), &[1, 1, 2]);
+        let got: Vec<f32> = v.flatten_all().unwrap().to_vec1().unwrap();
+        assert!(
+            (got[0] - 1f32.cos()).abs() < 1e-6 && (got[1] - 1f32.sin()).abs() < 1e-6,
+            "{got:?}"
+        );
+
+        // A dropped attribute is the learnt padding, or nothing without one.
+        let pad: Vec<f32> =
+            cond.embed(None).unwrap().unwrap().flatten_all().unwrap().to_vec1().unwrap();
+        assert_eq!(pad, [7., 8.]);
+        cond.learnt_padding = None;
+        assert!(cond.embed(None).unwrap().is_none());
+
+        for bad in ["abc", "inf", "NaN", ""] {
+            let err = cond.embed(Some(bad)).unwrap_err().to_string();
+            assert!(err.contains("finite number"), "{bad}: {err}");
+        }
+        assert!(cond.embed(Some(" -0.3 ")).is_ok(), "surrounding spaces are fine");
+    }
+
+    #[test]
     fn a_continuous_config_reads_the_exported_block() {
         let cfg: ConditionerConfig = serde_json::from_str(
             r#"{"name":"duration_delta","type":"continuous",

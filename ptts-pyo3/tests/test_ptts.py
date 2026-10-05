@@ -265,3 +265,15 @@ def test_the_same_seed_gives_the_same_audio(tts):
     a = tts.synth("Reproducible.", seed=7)
     b = tts.synth("Reproducible.", seed=7)
     assert np.array_equal(a, b)
+
+
+@pytest.mark.checkpoint
+def test_a_condition_the_model_does_not_have_is_a_value_error(tts):
+    with pytest.raises(ValueError, match="no summed conditioning 'duration_delta'"):
+        tts.synth("hi", conditions={"duration_delta": -0.3})
+
+
+@pytest.mark.checkpoint
+def test_a_bool_condition_is_rejected_not_read_as_a_number(tts):
+    with pytest.raises(TypeError, match="not a bool"):
+        tts.synth("hi", conditions={"duration_delta": True})
