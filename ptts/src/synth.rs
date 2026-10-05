@@ -416,6 +416,16 @@ impl<Q: BackendQ> SynthOf<Q> {
 
     /// Run the voice prompt, and with guidance on the null branch, into states just large
     /// enough to hold them.
+    fn check_no_baked_voices(&self) -> Result<()> {
+        if self.cfg.voices.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::unsupported(
+                "this checkpoint has baked-in voices and supports no other voice",
+            ))
+        }
+    }
+
     fn prime(&self, voice: &Voice<Q>, cfg_on: bool, frames: usize) -> Result<Primed<Q>> {
         let mut state = self.model.init_flow_lm_state(1, frames)?;
         state.flow_lm_state.conditions = voice.conditions.clone();
@@ -478,7 +488,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
     }
 
     fn supports_voice_cloning(&self) -> bool {
-        self.mimi_enc.is_some()
+        self.mimi_enc.is_some() && self.cfg.voices.is_empty()
     }
 
     fn voice_prompt_sample_rate(&self) -> u32 {
@@ -486,6 +496,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
     }
 
     fn add_voice_file(&mut self, name: &str, path: &FsPath) -> Result<()> {
+        self.check_no_baked_voices()?;
         let dev = self.model.device().clone();
         let model_ext = self.cfg.model_ext();
         let emb =
@@ -497,6 +508,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
     }
 
     fn add_voice_from_pcm(&mut self, name: &str, pcm: &[f32]) -> Result<()> {
+        self.check_no_baked_voices()?;
         let enc = match self.mimi_enc.as_ref() {
             Some(enc) => enc,
             None => {
@@ -543,6 +555,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
         dim: usize,
         null_emb: Option<&[f32]>,
     ) -> Result<()> {
+        self.check_no_baked_voices()?;
         if emb.len() != frames * dim {
             return Err(Error::invalid_argument(format!(
                 "embedding has {} values, expected {frames} x {dim}",
