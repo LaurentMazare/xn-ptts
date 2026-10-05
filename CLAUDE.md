@@ -55,10 +55,11 @@ Cargo features that gate optional functionality:
 
 `kai` runs the `q8_0` transformer linears through Arm KleidiAI's SME2 kernels, which `xn`
 vendors and compiles itself, so it needs no setup. It only does anything on a CPU with SME2
-(Apple M4 and later, Arm Cortex-X925 and later); elsewhere the build includes nothing and the
-weights keep xn's own layouts. It makes prompt prefill and voice conditioning faster, not
-decode, and it requantizes the weights to one scale per row, which moves the output slightly.
-`XN_KAI=0` turns it off at run time.
+(Apple M4 and later, Arm Cortex-X925 and later); elsewhere the weights keep xn's own layouts.
+It makes prompt prefill and voice conditioning faster, not decode, and it requantizes the
+weights to one scale per row, which moves the output slightly. So with `kai` on, the same
+binary gives slightly different audio on an SME2 CPU than on any other: anything that
+compares outputs should set `XN_KAI=0`, which turns it off at run time, or allow a tolerance.
 
 Run the CLI example:
 
