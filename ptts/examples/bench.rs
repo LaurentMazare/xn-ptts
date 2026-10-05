@@ -217,6 +217,14 @@ impl Bench<'_> {
         let tokenizer = Tok::open(&tokenizer_path)?;
         let vb = model_helpers::load_weights::<Q>(&args.model, &dev)?;
         let baked = cfg.voices.iter().find(|v| args.voice.as_os_str() == v.name.as_str());
+        if baked.is_none() && !cfg.voices.is_empty() {
+            let known: Vec<&str> = cfg.voices.iter().map(|v| v.name.as_str()).collect();
+            anyhow::bail!(
+                "unknown voice {:?}: this checkpoint has baked-in voices and supports no other \
+                 voice, known voices: {known:?}",
+                args.voice
+            );
+        }
         let conditions = baked.map(|v| v.conditions.clone()).unwrap_or_default();
         let model: TTSModel<Q> = TTSModel::load(&vb, Box::new(tokenizer), &cfg, &conditions)?;
         let baked_voices = ptts::loader::load_config_voices(&vb, &cfg, model.speaker_proj())?;

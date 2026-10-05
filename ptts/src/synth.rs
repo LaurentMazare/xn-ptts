@@ -445,6 +445,12 @@ impl<Q: BackendQ> SynthOf<Q> {
             if !self.cfg.cfg_null_audio_empty {
                 match voice.null_emb.as_ref() {
                     Some(null_emb) => self.model.prompt_audio(&mut null_state, null_emb)?,
+                    None if !self.cfg.voices.is_empty() => {
+                        return Err(Error::unsupported(
+                            "this checkpoint has baked-in voices, which do not support CFG: \
+                             disable it (cfg_coef of 1.0 or unset)",
+                        ));
+                    }
                     None => {
                         return Err(Error::unsupported(
                             "this model conditions its CFG null branch on silence \
