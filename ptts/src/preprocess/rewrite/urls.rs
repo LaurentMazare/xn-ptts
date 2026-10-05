@@ -9,7 +9,8 @@ use std::borrow::Cow;
 /// A web address, with an optional `http://` or `https://` in front and an optional path of
 /// letters, digits, dashes and slashes after it, read with its separators spoken in `lang`. Its
 /// last label must be a top-level domain, which is what tells "kyutai.fr" from a sentence that
-/// lost the space after its period.
+/// lost the space after its period. So must its case: "it.Now" is such a sentence, unless a
+/// scheme or `www.` says it is an address.
 pub(super) fn urls(word: &str, lang: Lang) -> Option<String> {
     let sc = lang.special_chars();
     let mut words: Vec<Cow<str>> = vec![];
@@ -39,7 +40,12 @@ pub(super) fn urls(word: &str, lang: Lang) -> Option<String> {
         None => (None, rest),
     };
     let suffix = suffix(rest)?;
-    if labels.len() < 2 || !is_tld(labels[labels.len() - 1]) {
+    let tld = labels[labels.len() - 1];
+    if labels.len() < 2 || !is_tld(tld) {
+        return None;
+    }
+    let capitalized = tld.chars().any(char::is_uppercase) && tld.chars().any(char::is_lowercase);
+    if capitalized && words.is_empty() && !labels[0].eq_ignore_ascii_case("www") {
         return None;
     }
 
@@ -121,6 +127,10 @@ mod tests {
             // Domains the top-level domain list once had a stray comma in.
             (Lang::En, "abc.net.au", "abc dot net dot A-U"),
             (Lang::En, "gmail.gmail", "gmail dot gmail"),
+            // A capitalized domain is an address when a scheme or `www.` says so.
+            (Lang::En, "https://kyutai.Fr", "H-T-T-P-S colon slash slash kyutai dot F-R"),
+            (Lang::En, "www.example.Com", "W-W-W dot example dot Com"),
+            (Lang::En, "EXAMPLE.COM", "EXAMPLE dot COM"),
         ];
         for (lang, input, expected) in cases {
             assert_eq!(urls(input, lang).as_deref(), Some(expected), "{lang:?} {input:?}");
@@ -137,6 +147,9 @@ mod tests {
             "https://",
             "example..com",
             "foo@bar.com",
+            // Sentences that lost the space after their period.
+            "it.Now",
+            "yes.No",
         ];
         for input in declined {
             assert_eq!(urls(input, Lang::En), None, "{input:?}");

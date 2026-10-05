@@ -235,12 +235,11 @@ impl StringAppender {
 
     fn push(&mut self, c: char) {
         if c == '.' || c == ',' {
-            // Quotes are kept: dropping a closing one would leave the opening one unbalanced. So
-            // are the symbols the rewrite rules read: `@` and `+`, which are spelled out after
-            // the rules, and the `$` of "it costs 5$.".
-            while self.buffer.last().is_some_and(|&l| {
-                l.is_whitespace() || (l.is_ascii_punctuation() && !"\"'@+$".contains(l))
-            }) {
+            while self
+                .buffer
+                .last()
+                .is_some_and(|&l| l.is_whitespace() || (l.is_ascii_punctuation() && !self.keeps(l)))
+            {
                 self.buffer.pop();
             }
         }
@@ -250,6 +249,18 @@ impl StringAppender {
     fn push_str(&mut self, s: &str) {
         for c in s.chars() {
             self.push(c);
+        }
+    }
+
+    /// Whether `last`, the last character pushed, stays before a `.` or `,`. Quotes do: dropping
+    /// a closing one would leave the opening one unbalanced. So do the symbols the rewrite rules
+    /// read: `@` and `+`, which are spelled out after the rules, and the `$` of an amount, as in
+    /// "it costs 5$.".
+    fn keeps(&self, last: char) -> bool {
+        match last {
+            '"' | '\'' | '@' | '+' => true,
+            '$' => self.buffer.len() >= 2 && self.buffer[self.buffer.len() - 2].is_ascii_digit(),
+            _ => false,
         }
     }
 
@@ -503,7 +514,7 @@ mod tests {
         assert_eq!(normalize_text("foo@bar.com", Lang::En, Rules::NONE), "foo at bar.com");
         assert_eq!(normalize_text("C++.", Lang::En, Rules::NONE), "C plus plus.");
         let phones = "phones".parse().unwrap();
-        assert_eq!(normalize_text("+33612345678.", Lang::Fr, phones), "+33 6 12 34 56 78.");
+        assert_eq!(normalize_text("+33612345678.", Lang::Fr, phones), "plus 33 6 12 34 56 78.");
     }
 
     #[test]
@@ -511,6 +522,9 @@ mod tests {
         let cases = [
             (Lang::En, "It costs $1500 today.", "It costs 1 thousand 500 dollars today."),
             (Lang::En, "It costs 5$.", "It costs 5 dollars."),
+            (Lang::En, "It costs -$5.", "It costs minus 5 dollars."),
+            // A `$` that is not part of an amount goes before a period, as other symbols do.
+            (Lang::En, "In $.", "In."),
             (Lang::En, "Only £50 left.", "Only 50 pounds left."),
             (Lang::Fr, "Ça coûte 500€ aujourd'hui.", "Ça coûte 500 euros aujourd'hui."),
             (Lang::De, "Es kostet $2500 heute.", "Es kostet 2 Tausend 500 Dollar heute."),

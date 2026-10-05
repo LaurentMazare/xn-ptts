@@ -45,6 +45,13 @@ impl Currency {
 /// et 59 centimes".
 pub(super) fn currency(word: &str, lang: Lang) -> Option<String> {
     let (body, suffix) = split_suffix(word);
+    // "-$500" reads as "$-500" does.
+    if let Some(body) = body.strip_prefix('-')
+        && let Some(amount) = body.strip_prefix(Currency::SYMBOLS)
+    {
+        let symbol = &body[..body.len() - amount.len()];
+        return currency(&format!("{symbol}-{amount}{suffix}"), lang);
+    }
     // The symbol leads or trails, never both: "$5€" is not an amount.
     let (symbol, amount) = match body.strip_prefix(Currency::SYMBOLS) {
         Some(amount) => (body.chars().next()?, amount),
@@ -170,6 +177,8 @@ mod tests {
             (Lang::De, "1,23$!!!", "1 Komma 23 Dollar!!!"),
             // Signs, including a zero integer part.
             (Lang::En, "$-500", "minus 500 dollars"),
+            (Lang::En, "-$500.", "minus 500 dollars."),
+            (Lang::De, "-€1.000", "minus ein Tausend Euro"),
             (Lang::Fr, "-0,50€", "moins 0 virgule 50 euros"),
             // A linking "de" after a scale noun, elided before a vowel in French, and none after
             // the numeral adjective "mille".
@@ -187,7 +196,7 @@ mod tests {
         for (lang, input, expected) in cases {
             assert_eq!(currency(input, lang).as_deref(), Some(expected), "{lang:?} {input:?}");
         }
-        for input in ["1234", "$abc", "$", "$5€", "5$5", "$007", "$1.2.3", "$ 5"] {
+        for input in ["1234", "$abc", "$", "$5€", "5$5", "$007", "$1.2.3", "$ 5", "-$", "--$5"] {
             assert_eq!(currency(input, Lang::En), None, "{input:?}");
         }
     }
