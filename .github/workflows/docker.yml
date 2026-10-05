@@ -1,0 +1,120 @@
+name: Docker
+
+# The `ptts-openai-server` image for linux/amd64 and linux/arm64. Each platform builds on a
+# native runner, since compiling Rust under QEMU takes hours, and the two are joined into one
+# multi-platform tag. A pull request that touches the server builds both without pushing; a push
+# to main that changes what goes into the image pushes `main`; and a `v*` tag pushes the version,
+# and `latest` unless it is a pre-release.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    # Not evaluated for tags, which always build.
+    paths:
+      - ptts/**
+      - ptts-openai-server/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/docker.yml
+  pull_request:
+    paths:
+      - ptts-openai-server/**
+      - .github/workflows/docker.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/ptts-openai-server
+  PUSH: ${{ github.event_name != 'pull_request' }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux/amd64, runner: ubuntu-24.04, arch: amd64 }
+          - { platform: linux/arm64, runner: ubuntu-24.04-arm, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ptts-openai-server/Dockerfile
+          platforms: ${{ matrix.platform }}
+          # Pushed by digest only: the `merge` job gives both platforms their tags at once.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ env.PUSH }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+      - name: Save the digest
+        if: env.PUSH == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+      - uses: actions/upload-artifact@v7
+        if: env.PUSH == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          retention-days: 1
+
+  merge:
+    name: Tag the multi-platform image
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+      - name: Create the tags
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          mapfile -t tags < <(jq -r '.tags[] | "--tag", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          digests=()
+          for digest in *; do digests+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create "${tags[@]}" "${digests[@]}"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"

@@ -16,8 +16,13 @@ use std::sync::Arc;
 pub const VOICES: &[&str] =
     &["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 
-pub const DEFAULT_REPO_ID: &str = "kyutai/pocket-tts";
+/// Kyutai's checkpoint without the voice-cloning weights, which this server does not use. Unlike
+/// `kyutai/pocket-tts` it is not gated, so it downloads without a Hugging Face token.
+pub const DEFAULT_REPO_ID: &str = "kyutai/pocket-tts-without-voice-cloning";
 pub const DEFAULT_MODEL_FILE: &str = "tts_b6369a24.safetensors";
+
+/// Weight file names tried in a local folder, in order.
+const WEIGHT_CANDIDATES: [&str; 3] = ["model.safetensors", "model.q8.gguf", DEFAULT_MODEL_FILE];
 
 /// The loaded model and the request defaults, shared by every request.
 #[derive(Clone)]
@@ -89,29 +94,31 @@ impl LoadedModel {
         Ok(Self { cfg, voice_files, tokenizer_path, model_path })
     }
 
-    fn load_from_path(config: &std::path::PathBuf) -> Result<Self> {
-        let parent_dir = config
-            .parent()
-            .with_context(|| format!("failed to get parent directory of config path {config:?}"))?;
-        let cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config)?)
-            .with_context(|| format!("failed to read config from file {config:?}"))?;
-        let model_path = if parent_dir.join("model.safetensors").is_file() {
-            parent_dir.join("model.safetensors")
-        } else if parent_dir.join("model.q8.gguf").is_file() {
-            parent_dir.join("model.q8.gguf")
+    /// A local checkpoint folder and its config file, which is optional: Kyutai's checkpoint
+    /// has none.
+    fn load_from_dir(dir: &std::path::Path, config: &std::path::Path) -> Result<Self> {
+        let cfg = if config.is_file() {
+            serde_json::from_str(&std::fs::read_to_string(config)?)
+                .with_context(|| format!("failed to read config from file {config:?}"))?
         } else {
-            anyhow::bail!(
-                "model file not found in directory {parent_dir:?}; expected model.safetensors or model.q8.gguf"
-            );
+            tracing::info!(?dir, "no config.json in the checkpoint folder, using Pocket TTS's");
+            TTSConfig::v202601()
         };
-        let tokenizer_path = parent_dir.join("tokenizer.json");
-        let voice_files = ptts::loader::checkpoint_voices(parent_dir);
+        let model_path = WEIGHT_CANDIDATES
+            .iter()
+            .map(|name| dir.join(name))
+            .find(|p| p.is_file())
+            .with_context(|| {
+                format!("no weights in {dir:?}; expected one of {}", WEIGHT_CANDIDATES.join(", "))
+            })?;
+        let tokenizer_path = dir.join("tokenizer.json");
+        let voice_files = ptts::loader::checkpoint_voices(dir);
         Ok(Self { cfg, voice_files, tokenizer_path, model_path })
     }
 }
 
-/// Load the model named by `config` -- a local `config.json`, a Hub repo id, or
-/// nothing for the published checkpoint.
+/// Load the model named by `config`: a local checkpoint folder or a `config.json` in one, a Hub
+/// repo id, or nothing for Kyutai's checkpoint.
 pub async fn load_ptts(
     config: Option<&std::path::PathBuf>,
     voice_dir: Option<&std::path::PathBuf>,
@@ -121,15 +128,36 @@ pub async fn load_ptts(
     seed_base: u64,
     normalize: Normalize,
 ) -> Result<AppState> {
-    let mut m = match config {
-        Some(config) if config.is_file() || config.extension().is_some_and(|v| v == "json") => {
-            LoadedModel::load_from_path(config)?
+    // A path that does not exist, rather than a repo id: a typo, or a Docker volume not mounted.
+    if let Some(config) = config
+        && !config.exists()
+        && (config.is_absolute()
+            || config.starts_with(".")
+            || config.extension().is_some_and(|v| v == "json"))
+    {
+        anyhow::bail!("no checkpoint at {config:?}");
+    }
+    // A local checkpoint's config file and folder, made absolute so that `.` still has a name.
+    let local = match config {
+        Some(c) if c.is_dir() => {
+            let dir = std::fs::canonicalize(c)?;
+            Some((dir.join("config.json"), dir))
         }
-        Some(repo_id) => {
+        Some(c) if c.is_file() => {
+            let file = std::fs::canonicalize(c)?;
+            let dir = file.parent().context("a config file has a parent folder")?.to_path_buf();
+            Some((file, dir))
+        }
+        _ => None,
+    };
+    let local_dir = local.as_ref().map(|(_, dir)| dir);
+    let mut m = match (config, &local) {
+        (_, Some((file, dir))) => LoadedModel::load_from_dir(dir, file)?,
+        (Some(repo_id), None) => {
             let repo_id = repo_id.to_str().context("invalid repo ID path")?;
             LoadedModel::load_from_hf(repo_id).await?
         }
-        None => LoadedModel::load_pocket_from_hf().await?,
+        (None, None) => LoadedModel::load_pocket_from_hf().await?,
     };
     if let Some(voice_dir) = voice_dir {
         let found = ptts::loader::voices_in(voice_dir);
@@ -167,17 +195,12 @@ pub async fn load_ptts(
         "model loaded"
     );
 
-    // A repo id as given. For a local config, only its folder's name: clients have no use for
-    // the server's filesystem layout.
-    let model_name = match config {
-        None => DEFAULT_REPO_ID.to_string(),
-        Some(c) if c.is_file() => {
-            let dir = std::fs::canonicalize(c)
-                .ok()
-                .and_then(|c| Some(c.parent()?.file_name()?.to_owned()));
-            dir.unwrap_or_else(|| c.as_os_str().to_owned()).to_string_lossy().into_owned()
-        }
-        Some(repo_id) => repo_id.display().to_string(),
+    // A repo id as given. For a local checkpoint, only its folder's name: clients have no use
+    // for the server's filesystem layout.
+    let model_name = match (config, &local_dir) {
+        (_, Some(dir)) => dir.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        (Some(repo_id), None) => repo_id.display().to_string(),
+        (None, None) => DEFAULT_REPO_ID.to_string(),
     };
     Ok(AppState(Arc::new(Inner { synth, model_name, voices, seed_base, sample_rate, frame_size })))
 }

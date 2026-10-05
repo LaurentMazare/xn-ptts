@@ -1,0 +1,13 @@
+# docker compose -f ptts-openai-server/compose.yaml up
+services:
+  ptts-openai-server:
+    image: ghcr.io/gradium-ai/ptts-openai-server:latest
+    ports:
+      - "8880:8880"
+    environment:
+      PTTS_LANG: en
+      # Voices of your own, made with the `create_voice` example, from the folder mounted below.
+      # PTTS_VOICE_DIR: /voices
+    # volumes:
+    #   - ./voices:/voices:ro
+    restart: unless-stopped
