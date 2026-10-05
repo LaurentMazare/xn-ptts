@@ -2,9 +2,6 @@
 services:
   ptts-openai-server:
     image: ghcr.io/gradium-ai/ptts-openai-server:latest
-    build:
-      context: ..
-      dockerfile: ptts-openai-server/Dockerfile
     ports:
       - "8880:8880"
     environment:

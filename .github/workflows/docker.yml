@@ -2,13 +2,21 @@ name: Docker
 
 # The `ptts-openai-server` image for linux/amd64 and linux/arm64. Each platform builds on a
 # native runner, since compiling Rust under QEMU takes hours, and the two are joined into one
-# multi-platform tag. A pull request that touches the server builds both without pushing; main
-# pushes `main`, and a `v*` tag pushes the version and `latest`.
+# multi-platform tag. A pull request that touches the server builds both without pushing; a push
+# to main that changes what goes into the image pushes `main`; and a `v*` tag pushes the version,
+# and `latest` unless it is a pre-release.
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
+    # Not evaluated for tags, which always build.
+    paths:
+      - ptts/**
+      - ptts-openai-server/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/docker.yml
   pull_request:
     paths:
       - ptts-openai-server/**
@@ -100,12 +108,13 @@ jobs:
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
       - name: Create the tags
         working-directory: ${{ runner.temp }}/digests
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
           mapfile -t tags < <(jq -r '.tags[] | "--tag", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
           digests=()
           for digest in *; do digests+=("$IMAGE@sha256:$digest"); done
           docker buildx imagetools create "${tags[@]}" "${digests[@]}"
-          docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"

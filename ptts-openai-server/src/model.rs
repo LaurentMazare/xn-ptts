@@ -94,13 +94,14 @@ impl LoadedModel {
         Ok(Self { cfg, voice_files, tokenizer_path, model_path })
     }
 
-    /// A local checkpoint folder. Its `config.json` is optional, as Kyutai's checkpoint has none.
-    fn load_from_dir(dir: &std::path::Path) -> Result<Self> {
-        let config = dir.join("config.json");
+    /// A local checkpoint folder and its config file, which is optional: Kyutai's checkpoint
+    /// has none.
+    fn load_from_dir(dir: &std::path::Path, config: &std::path::Path) -> Result<Self> {
         let cfg = if config.is_file() {
-            serde_json::from_str(&std::fs::read_to_string(&config)?)
+            serde_json::from_str(&std::fs::read_to_string(config)?)
                 .with_context(|| format!("failed to read config from file {config:?}"))?
         } else {
+            tracing::info!(?dir, "no config.json in the checkpoint folder, using Pocket TTS's");
             TTSConfig::v202601()
         };
         let model_path = WEIGHT_CANDIDATES
@@ -127,20 +128,31 @@ pub async fn load_ptts(
     seed_base: u64,
     normalize: Normalize,
 ) -> Result<AppState> {
+    // A path that does not exist, rather than a repo id: a typo, or a Docker volume not mounted.
     if let Some(config) = config
-        && config.extension().is_some_and(|v| v == "json")
-        && !config.is_file()
+        && !config.exists()
+        && (config.is_absolute()
+            || config.starts_with(".")
+            || config.extension().is_some_and(|v| v == "json"))
     {
-        anyhow::bail!("no config file at {config:?}");
+        anyhow::bail!("no checkpoint at {config:?}");
     }
-    // The folder of a local checkpoint, made absolute so that `.` still has a name.
-    let local_dir = match config {
-        Some(c) if c.is_dir() => Some(std::fs::canonicalize(c)?),
-        Some(c) if c.is_file() => std::fs::canonicalize(c)?.parent().map(|d| d.to_path_buf()),
+    // A local checkpoint's config file and folder, made absolute so that `.` still has a name.
+    let local = match config {
+        Some(c) if c.is_dir() => {
+            let dir = std::fs::canonicalize(c)?;
+            Some((dir.join("config.json"), dir))
+        }
+        Some(c) if c.is_file() => {
+            let file = std::fs::canonicalize(c)?;
+            let dir = file.parent().context("a config file has a parent folder")?.to_path_buf();
+            Some((file, dir))
+        }
         _ => None,
     };
-    let mut m = match (config, &local_dir) {
-        (_, Some(dir)) => LoadedModel::load_from_dir(dir)?,
+    let local_dir = local.as_ref().map(|(_, dir)| dir);
+    let mut m = match (config, &local) {
+        (_, Some((file, dir))) => LoadedModel::load_from_dir(dir, file)?,
         (Some(repo_id), None) => {
             let repo_id = repo_id.to_str().context("invalid repo ID path")?;
             LoadedModel::load_from_hf(repo_id).await?
