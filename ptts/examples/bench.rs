@@ -215,7 +215,8 @@ impl Bench<'_> {
         let t_load = Instant::now();
         let tokenizer = Tok::open(&tokenizer_path)?;
         let vb = model_helpers::load_weights::<Q>(&args.model, &dev)?;
-        let model: TTSModel<Q> = TTSModel::load(&vb, Box::new(tokenizer), &cfg)?;
+        let model: TTSModel<Q> =
+            TTSModel::load(&vb, Box::new(tokenizer), &cfg, &Default::default())?;
         vb.check_all_used_with_ignore(model_helpers::is_unused_by_tts_model)?;
         let voice_emb = model_helpers::load_voice_emb(
             &args.voice,

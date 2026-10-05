@@ -1052,6 +1052,7 @@ pub struct SynthBuilder {
     max_tokens_per_chunk: usize,
     voices: Vec<(String, PathBuf)>,
     normalize: Normalize,
+    conditions: HashMap<String, String>,
 }
 
 impl SynthBuilder {
@@ -1102,6 +1103,7 @@ impl SynthBuilder {
             voice: None,
             max_tokens_per_chunk: MAX_TOKENS_PER_CHUNK,
             voices: vec![],
+            conditions: HashMap::new(),
         }
     }
 
@@ -1144,6 +1146,11 @@ impl SynthBuilder {
     /// disables it.
     pub fn cfg_coef(mut self, cfg_coef: f32) -> Self {
         self.cfg_coef = Some(cfg_coef);
+        self
+    }
+
+    pub fn condition(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.conditions.insert(name.into(), value.into());
         self
     }
 
@@ -1270,7 +1277,7 @@ impl SynthBuilder {
         let tokenizer = self.take_tokenizer()?;
 
         let vb = loader::load_weights::<Q>(&self.weights, &device)?;
-        let model = TTSModel::<Q>::load(&vb, tokenizer, &config)?;
+        let model = TTSModel::<Q>::load(&vb, tokenizer, &config, &self.conditions)?;
         let model = match self.eos_threshold {
             Some(threshold) => model.with_eos_threshold(threshold),
             None => model,

@@ -22,6 +22,7 @@ use ptts::synth::{DeviceKind, Quant, SpeechOptions, SpeechStream, Synth, SynthBu
 use ptts::tts_model::TTSConfig;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// Voices the published checkpoint ships, used to name the files to fetch.
@@ -287,7 +288,7 @@ struct Tts {
 
 #[pymethods]
 impl Tts {
-    /// `TTS(config=None, device=None, quant=None, voice=None, temperature=0.3, seed=..., cfg_coef=None, eos_threshold=None, *, lang, rewrites=None)`
+    /// `TTS(config=None, device=None, quant=None, voice=None, temperature=0.3, seed=..., cfg_coef=None, eos_threshold=None, *, lang, rewrites=None, conditions=None)`
     ///
     /// `lang` is required and keyword-only: the language text is normalized as
     /// before it is tokenized, one of `"en"`, `"fr"`, `"de"`, `"es"` or
@@ -312,6 +313,7 @@ impl Tts {
         *,
         lang,
         rewrites = None,
+        conditions = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -326,7 +328,13 @@ impl Tts {
         eos_threshold: Option<f32>,
         lang: Option<&str>,
         rewrites: Option<&str>,
+        conditions: Option<HashMap<String, Bound<'_, PyAny>>>,
     ) -> PyResult<Self> {
+        let conditions = conditions
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, value)| Ok((name, value.str()?.to_string())))
+            .collect::<PyResult<Vec<_>>>()?;
         // `None` opts out as well as `"none"`: `lang` has to be passed, but a
         // caller forwarding a config value should not have to special-case the
         // absent one.
@@ -376,6 +384,9 @@ impl Tts {
             }
             if let Some(eos_threshold) = eos_threshold {
                 builder = builder.eos_threshold(eos_threshold);
+            }
+            for (name, value) in conditions {
+                builder = builder.condition(name, value);
             }
             let mut synth = builder.build().py()?;
             // Registered after the build, not through it: the builder

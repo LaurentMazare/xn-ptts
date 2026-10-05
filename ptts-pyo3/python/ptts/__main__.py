@@ -47,6 +47,13 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("-q", "--quant", help=f"weight format: {', '.join(available_quants())}")
     p.add_argument("-t", "--temperature", type=float, help="sampling temperature")
     p.add_argument("-s", "--seed", type=int, help="sampling seed, for a reproducible run")
+    p.add_argument(
+        "-c",
+        "--condition",
+        action="append",
+        metavar="NAME=VALUE",
+        help="set one of the checkpoint's conditioners, e.g. padding_bonus=0.5; repeatable",
+    )
     p.add_argument("--threads", type=int, help="CPU threads for tensor ops")
     p.add_argument("--list-voices", action="store_true", help="list the checkpoint's voices, then exit")
     p.add_argument("--build-info", action="store_true", help="print the build configuration, then exit")
@@ -83,6 +90,14 @@ def main(argv: list[str] | None = None) -> int:
         value = getattr(args, {"config": "model"}.get(name, name))
         if value is not None:
             kwargs[name] = value
+    if args.condition:
+        conditions = {}
+        for condition in args.condition:
+            name, sep, value = condition.partition("=")
+            if not sep:
+                parser.error(f"--condition takes NAME=VALUE, got {condition!r}")
+            conditions[name] = value
+        kwargs["conditions"] = conditions
     try:
         tts = TTS(**kwargs)  # type: ignore[arg-type]
         if args.list_voices:

@@ -1,6 +1,146 @@
 use crate::Tokenizer;
+use crate::tts_model::TTSConfig;
+use std::collections::HashMap;
 use xn::nn::{Linear, var_builder::Path};
 use xn::{Backend, Result, Tensor, WithDTypeF};
+
+fn default_max_period() -> f32 {
+    10000.0
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ConditionerConfig {
+    Lut { name: String, lut: LutConditionerConfig },
+    Continuous { name: String, continuous: ContinuousConditionerConfig },
+}
+
+impl ConditionerConfig {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Lut { name, .. } | Self::Continuous { name, .. } => name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct LutConditionerConfig {
+    pub n_bins: usize,
+    pub dim: usize,
+    pub tokenizer: String,
+    #[serde(default)]
+    pub possible_values: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ContinuousConditionerConfig {
+    pub scale_factor: f32,
+    pub dim: usize,
+    #[serde(default = "default_max_period")]
+    pub max_period: f32,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct FuserConfig {
+    #[serde(default)]
+    pub sum: Vec<String>,
+}
+
+fn default_condition(name: &str) -> Option<&'static str> {
+    match name {
+        "num_speakers" => Some("1"),
+        _ => None,
+    }
+}
+
+pub fn load_summed_conditions<T: WithDTypeF, B: Backend>(
+    vb: &Path<B>,
+    config: &TTSConfig,
+    values: &HashMap<String, String>,
+) -> Result<Option<Tensor<T, B>>> {
+    let conditioners = &config.conditioners;
+    let output_dim = config.flow_lm.d_model;
+    if let Some(name) = values.keys().find(|k| !conditioners.iter().any(|c| c.name() == *k)) {
+        xn::bail!("no conditioner named {name:?} in this checkpoint")
+    }
+    let mut sum: Option<Tensor<T, B>> = None;
+    for cfg in conditioners {
+        let name = cfg.name();
+        if let Some(fuser) = &config.fuser
+            && !fuser.sum.iter().any(|s| s == name)
+        {
+            xn::bail!("conditioner {name:?} is not in the fuser's sum, the only fusion supported")
+        }
+        let Some(value) = values.get(name).map(String::as_str).or_else(|| default_condition(name))
+        else {
+            xn::bail!("conditioner {name:?} has no default, a value has to be given for it")
+        };
+        let vb = vb.pp(name);
+        let cond = match cfg {
+            ConditionerConfig::Lut { lut, .. } => load_lut_condition(&vb, lut, value, output_dim)?,
+            ConditionerConfig::Continuous { continuous, .. } => {
+                load_continuous_condition(&vb, continuous, value, output_dim)?
+            }
+        };
+        sum = Some(match sum {
+            Some(s) => s.add(&cond)?,
+            None => cond,
+        });
+    }
+    Ok(sum)
+}
+
+fn load_lut_condition<T: WithDTypeF, B: Backend>(
+    vb: &Path<B>,
+    cfg: &LutConditionerConfig,
+    value: &str,
+    output_dim: usize,
+) -> Result<Tensor<T, B>> {
+    if cfg.tokenizer != "noop" {
+        xn::bail!("unsupported tokenizer {:?} for a lut conditioner", cfg.tokenizer)
+    }
+    let Some(possible) = cfg.possible_values.as_ref() else {
+        xn::bail!("a lut conditioner without possible_values is not supported")
+    };
+    let Some(id) = possible.iter().position(|v| v == value) else {
+        xn::bail!("{value:?} is not one of the conditioner's values {possible:?}")
+    };
+    let lut = LUTConditioner::load(vb, cfg.n_bins, None, cfg.dim, output_dim)?;
+    lut.embed_tokens(&[id as u32])
+}
+
+fn load_continuous_condition<T: WithDTypeF, B: Backend>(
+    vb: &Path<B>,
+    cfg: &ContinuousConditionerConfig,
+    value: &str,
+    output_dim: usize,
+) -> Result<Tensor<T, B>> {
+    if vb.contains("learnt_padding") {
+        vb.tensor::<T>("learnt_padding", (1, 1, output_dim))?;
+    }
+    let value: f32 =
+        value.parse().map_err(|_| xn::Error::msg(format!("{value:?} is not a number")))?;
+    let emb = sin_embedding(cfg.scale_factor * value, cfg.dim, cfg.max_period)?;
+    let emb =
+        Tensor::from_vec(emb.into_iter().map(T::from_f32).collect(), (1, 1, cfg.dim), vb.device())?;
+    if vb.contains("output_proj.weight") {
+        Linear::load(vb.pp("output_proj"), cfg.dim, output_dim)?.forward(&emb)
+    } else if cfg.dim == output_dim {
+        Ok(emb)
+    } else {
+        xn::bail!("conditioner of dim {} has no output_proj to {output_dim}", cfg.dim)
+    }
+}
+
+fn sin_embedding(position: f32, dim: usize, max_period: f32) -> Result<Vec<f32>> {
+    if dim < 4 || !dim.is_multiple_of(2) {
+        xn::bail!("a sinusoidal embedding needs an even dim of at least 4, got {dim}")
+    }
+    let half = dim / 2;
+    let phases: Vec<f32> =
+        (0..half).map(|i| position / max_period.powf(i as f32 / (half - 1) as f32)).collect();
+    Ok(phases.iter().map(|p| p.cos()).chain(phases.iter().map(|p| p.sin())).collect())
+}
 
 pub struct LUTConditioner<T: WithDTypeF, B: Backend> {
     pub tokenizer: Option<Box<dyn Tokenizer + Send + Sync>>,
@@ -101,6 +241,33 @@ mod tests {
             dim,
             output_dim: dim,
         }
+    }
+
+    #[test]
+    fn sin_embedding_matches_the_reference_formula() {
+        let emb = sin_embedding(2.0, 4, 10000.0).unwrap();
+        let expected = [2f32.cos(), 0.0002f32.cos(), 2f32.sin(), 0.0002f32.sin()];
+        for (a, b) in emb.iter().zip(expected) {
+            assert!((a - b).abs() < 1e-6, "{emb:?}");
+        }
+    }
+
+    #[test]
+    fn conditioner_configs_parse() {
+        let json = serde_json::json!([
+            {"type": "lut", "name": "num_speakers",
+             "lut": {"n_bins": 31, "dim": 16, "tokenizer": "noop", "possible_values": ["0", "1"]}},
+            {"type": "continuous", "name": "padding_bonus",
+             "continuous": {"scale_factor": 100.0, "dim": 128, "max_period": 10000.0}},
+        ]);
+        let cfgs: Vec<ConditionerConfig> = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            cfgs.iter().map(|c| c.name()).collect::<Vec<_>>(),
+            ["num_speakers", "padding_bonus"]
+        );
+        assert!(
+            matches!(&cfgs[1], ConditionerConfig::Continuous { continuous, .. } if continuous.dim == 128)
+        );
     }
 
     #[test]
