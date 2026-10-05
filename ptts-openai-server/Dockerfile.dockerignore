@@ -1,0 +1,22 @@
+# The build context is the repository root. Only the workspace's crates go in: not
+# `.cargo/config.toml`, which pins `target-cpu=native`, and not local weights or build output.
+*
+!Cargo.toml
+!Cargo.lock
+!ptts
+!ptts-coreml
+!ptts-coreml-ffi
+!ptts-openai-server
+!ptts-pyo3
+!ptts-wasm
+!ptts-ws-server
+**/target
+**/*.safetensors
+**/*.gguf
+**/*.wav
+ptts-pyo3/python
+ptts-pyo3/tests
+ptts-wasm/js
+ptts-wasm/pkg
+ptts-wasm/site
+ptts-wasm/www

@@ -17,44 +17,46 @@ use tracing_subscriber::prelude::*;
 #[command(name = "ptts-openai-server")]
 #[command(about = "OpenAI-compatible speech server for Phonon")]
 struct Args {
-    #[arg(long, default_value = "0.0.0.0:8880")]
+    #[arg(long, default_value = "0.0.0.0:8880", env = "PTTS_ADDR")]
     addr: String,
 
-    #[arg(long)]
+    /// The checkpoint: a local folder, a `config.json` in one, or a Hugging Face repo id.
+    /// Kyutai's Pocket TTS checkpoint from the Hub when not given.
+    #[arg(long, env = "PTTS_CONFIG")]
     config: Option<std::path::PathBuf>,
 
     /// Optional directory of additional voice safetensors to load. Each
     /// `*.safetensors` file is loaded as a voice keyed by its file stem; load
     /// errors are logged and skipped rather than fatal.
-    #[arg(long)]
+    #[arg(long, env = "PTTS_VOICE_DIR")]
     voice_dir: Option<std::path::PathBuf>,
 
-    #[arg(long, default_value_t = 0.3)]
+    #[arg(long, default_value_t = 0.3, env = "PTTS_TEMPERATURE")]
     temperature: f32,
 
-    #[arg(long, default_value_t = 4242424242424242)]
+    #[arg(long, default_value_t = 4242424242424242, env = "PTTS_SEED")]
     seed: u64,
 
     /// Device to run on: auto, cpu, cuda, vulkan or metal. `auto` picks the GPU backend this
     /// build was compiled with, if any, and the CPU otherwise.
-    #[arg(long, default_value = "auto")]
+    #[arg(long, default_value = "auto", env = "PTTS_DEVICE")]
     device: String,
 
     /// Quantization for the flow_lm transformer linear weights.
     /// One of: q8|q8_0, q8_1, q8k, q6k, q5|q5_0, q5_1, q5k, q4|q4_0, q4_1, q4k.
     /// CPU only.
-    #[arg(long)]
+    #[arg(long, env = "PTTS_QUANT")]
     quant: Option<String>,
 
     /// Language incoming text is normalized as before tokenizing: `en`, `fr`, `de`, `es` or
     /// `pt`. Required: the spoken forms differ per language, so there is nothing safe to guess.
     /// `none` serves the text as written, which the model reads less well.
-    #[arg(long)]
+    #[arg(long, env = "PTTS_LANG")]
     lang: String,
 
     /// Which word rewrites run on the normalized text: `all`, `none`, or a comma-separated list
     /// of rule names, of which there is one today, `numbers`. Has no effect with `--lang none`.
-    #[arg(long, default_value = "all")]
+    #[arg(long, default_value = "all", env = "PTTS_REWRITES")]
     rewrites: String,
 }
 

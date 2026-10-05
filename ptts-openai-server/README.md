@@ -2,6 +2,22 @@
 
 A speech server for Phonon compatible with OpenAI's text-to-speech API: `POST /v1/audio/speech`, so any client with an "OpenAI TTS" setting and a custom base URL works unchanged. For streaming text in and audio out over one WebSocket connection, use [`ptts-ws-server`](../ptts-ws-server) instead.
 
+## Docker
+
+```bash
+docker run -p 8880:8880 ghcr.io/gradium-ai/ptts-openai-server
+```
+
+That is all: the image has Kyutai's Pocket TTS checkpoint (CC-BY-4.0) baked in, with its eight voices (`alba`, `azelma`, `cosette`, `eponine`, `fantine`, `javert`, `jean`, `marius`; `default` is `alba`), and runs it at q8 on the CPU. It is built for `linux/amd64` (an x86-64 CPU with AVX2, from about 2013 on) and `linux/arm64`.
+
+Every flag below has an environment variable, so the image is configured with `-e`: `-e PTTS_LANG=fr`, `-e PTTS_QUANT=f32`, or your own voices with `-v ./voices:/voices:ro -e PTTS_VOICE_DIR=/voices`. A checkpoint of your own goes the same way, mounted and named by `PTTS_CONFIG`. [compose.yaml](compose.yaml) does the same with Docker Compose:
+
+```bash
+docker compose -f ptts-openai-server/compose.yaml up
+```
+
+To build the image yourself, from the repository root: `docker build -f ptts-openai-server/Dockerfile -t ptts-openai-server .`
+
 ## Build and run
 
 It needs two system libraries: libopus, and LAME 3.99 or later for MP3.
@@ -10,8 +26,10 @@ It needs two system libraries: libopus, and LAME 3.99 or later for MP3.
 sudo apt-get install libopus-dev libmp3lame-dev pkg-config   # Debian, Ubuntu
 brew install opus lame pkg-config                            # macOS
 
-cargo run --release -p ptts-openai-server -- --config "$MODEL_DIR/config.json" --quant q8 --lang en
+cargo run --release -p ptts-openai-server -- --config "$MODEL_DIR" --quant q8 --lang en
 ```
+
+`--config` names a checkpoint folder (or a `config.json` in one) or a Hugging Face repo id. Without it, Kyutai's checkpoint is downloaded from the Hub.
 
 It listens on `0.0.0.0:8880` (`--addr` to change it). There is no authentication and no limit on concurrent requests, and every request can ask for up to 4096 characters of speech, so anyone who can reach the port can keep the CPU busy. On a machine others can reach, bind to `--addr 127.0.0.1:8880` or put it behind a proxy that checks access. `--lang` is required: it picks how numbers and symbols are spelled out. `--device auto` uses the GPU backend the binary was built with, if any; quantized weights such as `--quant q8` run on the CPU only. `--help` lists the rest.
 
