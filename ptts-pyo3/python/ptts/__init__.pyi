@@ -35,9 +35,9 @@ class TTS:
     spoken forms of `@`, `+` and `=` differ per language, so there is nothing safe to default
     to. One of `"en"`, `"fr"`, `"de"`, `"es"`, `"pt"`, or `"none"`/`None` to skip normalizing.
 
-    `rewrites` picks which word rewrites run on the normalized text: `"all"` (what `None`
-    means), `"none"`, or a comma-separated list of rule names, of which there is one today,
-    `"numbers"`.
+    `rewrites` picks which word rewrites run on the normalized text: `"default"` (what `None`
+    means: numbers, currency, dashed-digits, emails, urls), `"all"` (those and phones, times,
+    dates), `"none"`, or a comma-separated list of rule names.
     """
 
     def __init__(

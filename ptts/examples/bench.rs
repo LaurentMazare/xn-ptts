@@ -77,9 +77,10 @@ struct Args {
     #[arg(long)]
     lang: String,
 
-    /// Which word rewrites run on the normalized text: `all`, `none`, or a comma-separated list
-    /// of rule names, of which there is one today, `numbers`. Has no effect with `--lang none`.
-    #[arg(long, default_value = "all")]
+    /// Which word rewrites run on the normalized text: `default` (numbers, currency,
+    /// dashed-digits, emails, urls), `all` (those and phones, times, dates), `none`, or a
+    /// comma-separated list of rule names. Has no effect with `--lang none`.
+    #[arg(long, default_value = "default")]
     rewrites: String,
 }
 

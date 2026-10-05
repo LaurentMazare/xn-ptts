@@ -172,6 +172,8 @@ Text normalization (`ptts/src/preprocess.rs`) is mandatory to choose and has no 
 
 `Normalize::apply` is the one implementation, and it has to run before `prepare_text_prompt`, whose leading-space padding of short text it would otherwise collapse. `Synth::normalization` / `Session::normalization` hand it to callers that tokenize by hand (`ptts-ws-server`, `ptts-wasm`) rather than going through `say`/`stream`.
 
+After the character pass, each word goes through the rewrite rules (`ptts/src/preprocess/rewrite.rs`, one module per rule under `rewrite/`): `numbers`, `currency`, `dashed-digits`, `emails`, `urls`, and the opt-in `phones`, `times` and `dates`. The first rule in the `RULES` table that claims a word wins. A row's `default` flag decides whether `Rules::DEFAULT`, which `Normalize::for_lang` and every frontend's `--rewrites default` use, runs it. The readings deliberately match the serving stack's word for word, quirks included (`$1` reads "1 dollars"), so change one only on purpose. The character pass keeps `@` and `+` in the text because the email and phone rules read them, and spells them out afterwards in the words no rule claimed.
+
 Quantization story: only `flow_lm.transformer.layers.*.{linear1,linear2,self_attn.in_proj,self_attn.out_proj}.weight` get GGML-quantized (see `examples/quantize.rs`); Mimi stays in `Unquantized<f32>`. The Mimi quantizer codebook tensors (`mimi.quantizer.*` except `output_proj`) are excluded from output GGUFs since the runtime uses `dummy_quantizer.rs`.
 
 ## Conventions to be aware of

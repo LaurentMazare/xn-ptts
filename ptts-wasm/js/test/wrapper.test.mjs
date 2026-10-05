@@ -118,20 +118,20 @@ test('rewrites is checked before anything is downloaded, then handed to the work
   await PhononTTS.load({ lang: 'en', rewrites: 'none', model: MODEL, workerUrl: 'worker.js' });
   assert.equal(FakeWorker.last.init.rewrites, 'none');
 
-  // Left out, it stays undefined all the way to `Model::new`, whose own default is every rule.
+  // Left out, it stays undefined all the way to `Model::new`, whose own default is `default`.
   await load();
   assert.equal(FakeWorker.last.init.rewrites, undefined);
 });
 
 test('the rewrites check accepts exactly what the Rust Rules parser accepts', async () => {
   // `Rules`'s `FromStr` trims and lowercases, and takes `off` as a synonym for `none`.
-  for (const value of ['off', 'ALL', ' none ', 'Numbers', 'numbers']) {
+  for (const value of ['off', 'ALL', ' none ', ' Default', 'Numbers', 'numbers', 'emails, URLS', 'dashed-digits,dates']) {
     await PhononTTS.load({ lang: 'en', rewrites: value, model: MODEL, workerUrl: 'worker.js' });
     assert.equal(FakeWorker.last.init.rewrites, value, 'passed through as written');
   }
-  // `all` and `none` are whole-string values in Rust, so a list containing one is an error
+  // `default`, `all` and `none` are whole-string values in Rust, so a list containing one is an error
   // there. Catching it here is the whole point: otherwise it surfaces after the download.
-  for (const value of ['all,numbers', 'none,numbers', '', 'numbers,colours']) {
+  for (const value of ['all,numbers', 'default,emails', 'none,numbers', '', 'numbers,colours']) {
     await assert.rejects(
       PhononTTS.load({ lang: 'en', rewrites: value, model: MODEL }),
       /unknown rewrite rule/,

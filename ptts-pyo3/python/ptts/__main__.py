@@ -33,8 +33,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "-r",
         "--rewrites",
-        help="word rewrites to run: all, none, or a comma-separated list such as numbers"
-        " (default: all)",
+        help="word rewrites to run: default, all, none, or a comma-separated list such as"
+        " numbers,emails (default: default, every rule but phones, times and dates)",
     )
     p.add_argument(
         "-m",

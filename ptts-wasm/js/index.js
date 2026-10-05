@@ -12,9 +12,9 @@ export { encodeWav, concatPcm } from './wav.js';
 
 const LANGS = ['en', 'fr', 'de', 'es', 'pt', 'none'];
 /** Rewrite rules the Rust side knows, beyond the whole-string values below. */
-const RULES = ['numbers'];
+const RULES = ['numbers', 'currency', 'dashed-digits', 'emails', 'urls', 'phones', 'times', 'dates'];
 /** Values `Rules`'s `FromStr` accepts only as the entire string, never inside a list. */
-const WHOLE_RULES = ['all', 'none', 'off'];
+const WHOLE_RULES = ['default', 'all', 'none', 'off'];
 
 /** The seed Rust and Python use when none is given, so the same request gives the same audio. */
 const DEFAULT_SEED = 4242424242424242n;
