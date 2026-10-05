@@ -1287,6 +1287,7 @@ impl SynthBuilder {
         let probe = format!("{}.encoder.model.0.conv.weight", config.speaker_mimi_prefix());
         let mimi_enc =
             if vb.contains(&probe) { Some(MimiEnc::<Q>::load(&vb, &config)?) } else { None };
+        let baked_voices = loader::load_config_voices(&vb, &config, model.speaker_proj())?;
         vb.check_all_used_with_ignore(loader::is_unused_by_tts_model)?;
 
         let mut synth = SynthOf {
@@ -1306,6 +1307,9 @@ impl SynthBuilder {
             normalize: self.normalize,
         };
 
+        for (name, emb) in baked_voices {
+            synth.voices.insert(name, Voice { emb: emb.to::<Q::T>()?, null_emb: None });
+        }
         for (name, path) in self.voices.iter() {
             synth.add_voice_file(name, path)?;
         }

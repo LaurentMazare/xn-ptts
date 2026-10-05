@@ -39,36 +39,34 @@ pub struct SpeakerMimiConfig {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct VoiceConfig {
+    pub name: String,
+    #[serde(default)]
+    pub conditions: HashMap<String, String>,
+    pub prefix: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TTSConfig {
     pub flow_lm: FlowLMConfig,
     pub mimi: MimiConfig,
     pub lsd_decode_steps: usize,
     pub eos_threshold: f32,
     pub model_id: Option<ModelId>,
-    /// Minimum allowed duration in seconds for an audio prompt passed to
-    /// `get_state_for_audio`. If zero, an empty audio prompt is allowed, in
-    /// which case the conditioned state skips the `prompt_audio` call entirely.
     #[serde(default = "default_audio_prompt_min_duration")]
     pub audio_prompt_min_duration: f32,
-    /// Maximum allowed duration in seconds for an audio prompt. Frontends that
-    /// trim long audio (e.g. the `ptts` example) should trim to this
-    /// value rather than a hardcoded 10s.
     #[serde(default = "default_audio_prompt_max_duration")]
     pub audio_prompt_max_duration: f32,
-    /// If true, the CFG null state is built without any audio prompting (the
-    /// `prompt_audio` step is skipped on the null state). If false, the null
-    /// state is prompted with the encoding of a zero waveform matching the
-    /// real audio prompt's length, which preserves the historical behavior.
     #[serde(default)]
     pub cfg_null_audio_empty: bool,
-    /// Optional, when set the speaker encoder loads from this prefix using
-    /// this dedicated `MimiConfig` rather than the main `mimi` codec.
     #[serde(default)]
     pub speaker_mimi: Option<SpeakerMimiConfig>,
     #[serde(default)]
     pub conditioners: Vec<ConditionerConfig>,
     #[serde(default)]
     pub fuser: Option<FuserConfig>,
+    #[serde(default)]
+    pub voices: Vec<VoiceConfig>,
 }
 
 impl TTSConfig {
@@ -119,6 +117,7 @@ impl TTSConfig {
             speaker_mimi: None,
             conditioners: vec![],
             fuser: None,
+            voices: vec![],
         }
     }
 
