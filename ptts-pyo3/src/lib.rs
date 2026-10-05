@@ -298,8 +298,9 @@ impl Tts {
     /// as written, for callers that normalize it themselves.
     ///
     /// `rewrites` picks which word rewrites run on the normalized text:
-    /// `"all"` (what `None` means), `"none"`, or a comma-separated list of rule
-    /// names, of which there is one today, `"numbers"`.
+    /// `"default"` (what `None` means: numbers, currency, dashed-digits,
+    /// emails, urls), `"all"` (those and phones, times, dates), `"none"`, or a
+    /// comma-separated list of rule names.
     #[new]
     #[pyo3(signature = (
         config = None,
@@ -343,7 +344,7 @@ impl Tts {
             Some(lang) => lang.parse::<Normalize>().py()?,
         };
         let rules = match rewrites {
-            None => Rules::ALL,
+            None => Rules::DEFAULT,
             Some(rewrites) => rewrites.parse::<Rules>().py()?,
         };
         let normalize = normalize.with_rules(rules);

@@ -150,7 +150,7 @@ impl Model {
         let quant = Quant::parse(quant)?;
         let rules = match rewrites {
             Some(rewrites) => rewrites.parse::<Rules>()?,
-            None => Rules::ALL,
+            None => Rules::DEFAULT,
         };
         let normalize = lang.parse::<Normalize>()?.with_rules(rules);
         let cfg = match config_json {
@@ -393,8 +393,9 @@ impl Model {
     /// and `=` differ per language, so there is nothing safe to default to.
     ///
     /// `rewrites` is optional and picks which word rewrites run on the
-    /// normalized text: `"all"` (the default), `"none"`, or a comma-separated
-    /// list of rule names, of which there is one today, `"numbers"`.
+    /// normalized text: `"default"` (numbers, currency, dashed-digits, emails,
+    /// urls), `"all"` (those and phones, times, dates), `"none"`, or a
+    /// comma-separated list of rule names.
     #[wasm_bindgen(constructor)]
     pub fn new(
         model_weights: &[u8],

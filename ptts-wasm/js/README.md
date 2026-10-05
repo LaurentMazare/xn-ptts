@@ -66,7 +66,7 @@ stopButton.onclick = () => controller.abort();
 |---|---|---|
 | `model` | **required** | where the checkpoint's files are, see [The model](#the-model) |
 | `lang` | **required** | `'en'`, `'fr'`, `'de'`, `'es'`, `'pt'`, or `'none'`. Numbers, dates and symbols are read out the way a speaker of that language would say them. The spoken forms differ per language, so there is no default. `'none'` passes text through as written. |
-| `rewrites` | `'all'` | which word rewrites run on the normalized text: `'all'`, `'none'`, or a comma-separated list of rule names, of which there is one today, `'numbers'`. Inert when `lang` is `'none'`. |
+| `rewrites` | `'default'` | which word rewrites run on the normalized text: `'default'` (numbers, currency, dashed-digits, emails, urls), `'all'` (those and phones, times, dates), `'none'`, or a comma-separated list of rule names. Inert when `lang` is `'none'`. |
 | `quant` | `'q8'` | `'q8'` (smaller, faster) or `'f32'` |
 | `voices` | the default voice | voices to fetch during `load`. Others are fetched the first time they are used. |
 | `cache` | `true` | keep downloads in the Cache API |

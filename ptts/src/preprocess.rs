@@ -15,28 +15,74 @@ mod rewrite;
 
 pub use rewrite::{Rules, rewrite_word};
 
-/// Spoken forms of the punctuation characters that are read aloud rather than dropped.
+/// Spoken forms of the punctuation characters that are read aloud rather than dropped: `@`, `+`
+/// and `=` anywhere in the text, and the separators inside emails, URLs and codes.
 #[derive(Debug, Clone)]
 pub struct SpecialChars {
     pub at: &'static str,
     pub plus: &'static str,
     pub equals: &'static str,
+    pub colon: &'static str,
+    pub slash: &'static str,
+    pub dash: &'static str,
+    pub dot: &'static str,
+    pub underscore: &'static str,
 }
 
-pub const SPECIAL_CHARS_EN: SpecialChars =
-    SpecialChars { at: "at", plus: "plus", equals: "equals" };
+pub const SPECIAL_CHARS_EN: SpecialChars = SpecialChars {
+    at: "at",
+    plus: "plus",
+    equals: "equals",
+    colon: "colon",
+    slash: "slash",
+    dash: "dash",
+    dot: "dot",
+    underscore: "underscore",
+};
 
-pub const SPECIAL_CHARS_FR: SpecialChars =
-    SpecialChars { at: "arobaze", plus: "plus", equals: "égal" };
+pub const SPECIAL_CHARS_FR: SpecialChars = SpecialChars {
+    at: "arobaze",
+    plus: "plus",
+    equals: "égal",
+    colon: "deux-points",
+    slash: "slash",
+    dash: "tiret",
+    dot: "point",
+    underscore: "underscore",
+};
 
-pub const SPECIAL_CHARS_DE: SpecialChars =
-    SpecialChars { at: "ät", plus: "Plus", equals: "Gleich" };
+pub const SPECIAL_CHARS_DE: SpecialChars = SpecialChars {
+    at: "ät",
+    plus: "Plus",
+    equals: "Gleich",
+    colon: "Doppelpunkt",
+    slash: "Slash",
+    dash: "Bindestrich",
+    dot: "Punkt",
+    underscore: "Unterstrich",
+};
 
-pub const SPECIAL_CHARS_ES: SpecialChars =
-    SpecialChars { at: "arroba", plus: "mas", equals: "igual" };
+pub const SPECIAL_CHARS_ES: SpecialChars = SpecialChars {
+    at: "arroba",
+    plus: "mas",
+    equals: "igual",
+    colon: "dos-puntos",
+    slash: "slash",
+    dash: "guion",
+    dot: "punto",
+    underscore: "guion bajo",
+};
 
-pub const SPECIAL_CHARS_PT: SpecialChars =
-    SpecialChars { at: "arroba", plus: "mais", equals: "igual" };
+pub const SPECIAL_CHARS_PT: SpecialChars = SpecialChars {
+    at: "arroba",
+    plus: "mais",
+    equals: "igual",
+    colon: "dois-pontos",
+    slash: "slash",
+    dash: "hifen",
+    dot: "ponto",
+    underscore: "underscore",
+};
 
 /// Language driving the spoken forms used by [`normalize_text`].
 ///
@@ -117,9 +163,9 @@ impl Normalize {
     /// Hand text to the tokenizer as written.
     pub const OFF: Self = Self { lang: None, rules: Rules::NONE };
 
-    /// Normalize as `lang`, with every rewrite rule.
+    /// Normalize as `lang`, with the default rewrite rules, [`Rules::DEFAULT`].
     pub const fn for_lang(lang: Lang) -> Self {
-        Self { lang: Some(lang), rules: Rules::ALL }
+        Self { lang: Some(lang), rules: Rules::DEFAULT }
     }
 
     /// This policy with `rules` instead. A no-op on [`Self::OFF`], which rewrites nothing.
@@ -155,7 +201,7 @@ impl Normalize {
     }
 }
 
-/// Normalizes as `lang`, with every rewrite rule: what [`Normalize::for_lang`] makes.
+/// Normalizes as `lang`, with the default rewrite rules: what [`Normalize::for_lang`] makes.
 impl From<Lang> for Normalize {
     fn from(lang: Lang) -> Self {
         Self::for_lang(lang)
@@ -189,10 +235,11 @@ impl StringAppender {
 
     fn push(&mut self, c: char) {
         if c == '.' || c == ',' {
-            // Quotes are kept: dropping a closing one would leave the opening one unbalanced.
-            while self.buffer.last().is_some_and(|&l| {
-                l.is_whitespace() || (l.is_ascii_punctuation() && l != '"' && l != '\'')
-            }) {
+            while self
+                .buffer
+                .last()
+                .is_some_and(|&l| l.is_whitespace() || (l.is_ascii_punctuation() && !self.keeps(l)))
+            {
                 self.buffer.pop();
             }
         }
@@ -203,6 +250,25 @@ impl StringAppender {
         for c in s.chars() {
             self.push(c);
         }
+    }
+
+    /// Whether `last`, the last character pushed, stays before a `.` or `,`. Quotes do: dropping
+    /// a closing one would leave the opening one unbalanced. So do the symbols the rewrite rules
+    /// read: `@` and `+`, which are spelled out after the rules, and the `$` of an amount, as in
+    /// "it costs 5$.".
+    fn keeps(&self, last: char) -> bool {
+        match last {
+            '"' | '\'' | '@' | '+' => true,
+            '$' => self.buffer.len() >= 2 && self.buffer[self.buffer.len() - 2].is_ascii_digit(),
+            _ => false,
+        }
+    }
+
+    /// `word` as a word of its own, for a symbol read aloud.
+    fn push_spoken(&mut self, word: &str) {
+        self.push_whitespace();
+        self.push_str(word);
+        self.push_whitespace();
     }
 
     fn into_string(mut self) -> String {
@@ -295,6 +361,9 @@ fn is_single_quote(c: char) -> bool {
 /// equivalents; `@`, `+` and `=` are spelled out in `lang`; `;`, parentheses and a `:` with
 /// whitespace on either side become commas, which is how the model is asked to pause. A `:`
 /// between two non-space characters, as in `10:30`, is kept.
+///
+/// Then each word goes to the `rules`, and `@` and `+` are spelled out only in the words no rule
+/// claimed, since the email and phone rules read them.
 pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
     let mut res = StringAppender::new();
     let mut chars = input.chars().peekable();
@@ -310,21 +379,7 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
                 res.push_whitespace();
             }
             '…' => res.push('.'),
-            '@' => {
-                res.push_whitespace();
-                res.push_str(lang.special_chars().at);
-                res.push_whitespace();
-            }
-            '+' => {
-                res.push_whitespace();
-                res.push_str(lang.special_chars().plus);
-                res.push_whitespace();
-            }
-            '=' => {
-                res.push_whitespace();
-                res.push_str(lang.special_chars().equals);
-                res.push_whitespace();
-            }
+            '=' => res.push_spoken(lang.special_chars().equals),
             ':' if !prev.is_none_or(char::is_whitespace)
                 && !chars.peek().is_none_or(|c| c.is_whitespace()) =>
             {
@@ -346,9 +401,29 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
         prev = Some(c);
     }
     let text = res.into_string();
-    if rules == Rules::NONE {
-        return text;
+    let words = text.split(' ').map(|w| match rewrite_word(w, lang, rules) {
+        Some(rewritten) => rewritten,
+        None => spell_symbols(w, lang, rules),
+    });
+    words.collect::<Vec<_>>().join(" ")
+}
+
+/// Spell out the `@` and `+` of a word no rule claimed, as the character pass spells `=`, and
+/// give the pieces they leave their own turn at the rules: "1500+20" reads "1 thousand 500 plus
+/// 20", as it would had the character pass spelled the `+`.
+fn spell_symbols(word: &str, lang: Lang, rules: Rules) -> String {
+    if !word.contains(['@', '+']) {
+        return word.to_string();
     }
+    let mut res = StringAppender::new();
+    for c in word.chars() {
+        match c {
+            '@' => res.push_spoken(lang.special_chars().at),
+            '+' => res.push_spoken(lang.special_chars().plus),
+            c => res.push(c),
+        }
+    }
+    let text = res.into_string();
     let words = text.split(' ').map(|w| rewrite_word(w, lang, rules).unwrap_or_else(|| w.into()));
     words.collect::<Vec<_>>().join(" ")
 }
@@ -402,17 +477,79 @@ mod tests {
             ),
         ];
         for (input, expected) in cases {
-            assert_eq!(&normalize_text(input, Lang::En, Rules::ALL), expected, "input: {input:?}");
+            assert_eq!(
+                &normalize_text(input, Lang::En, Rules::DEFAULT),
+                expected,
+                "input: {input:?}"
+            );
         }
     }
 
     #[test]
     fn spoken_symbols_follow_the_language() {
-        assert_eq!(normalize_text("a@b", Lang::En, Rules::ALL), "a at b");
-        assert_eq!(normalize_text("a@b", Lang::Fr, Rules::ALL), "a arobaze b");
-        assert_eq!(normalize_text("a@b", Lang::De, Rules::ALL), "a ät b");
-        assert_eq!(normalize_text("1+1=2", Lang::Es, Rules::ALL), "1 mas 1 igual 2");
-        assert_eq!(normalize_text("1+1=2", Lang::Pt, Rules::ALL), "1 mais 1 igual 2");
+        assert_eq!(normalize_text("a@b", Lang::En, Rules::DEFAULT), "a at b");
+        assert_eq!(normalize_text("a@b", Lang::Fr, Rules::DEFAULT), "a arobaze b");
+        assert_eq!(normalize_text("a@b", Lang::De, Rules::DEFAULT), "a ät b");
+        assert_eq!(normalize_text("1+1=2", Lang::Es, Rules::DEFAULT), "1 mas 1 igual 2");
+        assert_eq!(normalize_text("1+1=2", Lang::Pt, Rules::DEFAULT), "1 mais 1 igual 2");
+    }
+
+    /// `@` and `+` reach the rules, which read them in emails and phone numbers, and are
+    /// spelled out as before everywhere else, even with no rules at all.
+    #[test]
+    fn symbols_are_spelled_after_the_rules() {
+        let cases = [
+            ("Write to laurent.mazare@gmail.com!", "Write to laurent dot mazare at gmail dot com!"),
+            ("Mail (laurent+tag@gmail.com)", "Mail, laurent plus tag at gmail dot com,"),
+            ("user@host @home", "user at host at home"),
+            ("a@.", "a at."),
+            ("x @, y", "x at, y"),
+            ("C++.", "C plus plus."),
+            ("1500+20", "1 thousand 500 plus 20"),
+            ("+33612345678", "plus 33 billion 612 million 345 thousand 678"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_text(input, Lang::En, Rules::DEFAULT), expected, "{input:?}");
+        }
+        assert_eq!(normalize_text("foo@bar.com", Lang::En, Rules::NONE), "foo at bar.com");
+        assert_eq!(normalize_text("C++.", Lang::En, Rules::NONE), "C plus plus.");
+        let phones = "phones".parse().unwrap();
+        assert_eq!(normalize_text("+33612345678.", Lang::Fr, phones), "plus 33 6 12 34 56 78.");
+    }
+
+    #[test]
+    fn sentences_are_rewritten() {
+        let cases = [
+            (Lang::En, "It costs $1500 today.", "It costs 1 thousand 500 dollars today."),
+            (Lang::En, "It costs 5$.", "It costs 5 dollars."),
+            (Lang::En, "It costs -$5.", "It costs minus 5 dollars."),
+            // A `$` that is not part of an amount goes before a period, as other symbols do.
+            (Lang::En, "In $.", "In."),
+            (Lang::En, "Only £50 left.", "Only 50 pounds left."),
+            (Lang::Fr, "Ça coûte 500€ aujourd'hui.", "Ça coûte 500 euros aujourd'hui."),
+            (Lang::De, "Es kostet $2500 heute.", "Es kostet 2 Tausend 500 Dollar heute."),
+            (
+                Lang::En,
+                "Call 555-123-4567 before 2024-05-12, it costs 12345678.",
+                "Call 555 123 4 5 6 7 before 2024-05-12, it costs 12 million 345 thousand 678.",
+            ),
+            (Lang::En, "Visit www.kyutai.fr today.", "Visit W-W-W dot kyutai dot F-R today."),
+            (
+                Lang::Fr,
+                "Voir https://www.kyutai.fr/.",
+                "Voir H-T-T-P-S deux-points slash slash W-W-W point kyutai point F-R.",
+            ),
+            // Times and dates are opt-in.
+            (Lang::En, "It's 1:06pm on 20/12/2015.", "It's 1:06pm on 20/12/2015."),
+        ];
+        for (lang, input, expected) in cases {
+            assert_eq!(normalize_text(input, lang, Rules::DEFAULT), expected, "{input:?}");
+        }
+        assert_eq!(
+            normalize_text("It's 1:06pm on 20/12/2015.", Lang::En, Rules::ALL),
+            "It's 1-06 PM on 20-12 2015."
+        );
+        assert_eq!(normalize_text("Um 08:20 Uhr.", Lang::De, Rules::ALL), "Um 8 Uhr 20 Uhr.");
     }
 
     /// The frontends take one flag for the language and for turning
