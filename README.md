@@ -173,6 +173,20 @@ Cross-Origin-Embedder-Policy: require-corp
 
 With them, the page can only load cross-origin files that opt in through CORS, which matters if the model is served from another origin. `tts.threads` says how many threads it got, and `tts.threadsReason` why.
 
+## 7. Run it as a server
+
+`ptts-openai-server` serves OpenAI's text-to-speech API, `POST /v1/audio/speech`, so any client with an "OpenAI TTS" setting and a custom base URL can use it. Its Docker image runs on the CPU, for `linux/amd64` and `linux/arm64`. Mount the model folder into it:
+
+```bash
+docker run -p 8880:8880 -v "$MODEL_DIR:/model:ro" -e PTTS_CONFIG=/model \
+  ghcr.io/gradium-ai/ptts-openai-server
+
+curl http://localhost:8880/v1/audio/speech -H "Content-Type: application/json" \
+  -d '{"input": "Hello world", "voice": "Freya"}' -o hello.mp3
+```
+
+Without the mount, the image speaks with Kyutai's Pocket TTS checkpoint, which it carries. The [server README](ptts-openai-server/README.md) covers running it without Docker, the API, and setup for clients such as Open WebUI and Home Assistant. For streaming text in and audio out over one WebSocket connection, there is `ptts-ws-server`.
+
 ## License
 
 The code in this repository is licensed under either of
