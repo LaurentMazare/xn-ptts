@@ -25,7 +25,7 @@ required check called `CI`:
 |---|---|
 | `fmt` | `cargo fmt --all -- --check` (rustfmt.toml: `use_small_heuristics = "Max"`, edition 2024) |
 | `clippy` | whole workspace `--all-targets -D warnings`, then `ptts` with `hf,audio` |
-| `test` | stable + nightly × Linux/macOS/Windows; default features, then `hf,audio`, then doctests; `metal` and `accelerate` type-checked on the macOS leg |
+| `test` | stable + nightly × Linux/macOS/Windows; default features, then `hf,audio`, then doctests; `metal`, `accelerate` and `kai` type-checked on the macOS leg |
 | `features` | every combination of `hf`/`audio`, plus `vulkan` and `webgpu` |
 | `docs` | `cargo doc` on nightly with `--cfg docsrs` exactly as docs.rs builds it, then again on stable |
 | `wasm` | `ptts-wasm` for `wasm32-unknown-unknown` with the SIMD flags real builds use, with and without `webgpu`; the `phonon-tts` JS wrapper's node tests; and `make build` with binaryen 124 |
@@ -50,8 +50,16 @@ Three things worth knowing before editing it:
 
 Cargo features that gate optional functionality:
 
-- `ptts`: `hf` (Hugging Face `tokenizers`, i.e. `ptts::tok`, required by the `say`, `ptts` and `bench` examples), `audio` (`ptts::audio`, decoding and resampling audio files for voice cloning — pulls in `symphonia` and `rubato`, so it is off by default and out of the wasm build; required by `ptts` and `create_voice`), `cuda`, `accelerate`. The library never downloads anything, so there is no hub feature: `hf-hub` is a dev-dependency used by the examples.
-- `ptts-pyo3`: `cuda`, `accelerate` (each forwards to both `xn/*` and `ptts/*`).
+- `ptts`: `hf` (Hugging Face `tokenizers`, i.e. `ptts::tok`, required by the `say`, `ptts` and `bench` examples), `audio` (`ptts::audio`, decoding and resampling audio files for voice cloning — pulls in `symphonia` and `rubato`, so it is off by default and out of the wasm build; required by `ptts` and `create_voice`), `cuda`, `accelerate`, `kai` (see below). The library never downloads anything, so there is no hub feature: `hf-hub` is a dev-dependency used by the examples.
+- `ptts-pyo3`: `cuda`, `accelerate`, `kai` (each forwards to both `xn/*` and `ptts/*`).
+
+`kai` runs the `q8_0` transformer linears through Arm KleidiAI's SME2 kernels, which `xn`
+vendors and compiles itself, so it needs no setup. It only does anything on a CPU with SME2
+(Apple M4 and later, Arm Cortex-X925 and later); elsewhere the weights keep xn's own layouts.
+It makes prompt prefill and voice conditioning faster, not decode, and it requantizes the
+weights to one scale per row, which moves the output slightly. So with `kai` on, the same
+binary gives slightly different audio on an SME2 CPU than on any other: anything that
+compares outputs should set `XN_KAI=0`, which turns it off at run time, or allow a tolerance.
 
 Run the CLI example:
 

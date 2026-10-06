@@ -53,6 +53,8 @@ vulkan = ["xn/vulkan"]
 metal = ["xn/metal", "dep:half"]
 webgpu = ["xn/webgpu"]
 accelerate = ["xn/accelerate"]
+# Arm KleidiAI's SME2 kernels for the `q8_0` linears, on CPUs with SME2. A no-op elsewhere.
+kai = ["xn/kai"]
 # Hugging Face `tokenizers` support in `ptts::tok`.
 hf = ["dep:tokenizers"]
 # Decoding and resampling audio files (`ptts::audio`), for voice cloning.
