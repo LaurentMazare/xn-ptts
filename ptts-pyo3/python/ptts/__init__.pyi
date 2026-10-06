@@ -119,6 +119,13 @@ class TTS:
     def add_voice(self, name: str, path: str | PathLike[str]) -> None:
         """Register a voice from a precomputed embedding file."""
 
+    def set_conditions(self, conditions: dict[str, str | float]) -> None:
+        """Replace the conditions, without reloading the model.
+
+        Values go through `str()`, as `conditions=` does, and an invalid one leaves the
+        previous conditions in place.
+        """
+
     def add_voice_from_embedding(
         self,
         name: str,
