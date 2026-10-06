@@ -86,8 +86,14 @@ class TTS:
         temperature: float | None = None,
         seed: int | None = None,
         cfg_coef: float | None = None,
+        conditions: dict[str, str | float] | None = None,
     ) -> NDArray[np.float32]:
-        """Synthesize `text` and return the waveform as a 1-D float32 array."""
+        """Synthesize `text` and return the waveform as a 1-D float32 array.
+
+        `conditions` sets the model's summed conditionings by name, e.g.
+        `{"duration_delta": -0.3}` or a voice LUT value; one left out gets the
+        learnt padding, as training does for a dropped attribute.
+        """
 
     def save(
         self,
@@ -98,10 +104,11 @@ class TTS:
         temperature: float | None = None,
         seed: int | None = None,
         cfg_coef: float | None = None,
+        conditions: dict[str, str | float] | None = None,
     ) -> float:
         """Synthesize `text` straight to a mono 16-bit WAV file.
 
-        Returns the duration written, in seconds.
+        Returns the duration written, in seconds. `conditions` is as for `synth`.
         """
 
     def stream(
@@ -112,6 +119,7 @@ class TTS:
         temperature: float | None = None,
         seed: int | None = None,
         cfg_coef: float | None = None,
+        conditions: dict[str, str | float] | None = None,
     ) -> AudioStream:
         """Synthesize `text`, yielding float32 chunks as the decoder produces them."""
 

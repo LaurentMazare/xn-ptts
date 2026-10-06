@@ -17,7 +17,7 @@ PY
 
 To use it from your own project, install it with `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Either one compiles the Rust code, so it needs Rust installed.
 
-`config` is the path to `config.json`. The package loads the weights, `tokenizer.json` and the voices from the same directory, and downloads nothing. With `quant="q8"` it loads `model.q8.gguf`; with any other format it prefers `model.safetensors` when the directory has one. Voices are every file in `voices/` or `embeddings/`, plus `default-voice.safetensors` as `default`. `config` can also be a Hugging Face repo id with the same layout.
+`config` is the path to `config.json`. The package loads the weights, `tokenizer.json` and the voices from the same directory, and downloads nothing. With `quant="q8"` it loads `model.q8.gguf`; with any other format it prefers `model.safetensors` when the directory has one. Voices are every file in `voices/` or `embeddings/`, plus `default-voice.safetensors` as `default`, plus any voices the checkpoint pre-packs (see [below](#models-with-pre-packed-voices)). `config` can also be a Hugging Face repo id with the same layout.
 
 `lang` is required: `en`, `fr`, `de`, `es` or `pt` picks how numbers, symbols and abbreviations are spelled out; `none` uses the text as written.
 
@@ -36,7 +36,43 @@ with tts.stream("A longer sentence.", voice=voice) as audio:
 
 `tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early.
 
-`tts.voices` lists the voices that were found. When no voice is given, `default` is used if the checkpoint ships one, and otherwise the first by name. Pass `voice="name"` to any speech method to select one.
+`tts.voices` lists the voices that were found. When no voice is given, the first pre-packed voice is used if the checkpoint has any, else `default` if it ships one, and otherwise the first by name. Pass `voice="name"` to any speech method to select one.
+
+### Models with pre-packed voices
+
+Some checkpoints carry their voices inside the model rather than as separate files: `config.json` lists them under `voices`, and the weights file holds what each one needs. They are registered when the model loads, appear in `tts.voices` like any other, and the first one listed is the default. A voice name alone selects everything the voice is made of:
+
+```python
+tts = ptts.TTS(lang="en", config="export/config.json")
+print(tts.voices)                     # the pre-packed voices
+pcm = tts.synth("Hello", voice=tts.voices[0])
+```
+
+A pre-packed voice can be:
+
+- **a voice prompt**, the same conditioning a file in `voices/` gives;
+- **a fixed-voice value**: some models are trained on a small set of fixed voices and learn each one as an embedding added to every frame instead of reading it from a prompt. The voice's name is the value it selects, and the model then needs no prompt at all;
+- **both**, for models trained on a fixed voice together with its prompt.
+
+The speech methods also take `conditions`, a mapping that sets a model's per-request conditionings by name. It overrides the value a voice selects, and drives conditionings that are not voices, such as a duration control:
+
+```python
+pcm = tts.synth("Hello", voice=voice, conditions={"voice_name": other})   # another fixed voice
+pcm = tts.synth("Hello", voice=voice, conditions={"duration_delta": -0.3})  # shorter speech
+```
+
+A conditioning left out gets the value the model was trained with for "unspecified". Naming a conditioning the model does not have, or a value it does not know, raises `ValueError`. The rest of the voice API works unchanged on these models: `add_voice`, `clone_voice` and `add_voice_from_embedding` register further voices, and one registered under a pre-packed voice's name replaces it.
+
+#### Duration control
+
+Models trained with a `duration_delta` conditioning take a target speaking duration relative to the model's own pace. The value is the relative change in duration: `0.0` is the model's usual pace, negative asks for shorter (faster) speech and positive for longer (slower). In training it was measured per clip as `D / D_ref - 1`: the clip's duration over that of a second generation of the same text at the usual pace, so the labels the model learnt from are noisy. The model embeds the value and adds it to every frame, so any number works, but treat it as a direction and a strength rather than an exact ratio: on one such model, a test sentence took 4.22 s at `-0.3`, 4.78 s at `0` and 5.24 s at `+0.3` (averaged over four seeds), about 12% shorter and 10% longer rather than 30%.
+
+```python
+fast = tts.synth("Hello there", voice=voice, conditions={"duration_delta": -0.3})
+slow = tts.synth("Hello there", voice=voice, conditions={"duration_delta": 0.3})
+```
+
+Leaving `duration_delta` out is not the same as `0.0`: the model then picks its own duration, as it learnt to for clips with no measurement. Only models trained with the conditioning accept it; on any other, passing it raises `ValueError`, which is also how to tell whether a model has it. Its `config.json` lists it under `conditioners`. A value can be given as a number or a numeric string.
 
 ## Command line
 
