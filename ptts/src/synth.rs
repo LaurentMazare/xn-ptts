@@ -57,6 +57,7 @@
 //! Driving the loop by hand, from an event loop with no threads to spawn, as
 //! `ptts-wasm` does, is what [`crate::tts_model::TTSModel`]'s primitives are for.
 
+use crate::conditioners::Conditioners;
 use crate::flow_lm::{NormalRng, StepInput};
 use crate::loader;
 use crate::plan::{self, Chunk, EosPolicy};
@@ -297,6 +298,8 @@ struct SynthOf<Q: BackendQ> {
     /// branch's prefix differs, the coefficient does not enter the state. Sized to the prompt;
     /// copied out to each generation's budget.
     primed: Mutex<HashMap<(String, bool), Primed<Q>>>,
+    conditioners: Conditioners<Q::T, Q::B>,
+    conditions: Option<Tensor<Q::T, Q::B>>,
 }
 
 /// How many primed prefixes to keep. A process that clones voices under fresh names -- which
@@ -361,10 +364,15 @@ impl<Q: BackendQ> SynthOf<Q> {
         cfg_coef: Option<f32>,
     ) -> Result<(TTSState<Q>, Option<(f32, TTSState<Q>)>)> {
         let Some((name, voice)) = self.voice_for(voice)? else {
-            let state = self.model.init_flow_lm_state(1, seq_budget)?;
+            let mut state = self.model.init_flow_lm_state(1, seq_budget)?;
+            state.flow_lm_state.conditions = self.conditions.clone();
             let cfg_state = match cfg_coef {
                 None => None,
-                Some(coef) => Some((coef, self.model.init_flow_lm_state(1, seq_budget)?)),
+                Some(coef) => {
+                    let mut null_state = self.model.init_flow_lm_state(1, seq_budget)?;
+                    null_state.flow_lm_state.conditions = self.conditions.clone();
+                    Some((coef, null_state))
+                }
             };
             return Ok((state, cfg_state));
         };
@@ -427,8 +435,9 @@ impl<Q: BackendQ> SynthOf<Q> {
     }
 
     fn prime(&self, voice: &Voice<Q>, cfg_on: bool, frames: usize) -> Result<Primed<Q>> {
+        let conditions = voice.conditions.clone().or_else(|| self.conditions.clone());
         let mut state = self.model.init_flow_lm_state(1, frames)?;
-        state.flow_lm_state.conditions = voice.conditions.clone();
+        state.flow_lm_state.conditions = conditions.clone();
         self.model.prompt_audio(&mut state, &voice.emb)?;
 
         let null_state = if !cfg_on {
@@ -441,7 +450,7 @@ impl<Q: BackendQ> SynthOf<Q> {
                 _ => frames,
             };
             let mut null_state = self.model.init_flow_lm_state(1, null_frames)?;
-            null_state.flow_lm_state.conditions = voice.conditions.clone();
+            null_state.flow_lm_state.conditions = conditions;
             if !self.cfg.cfg_null_audio_empty {
                 match voice.null_emb.as_ref() {
                     Some(null_emb) => self.model.prompt_audio(&mut null_state, null_emb)?,
@@ -585,6 +594,30 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
         };
         self.forget_primed(name);
         self.voices.insert(name.to_string(), Voice { emb, null_emb, conditions: None });
+        Ok(())
+    }
+
+    fn set_conditions(&mut self, conditions: HashMap<String, String>) -> Result<()> {
+        let mut values = conditions.clone();
+        if let Some(voice) = self.cfg.voices.first() {
+            for (k, v) in voice.conditions.iter() {
+                values.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        let default = self.conditioners.sum(&values)?;
+        let mut baked = Vec::with_capacity(self.cfg.voices.len());
+        for voice in self.cfg.voices.iter() {
+            let mut values = conditions.clone();
+            values.extend(voice.conditions.clone());
+            baked.push((voice.name.clone(), self.conditioners.sum(&values)?));
+        }
+        for (name, c) in baked {
+            if let Some(voice) = self.voices.get_mut(&name) {
+                voice.conditions = c;
+            }
+        }
+        self.conditions = default;
+        self.primed.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
         Ok(())
     }
 
@@ -1317,6 +1350,8 @@ impl SynthBuilder {
         let mimi_enc =
             if vb.contains(&probe) { Some(MimiEnc::<Q>::load(&vb, &config)?) } else { None };
         let baked_voices = loader::load_config_voices(&vb, &config, model.speaker_proj())?;
+        let conditioners =
+            Conditioners::load(&vb.pp("flow_lm.condition_provider.conditioners"), &config)?;
         vb.check_all_used_with_ignore(loader::is_unused_by_tts_model)?;
 
         let mut synth = SynthOf {
@@ -1334,14 +1369,16 @@ impl SynthBuilder {
                 max_tokens_per_chunk: self.max_tokens_per_chunk,
             },
             normalize: self.normalize,
+            conditioners,
+            conditions: None,
         };
 
-        for (voice, (name, emb)) in synth.cfg.voices.iter().zip(baked_voices) {
-            let mut values = self.conditions.clone();
-            values.extend(voice.conditions.clone());
-            let conditions = loader::load_conditions(&vb, &synth.cfg, &values)?;
-            synth.voices.insert(name, Voice { emb: emb.to::<Q::T>()?, null_emb: None, conditions });
+        for (name, emb) in baked_voices {
+            synth
+                .voices
+                .insert(name, Voice { emb: emb.to::<Q::T>()?, null_emb: None, conditions: None });
         }
+        synth.set_conditions(self.conditions.clone())?;
         for (name, path) in self.voices.iter() {
             synth.add_voice_file(name, path)?;
         }
@@ -1450,6 +1487,8 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
         dim: usize,
         null_emb: Option<&[f32]>,
     ) -> Result<()>;
+
+    fn set_conditions(&mut self, conditions: HashMap<String, String>) -> Result<()>;
 
     /// Synthesize `text` and return the whole waveform, as mono `f32` at
     /// [`Self::sample_rate`].
