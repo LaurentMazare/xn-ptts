@@ -2907,6 +2907,7 @@ dependencies = [
  "rayon",
  "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-rayon",
  "xn",
 ]
