@@ -126,7 +126,9 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
     quant.check_device(device)?;
     let normalize = args.lang.parse::<Normalize>()?.with_rules(args.rewrites.parse::<Rules>()?);
     let mut conditions = Vec::new();
-    for condition in &args.conditions {
+    // Empty entries are skipped: compose files often pass `PTTS_CONDITION=` for none, which
+    // clap reads as one empty value, and a trailing comma leaves one too.
+    for condition in args.conditions.iter().filter(|c| !c.is_empty()) {
         let (name, value) = condition.split_once('=').context("--condition takes NAME=VALUE")?;
         conditions.push((name.to_string(), value.to_string()));
     }

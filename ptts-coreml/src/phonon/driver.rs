@@ -304,6 +304,18 @@ impl Phonon {
         let prefill = Flow::new(prefill, dm, cfg.prefill_len, cfg.ctx, &ring)?;
         let mimi = load(dir, &mimi::package_name(cfg.mimi_window), Compute::CpuOnly)?;
 
+        // Bundles exported before the conditioners came from the config call it `num_speakers`,
+        // the one conditioner they knew.
+        let conditions = wt
+            .data("flow_lm.conditions")
+            .or_else(|_| wt.data("flow_lm.num_speakers"))
+            .map_err(|_| "host.safetensors has no `flow_lm.conditions`".to_string())?
+            .to_vec();
+        if conditions.len() != dm.d {
+            let n = conditions.len();
+            return Err(format!("the bundle's conditions are {n} wide, the model is {}", dm.d));
+        }
+
         let mut me = Self {
             decode,
             prefill,
@@ -311,12 +323,7 @@ impl Phonon {
             ring,
             voice_ring: None,
             il: wt.data("flow_lm.input_linear.weight")?.to_vec(),
-            // Bundles exported before the conditioners came from the config call it
-            // `num_speakers`, the one conditioner they knew.
-            conditions: wt
-                .data("flow_lm.conditions")
-                .or_else(|_| wt.data("flow_lm.num_speakers"))?
-                .to_vec(),
+            conditions,
             bos: wt.data("flow_lm.bos_emb")?.to_vec(),
             text_emb: wt.data("flow_lm.conditioner.embed.weight")?.to_vec(),
             voice: Voice { emb: Vec::new(), len: 0, conditions: None },
@@ -342,6 +349,10 @@ impl Phonon {
             return Err(format!("a {}-position voice does not fit: room for {budget}", voice.len));
         }
         let d = self.cfg.dims.d;
+        if voice.emb.len() != voice.len * d {
+            let n = voice.emb.len();
+            return Err(format!("the voice has {n} values, not {} positions of {d}", voice.len));
+        }
         if let Some(c) = voice.conditions.as_ref().filter(|c| c.len() != d) {
             return Err(format!("the voice's conditions are {} wide, the model is {d}", c.len()));
         }
