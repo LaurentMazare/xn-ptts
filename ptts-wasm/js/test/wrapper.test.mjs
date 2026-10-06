@@ -143,6 +143,20 @@ test('the rewrites check accepts exactly what the Rust Rules parser accepts', as
   );
 });
 
+test('conditions are handed to the worker as NAME=VALUE, their shape checked first', async () => {
+  FakeWorker.last = null;
+  for (const conditions of [['padding_bonus=0.5'], 'padding_bonus=0.5', null, { padding_bonus: NaN }, { n: true }]) {
+    await assert.rejects(PhononTTS.load({ lang: 'en', conditions, model: MODEL }), /condition/);
+  }
+  assert.equal(FakeWorker.last, null, 'no worker should have been started');
+
+  const conditions = { padding_bonus: 0.5, num_speakers: '2' };
+  await PhononTTS.load({ lang: 'en', conditions, model: MODEL, workerUrl: 'worker.js' });
+  assert.deepEqual(FakeWorker.last.init.conditions, ['padding_bonus=0.5', 'num_speakers=2']);
+  await load();
+  assert.deepEqual(FakeWorker.last.init.conditions, []);
+});
+
 test('stream yields every frame in order, then its stats', async () => {
   FakeWorker.script = { frames: 3, fail: null };
   const tts = await load();

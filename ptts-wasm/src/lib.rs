@@ -146,6 +146,7 @@ impl Model {
         quant: &str,
         lang: &str,
         rewrites: Option<&str>,
+        conditions: &[String],
     ) -> Result<Model> {
         let quant = Quant::parse(quant)?;
         let rules = match rewrites {
@@ -153,13 +154,27 @@ impl Model {
             None => Rules::DEFAULT,
         };
         let normalize = lang.parse::<Normalize>()?.with_rules(rules);
-        let cfg = match config_json {
+        let mut values = std::collections::HashMap::new();
+        for condition in conditions {
+            let Some((name, value)) = condition.split_once('=') else {
+                xn::bail!("a condition is NAME=VALUE, got {condition:?}")
+            };
+            values.insert(name.to_string(), value.to_string());
+        }
+        let cfg: TTSConfig = match config_json {
             Some(json) => match serde_json::from_slice(&json) {
                 Ok(cfg) => cfg,
                 Err(e) => xn::bail!("cannot parse config.json: {e}"),
             },
             None => TTSConfig::v202601(),
         };
+        // Such a checkpoint speaks only its own voices, each with its own conditioning, and
+        // voices here come from files.
+        if !cfg.voices.is_empty() {
+            xn::bail!(
+                "this checkpoint has baked-in voices, which the browser build does not support"
+            )
+        }
         console_log!("[phonon] loading model with quant={quant:?}");
 
         let is_gguf = model_weights.len() >= 4 && &model_weights[..4] == b"GGUF";
@@ -175,12 +190,8 @@ impl Model {
         let speaker_proj = load_speaker_proj(&root, &cfg)?;
 
         let inner = match quant {
-            Quant::F32 => {
-                ModelInner::F32(TTSModel::load(&root, tokenizer, &cfg, &Default::default())?)
-            }
-            Quant::Q8 => {
-                ModelInner::Q8(TTSModel::load(&root, tokenizer, &cfg, &Default::default())?)
-            }
+            Quant::F32 => ModelInner::F32(TTSModel::load(&root, tokenizer, &cfg, &values)?),
+            Quant::Q8 => ModelInner::Q8(TTSModel::load(&root, tokenizer, &cfg, &values)?),
         };
 
         Ok(Model { inner, cfg, speaker_proj, gen_state: None, voice_states: Vec::new(), normalize })
@@ -382,8 +393,9 @@ impl Model {
     /// One thing a config cannot ask this build for: classifier-free guidance. Guidance is a
     /// caller's option in `ptts::synth` (`SpeechOptions::cfg_coef`), not a field of the
     /// config, and the browser build never turns it on, so `cfg_null_audio_empty` is inert.
-    /// Everything else -- the flow LM and Mimi shapes, `lsd_decode_steps`, `eos_threshold`,
-    /// `model_id`, `speaker_mimi` -- is honored.
+    /// A config with baked-in `voices` is refused: voices here come from files. Everything
+    /// else -- the flow LM and Mimi shapes, `lsd_decode_steps`, `eos_threshold`, `model_id`,
+    /// `speaker_mimi`, `conditioners` -- is honored.
     ///
     /// `quant` is `"f32"` or `"q8"`.
     ///
@@ -396,6 +408,9 @@ impl Model {
     /// normalized text: `"default"` (numbers, currency, dashed-digits, emails,
     /// urls), `"all"` (those and phones, times, dates), `"none"`, or a
     /// comma-separated list of rule names.
+    ///
+    /// `conditions` is optional and sets the config's conditioners, each as `"NAME=VALUE"`,
+    /// e.g. `["padding_bonus=0.5"]`. Those left out take their defaults.
     #[wasm_bindgen(constructor)]
     pub fn new(
         model_weights: &[u8],
@@ -404,8 +419,11 @@ impl Model {
         quant: &str,
         lang: &str,
         rewrites: Option<String>,
+        conditions: Option<Vec<String>>,
     ) -> std::result::Result<Model, JsError> {
-        Self::new_(model_weights, tokenizer_json, config_json, quant, lang, rewrites.as_deref())
+        let conditions = conditions.unwrap_or_default();
+        let rewrites = rewrites.as_deref();
+        Self::new_(model_weights, tokenizer_json, config_json, quant, lang, rewrites, &conditions)
             .map_err(js_err)
     }
 

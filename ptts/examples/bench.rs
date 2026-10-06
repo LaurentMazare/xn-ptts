@@ -50,6 +50,13 @@ struct Args {
     #[arg(long)]
     threads: Option<usize>,
 
+    #[arg(
+        long = "condition",
+        value_name = "NAME=VALUE",
+        help = "Set a conditioner, e.g. padding_bonus=0.5; repeatable"
+    )]
+    conditions: Vec<String>,
+
     #[arg(long, short, default_value = "Hello, this is a test of the Phonon TTS system.")]
     input: String,
 
@@ -225,7 +232,14 @@ impl Bench<'_> {
                 args.voice
             );
         }
-        let conditions = baked.map(|v| v.conditions.clone()).unwrap_or_default();
+        // A baked-in voice's own values win over those given, as in `SynthBuilder::build`.
+        let mut conditions = std::collections::HashMap::new();
+        for condition in &args.conditions {
+            let (name, value) =
+                condition.split_once('=').context("--condition takes NAME=VALUE")?;
+            conditions.insert(name.to_string(), value.to_string());
+        }
+        conditions.extend(baked.map(|v| v.conditions.clone()).unwrap_or_default());
         let model: TTSModel<Q> = TTSModel::load(&vb, Box::new(tokenizer), &cfg, &conditions)?;
         let baked_voices = ptts::loader::load_config_voices(&vb, &cfg, model.speaker_proj())?;
         let speaker_prefix = format!("{}.", cfg.speaker_mimi_prefix());

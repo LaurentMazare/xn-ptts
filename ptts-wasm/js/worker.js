@@ -89,7 +89,15 @@ async function handleInit(id, options) {
     fetchBytes(spec.tokenizer, { cache, onProgress: progress('tokenizer') }),
     spec.config ? fetchBytes(spec.config, { cache, onProgress: progress('config') }) : null,
   ]);
-  model = new wasm.Model(weights, tokenizer, config ?? undefined, quant, options.lang, options.rewrites);
+  model = new wasm.Model(
+    weights,
+    tokenizer,
+    config ?? undefined,
+    quant,
+    options.lang,
+    options.rewrites,
+    options.conditions,
+  );
 
   for (const name of options.preload) await voiceIndex(name, progress(`voice:${name}`));
   return { sampleRate: model.sample_rate(), features: wasm.cpu_features(), threads, threadsReason: reason };

@@ -119,6 +119,7 @@ impl LoadedModel {
 
 /// Load the model named by `config`: a local checkpoint folder or a `config.json` in one, a Hub
 /// repo id, or nothing for Kyutai's checkpoint.
+#[allow(clippy::too_many_arguments)]
 pub async fn load_ptts(
     config: Option<&std::path::PathBuf>,
     voice_dir: Option<&std::path::PathBuf>,
@@ -127,6 +128,7 @@ pub async fn load_ptts(
     temperature: f32,
     seed_base: u64,
     normalize: Normalize,
+    conditions: &[(String, String)],
 ) -> Result<AppState> {
     // A path that does not exist, rather than a repo id: a typo, or a Docker volume not mounted.
     if let Some(config) = config
@@ -167,12 +169,15 @@ pub async fn load_ptts(
         m.voice_files.extend(found);
     }
     let frame_rate = m.cfg.mimi.frame_rate;
-    let mut synth = SynthBuilder::new(m.cfg, &m.model_path, normalize)
+    let mut builder = SynthBuilder::new(m.cfg, &m.model_path, normalize)
         .tokenizer_file(&m.tokenizer_path)
         .device(device)
         .quant(quant)
-        .temperature(temperature)
-        .build()?;
+        .temperature(temperature);
+    for (name, value) in conditions {
+        builder = builder.condition(name, value);
+    }
+    let mut synth = builder.build()?;
     // Registered after the build, not through it: the builder propagates a bad
     // voice file and one should not take the server down. Order is preserved,
     // so a --voice-dir entry still overrides a bundled voice of the same name.

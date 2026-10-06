@@ -51,6 +51,7 @@ export class PhononTTS {
     const {
       lang,
       rewrites,
+      conditions,
       quant = 'q8',
       model,
       voices,
@@ -107,6 +108,18 @@ export class PhononTTS {
         );
       }
     }
+    // Which names a checkpoint takes is only known once its config is loaded, so Rust checks
+    // those; the shape is checked here, before the download.
+    const isPlain = typeof conditions === 'object' && conditions !== null && !Array.isArray(conditions);
+    if (conditions !== undefined && !isPlain) {
+      throw new TypeError('conditions must be an object of name to value, e.g. { padding_bonus: 0.5 }');
+    }
+    const conditionList = Object.entries(conditions ?? {}).map(([name, value]) => {
+      if (typeof value !== 'string' && !Number.isFinite(value)) {
+        throw new TypeError(`condition '${name}' must be a string or a finite number`);
+      }
+      return `${name}=${value}`;
+    });
     const defaultVoice = model.defaultVoice ?? Object.keys(model.voices ?? {})[0];
     const preload = voices ?? (defaultVoice ? [defaultVoice] : []);
 
@@ -123,6 +136,7 @@ export class PhononTTS {
           options: {
             lang,
             rewrites,
+            conditions: conditionList,
             quant,
             model: resolveModel(model),
             preload,
