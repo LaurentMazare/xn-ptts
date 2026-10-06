@@ -510,6 +510,8 @@ impl Tts {
         py.detach(move || inner.lock().map_err(|_| poisoned())?.add_voice_file(name, &path).py())
     }
 
+    /// Replace the conditions, without reloading the model. Values go through `str()`,
+    /// as `conditions=` does, and an invalid one leaves the previous conditions in place.
     fn set_conditions(
         &self,
         py: Python<'_>,
