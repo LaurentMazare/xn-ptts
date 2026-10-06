@@ -510,6 +510,19 @@ impl Tts {
         py.detach(move || inner.lock().map_err(|_| poisoned())?.add_voice_file(name, &path).py())
     }
 
+    fn set_conditions(
+        &self,
+        py: Python<'_>,
+        conditions: HashMap<String, Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let conditions = conditions
+            .into_iter()
+            .map(|(name, value)| Ok((name, value.str()?.to_string())))
+            .collect::<PyResult<HashMap<_, _>>>()?;
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || inner.lock().map_err(|_| poisoned())?.set_conditions(conditions).py())
+    }
+
     /// Register a voice from an in-memory conditioning embedding of shape
     /// `[T, dim]` or `[1, T, dim]`.
     ///

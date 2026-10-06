@@ -119,6 +119,8 @@ class TTS:
     def add_voice(self, name: str, path: str | PathLike[str]) -> None:
         """Register a voice from a precomputed embedding file."""
 
+    def set_conditions(self, conditions: dict[str, str | float]) -> None: ...
+
     def add_voice_from_embedding(
         self,
         name: str,
