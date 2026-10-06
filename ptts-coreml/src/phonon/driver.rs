@@ -132,13 +132,23 @@ pub struct Phonon {
     voice_ring: Option<Ring>,
     /// `input_linear` weight, applied on the host so the graph always takes an embedding.
     il: Vec<f32>,
-    /// The speaker-count conditioning, constant per checkpoint.
-    wt_ns: Vec<f32>,
+    /// What the flow LM adds to every frame's input: the checkpoint's conditioners summed, as
+    /// the bundle was exported with them.
+    conditions: Vec<f32>,
     bos: Vec<f32>,
     text_emb: Vec<f32>,
-    voice: Vec<f32>,
-    vlen: usize,
+    voice: Voice,
     cfg: Config,
+}
+
+/// A speaker, as the exporter writes it into the bundle.
+pub struct Voice {
+    /// The voice prompt, `len` positions of `D`.
+    pub emb: Vec<f32>,
+    pub len: usize,
+    /// What the flow LM adds to every frame's input for this voice, `D` wide, when the voice
+    /// carries its own in place of the bundle's: those baked into the checkpoint do.
+    pub conditions: Option<Vec<f32>>,
 }
 
 /// rope cos/sin for `n` positions from `start`, half width: the graph rotates the first `HD/2`
@@ -283,8 +293,8 @@ impl<'a> MimiStream<'a> {
 
 impl Phonon {
     /// Load the graphs and host tensors from an exported bundle directory, speaking with
-    /// `voice` (`vlen` positions of `D`).
-    pub fn load(dir: &Path, cfg: Config, voice: Vec<f32>, vlen: usize) -> Result<Self, String> {
+    /// `voice`.
+    pub fn load(dir: &Path, cfg: Config, voice: Voice) -> Result<Self, String> {
         let wt = Weights::open(&dir.join("host.safetensors"))?;
         let dm = cfg.dims;
         let ring = Ring::new(&dm, cfg.ctx)?;
@@ -301,20 +311,24 @@ impl Phonon {
             ring,
             voice_ring: None,
             il: wt.data("flow_lm.input_linear.weight")?.to_vec(),
-            wt_ns: wt.data("flow_lm.num_speakers")?.to_vec(),
+            // Bundles exported before the conditioners came from the config call it
+            // `num_speakers`, the one conditioner they knew.
+            conditions: wt
+                .data("flow_lm.conditions")
+                .or_else(|_| wt.data("flow_lm.num_speakers"))?
+                .to_vec(),
             bos: wt.data("flow_lm.bos_emb")?.to_vec(),
             text_emb: wt.data("flow_lm.conditioner.embed.weight")?.to_vec(),
-            voice: Vec::new(),
-            vlen: 0,
+            voice: Voice { emb: Vec::new(), len: 0, conditions: None },
             cfg,
         };
-        me.set_voice(voice, vlen)?;
+        me.set_voice(voice)?;
         // CoreML's first prediction on a model is slow (on the CPU, ~160 ms for these two), so
         // pay it here rather than in the first utterance. Conditioning has already warmed the
         // decode graph; the ring is restored from the voice snapshot before every utterance, so
         // what this writes into it is never read.
         let zero = vec![0f32; dm.ldim];
-        let (plen, vlen) = (me.cfg.prefill_len, me.vlen);
+        let (plen, vlen) = (me.cfg.prefill_len, me.voice.len);
         me.prefill.step(&mut me.ring, vlen, &vec![0f32; plen * dm.d], &zero, &vec![false; plen])?;
         MimiStream::new(&me.mimi, me.cfg.mimi_window, dm.ldim)?.decode(0, &zero)?;
         Ok(me)
@@ -322,13 +336,16 @@ impl Phonon {
 
     /// Swap the speaker, conditioning on it now (up to about 0.6 s on a phone) so the next
     /// utterance does not pay for it.
-    pub fn set_voice(&mut self, voice: Vec<f32>, vlen: usize) -> Result<(), String> {
+    pub fn set_voice(&mut self, voice: Voice) -> Result<(), String> {
         let budget = self.cfg.ctx.saturating_sub(self.cfg.prefill_len + self.cfg.max_frames);
-        if vlen > budget {
-            return Err(format!("a {vlen}-position voice does not fit: room for {budget}"));
+        if voice.len > budget {
+            return Err(format!("a {}-position voice does not fit: room for {budget}", voice.len));
+        }
+        let d = self.cfg.dims.d;
+        if let Some(c) = voice.conditions.as_ref().filter(|c| c.len() != d) {
+            return Err(format!("the voice's conditions are {} wide, the model is {d}", c.len()));
         }
         self.voice = voice;
-        self.vlen = vlen;
         self.voice_ring = None;
         self.condition()
     }
@@ -349,8 +366,8 @@ impl Phonon {
         // One position at a time. The prefill graph would take this from ~0.6 s to a few tens
         // of ms on the phone, but batching changes the attention's summation order and with it
         // every later frame, so conditioning stays exact and runs when the voice is set instead.
-        for i in 0..self.vlen {
-            let emb = &self.voice[i * d..(i + 1) * d];
+        for i in 0..self.voice.len {
+            let emb = &self.voice.emb[i * d..(i + 1) * d];
             self.decode.step(ring, i, emb, &zero, &[true])?;
         }
         let mut snap = Ring::new(&self.cfg.dims, self.cfg.ctx)?;
@@ -387,7 +404,7 @@ impl Phonon {
         }
         let rows_valid: Vec<bool> = (0..plen).map(|r| r < tokens.len()).collect();
         let zero = vec![0f32; self.cfg.dims.ldim];
-        self.prefill.step(&mut self.ring, self.vlen, &temb, &zero, &rows_valid)?;
+        self.prefill.step(&mut self.ring, self.voice.len, &temb, &zero, &rows_valid)?;
 
         // Same generator and distribution as the reference implementation.
         use rand::{Rng, SeedableRng};
@@ -397,8 +414,9 @@ impl Phonon {
 
         let mut stream = MimiStream::new(&self.mimi, self.cfg.mimi_window, self.cfg.dims.ldim)?;
         let (decode, ring) = (&self.decode, &mut self.ring);
-        let (il, wt_ns, cfg) = (&self.il, &self.wt_ns, &self.cfg);
-        let pos0 = self.vlen + tokens.len();
+        let conditions = self.voice.conditions.as_ref().unwrap_or(&self.conditions);
+        let (il, cfg) = (&self.il, &self.cfg);
+        let pos0 = self.voice.len + tokens.len();
         let mut lat = self.bos.clone();
         let (mut frames, mut samples, mut ttfa) = (0usize, 0usize, None);
         let stopped = std::cell::Cell::new(false);
@@ -431,9 +449,9 @@ impl Phonon {
             let mut countdown: Option<usize> = None;
             for i in 0..max_frames.min(cfg.max_frames) {
                 let noise: Vec<f32> = (0..cfg.dims.ldim).map(|_| rng.sample(distr)).collect();
-                // input_linear + num_speakers on the host: 32x768, microseconds, and it is what
+                // input_linear + conditions on the host: 32x768, microseconds, and it is what
                 // lets one graph serve both prefill and decode.
-                let mut emb = wt_ns.clone();
+                let mut emb = conditions.clone();
                 for (o, e) in emb.iter_mut().enumerate() {
                     let row = &il[o * cfg.dims.ldim..(o + 1) * cfg.dims.ldim];
                     *e += row.iter().zip(lat.iter()).map(|(a, b)| a * b).sum::<f32>();

@@ -6,8 +6,9 @@
 
 use crate::tts_model::TTSConfig;
 use crate::{Error, Result};
+use std::collections::HashMap;
 use xn::nn::{Linear, Path, VB};
-use xn::{Backend, BackendQ, Tensor};
+use xn::{Backend, BackendQ, Tensor, WithDTypeF};
 
 /// Maps upstream checkpoint names onto the names this crate's modules expect, dropping the
 /// tensors the runtime has no use for.
@@ -225,6 +226,21 @@ fn voice_emb_from_vb<B: Backend>(
         VoiceTensor::Latents => project_latents(&tensor, label, speaker_proj)?,
     };
     Ok(emb)
+}
+
+/// What the flow LM adds to every frame's input: the sum of each of `cfg.conditioners` set to
+/// its value in `values`, `[1, 1, d_model]`, or `None` for a checkpoint with no conditioners.
+/// A conditioner `values` leaves out takes its default, and one with no default is an error.
+///
+/// [`crate::synth`] builds one per voice. This is the same computation for a frontend that
+/// keeps the vector itself, such as the Core ML export.
+pub fn load_conditions<T: WithDTypeF, B: Backend>(
+    vb: &Path<B>,
+    cfg: &TTSConfig,
+    values: &HashMap<String, String>,
+) -> Result<Option<Tensor<T, B>>> {
+    let vb = vb.pp("flow_lm.condition_provider.conditioners");
+    Ok(crate::conditioners::load_summed_conditions(&vb, cfg, values)?)
 }
 
 pub fn load_config_voices<B: Backend>(

@@ -27,7 +27,9 @@ cargo run --release -p ptts --example export_coreml -- --dir "$MODEL_DIR" phonon
 
 The first is the compiled core the package wraps, written into `ios/PhononTTS` where the package
 expects it. The second converts the model folder you were given, the one with `config.json` and
-`model.q8.gguf`.
+`model.q8.gguf`. If that model takes conditions, such as `padding_bonus`, set them here with
+`--condition padding_bonus=0.5` (repeatable): they are fixed in the exported folder, and those not
+given take their defaults.
 
 ## 2. Add the package and the models
 

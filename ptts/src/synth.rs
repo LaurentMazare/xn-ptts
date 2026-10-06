@@ -1336,12 +1336,10 @@ impl SynthBuilder {
             normalize: self.normalize,
         };
 
-        let conditioners = vb.pp("flow_lm.condition_provider.conditioners");
         for (voice, (name, emb)) in synth.cfg.voices.iter().zip(baked_voices) {
             let mut values = self.conditions.clone();
             values.extend(voice.conditions.clone());
-            let conditions =
-                crate::conditioners::load_summed_conditions(&conditioners, &synth.cfg, &values)?;
+            let conditions = loader::load_conditions(&vb, &synth.cfg, &values)?;
             synth.voices.insert(name, Voice { emb: emb.to::<Q::T>()?, null_emb: None, conditions });
         }
         for (name, path) in self.voices.iter() {

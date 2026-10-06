@@ -13,7 +13,7 @@
 use ptts::plan::Chunk;
 use ptts::preprocess::Normalize;
 use ptts_coreml::Weights;
-use ptts_coreml::phonon::driver::{Config, Phonon};
+use ptts_coreml::phonon::driver::{Config, Phonon, Voice};
 use ptts_coreml::run::Compute;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -76,12 +76,14 @@ fn voice_names(dir: &Path) -> Vec<String> {
     ptts::loader::voices_in(&dir.join("voices")).into_iter().map(|(name, _)| name).collect()
 }
 
-/// A voice as the exporter writes it: an `emb` tensor of `[1, T, D]` or `[T, D]`.
-fn load_voice(dir: &Path, name: &str) -> Result<(Vec<f32>, usize), String> {
+/// A voice as the exporter writes it: an `emb` tensor of `[1, T, D]` or `[T, D]`, and for a
+/// voice baked into the checkpoint, the `conditions` it is spoken with.
+fn load_voice(dir: &Path, name: &str) -> Result<Voice, String> {
     let w = Weights::open(&dir.join("voices").join(format!("{name}.safetensors")))?;
     let (shape, data) = w.get("emb").map_err(|_| format!("voice {name} has no `emb` tensor"))?;
-    let t = if shape.len() == 3 { shape[1] } else { shape[0] };
-    Ok((data.to_vec(), t))
+    let len = if shape.len() == 3 { shape[1] } else { shape[0] };
+    let conditions = w.data("conditions").ok().map(<[f32]>::to_vec);
+    Ok(Voice { emb: data.to_vec(), len, conditions })
 }
 
 fn open(dir: &Path, unit: u32, lang: &str) -> Result<PttsHandle, String> {
@@ -118,7 +120,7 @@ fn open(dir: &Path, unit: u32, lang: &str) -> Result<PttsHandle, String> {
         flow_unit,
     };
     let voices = voice_names(dir);
-    let (voice, vlen) = load_voice(dir, voices.first().ok_or("no voices in the bundle")?)?;
+    let voice = load_voice(dir, voices.first().ok_or("no voices in the bundle")?)?;
     let tokenizer = ptts::tok::Tok::open(&dir.join("tokenizer.json")).map_err(|e| e.to_string())?;
     let normalize = lang.parse::<Normalize>().map_err(|e| e.to_string())?;
     let mut voice_blob = Vec::new();
@@ -128,7 +130,7 @@ fn open(dir: &Path, unit: u32, lang: &str) -> Result<PttsHandle, String> {
     }
     voice_blob.push(0);
     Ok(PttsHandle {
-        phonon: Phonon::load(dir, cfg, voice, vlen)?,
+        phonon: Phonon::load(dir, cfg, voice)?,
         tokenizer,
         normalize,
         dir: dir.to_path_buf(),
@@ -285,8 +287,7 @@ pub unsafe extern "C" fn ptts_set_voice(h: *mut PttsHandle, name: *const c_char)
         if !h.voices.contains(&name) {
             return Err(format!("no voice named {name:?}"));
         }
-        let (voice, vlen) = load_voice(&h.dir, &name)?;
-        h.phonon.set_voice(voice, vlen)
+        h.phonon.set_voice(load_voice(&h.dir, &name)?)
     });
     match r {
         Ok(()) => true,
