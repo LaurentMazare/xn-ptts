@@ -47,6 +47,12 @@ export interface LoadOptions {
    * not normalize at all.
    */
   rewrites?: string;
+  /**
+   * Values for the conditioners the checkpoint's `config.json` lists, by name, e.g.
+   * `{ padding_bonus: 0.5 }`. Those left out take their defaults. A name the checkpoint does not
+   * have is an error once its config is loaded.
+   */
+  conditions?: Record<string, string | number>;
   /** Default `'q8'`. */
   quant?: Quant;
   /**

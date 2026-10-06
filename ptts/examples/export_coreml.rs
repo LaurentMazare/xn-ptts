@@ -43,6 +43,10 @@ struct Args {
     /// A directory of voice `.safetensors` files, instead of the checkpoint's own.
     #[arg(long)]
     voices: Option<PathBuf>,
+    /// Set a conditioner, e.g. padding_bonus=0.5; repeatable. Fixed in the bundle: the app
+    /// cannot change it.
+    #[arg(long = "condition", value_name = "NAME=VALUE")]
+    conditions: Vec<String>,
     /// A `tokenizer.json`, for a checkpoint that ships none.
     #[arg(long)]
     tokenizer: Option<PathBuf>,
@@ -103,39 +107,66 @@ fn main() -> Result<()> {
     .map_err(anyhow::Error::msg)?
     .renamed(ptts::loader::remap_key);
 
-    // The supplied voices may hold speaker-Mimi latents rather than ready-to-use embeddings.
-    // Project them with the same checkpoint weight the Rust runtime uses when adding a voice.
-    let speaker_proj = match wt.get(ptts::loader::SPEAKER_PROJ_WEIGHT) {
-        Ok((shape, data)) => {
-            let expected = [dims.d, cfg.speaker_mimi_cfg().dimension];
-            anyhow::ensure!(
-                shape == expected,
-                "speaker projection has shape {shape:?}, expected {expected:?}"
-            );
-            let weight =
-                xn::Tensor::from_vec(data.to_vec(), (expected[0], expected[1]), &xn::CpuDevice)?;
-            Some(xn::nn::Linear::new(weight))
-        }
-        Err(_) => None,
-    };
+    // The same weights through ptts's loader, for what the runtime computes from them rather
+    // than what the graphs hold: voice embeddings and the conditioning.
+    let vb = ptts::loader::load_weights::<xn::Unquantized<f32, xn::CpuDevice>>(
+        &ck.weights,
+        &xn::CpuDevice,
+    )?;
+    // Voices may hold speaker-Mimi latents rather than ready-to-use embeddings, projected with
+    // the same checkpoint weight the Rust runtime uses when adding a voice.
+    let speaker_proj = ptts::loader::load_speaker_proj(&vb, cfg)?;
     let model_ext = cfg.model_ext();
 
-    std::fs::create_dir_all(args.out.join("voices"))?;
-    let voices: Vec<(String, PathBuf)> = match args.voices.as_deref() {
-        Some(dir) => ptts::loader::voices_in(dir),
-        None => ck.voices.clone(),
+    // What the flow LM adds to every frame's input, `D` wide: the checkpoint's conditioners
+    // summed, at the values given and their defaults for the rest. Zeros without any.
+    let mut given = HashMap::new();
+    for condition in &args.conditions {
+        let (name, value) = condition.split_once('=').context("--condition takes NAME=VALUE")?;
+        given.insert(name.to_string(), value.to_string());
+    }
+    let conditions = |values: &HashMap<String, String>| -> Result<Vec<f32>> {
+        Ok(match ptts::loader::load_conditions::<f32, _>(&vb, cfg, values)? {
+            Some(sum) => sum.to_vec()?,
+            None => vec![0f32; dims.d],
+        })
     };
+
+    // Each voice as the embedding the flow LM is prompted with, `emb` [1, T, D], and, for one
+    // baked into the checkpoint, the `conditions` [D] it is spoken with in place of the default.
+    let mut voices = Vec::new();
+    if cfg.voices.is_empty() {
+        let files = match args.voices.as_deref() {
+            Some(dir) => ptts::loader::voices_in(dir),
+            None => ck.voices.clone(),
+        };
+        for (name, path) in files {
+            let emb = ptts::loader::load_voice_emb(
+                &path,
+                model_ext.as_deref(),
+                speaker_proj.as_ref(),
+                &xn::CpuDevice,
+            )
+            .with_context(|| format!("voice {name}"))?;
+            voices.push((name, emb, None));
+        }
+    } else {
+        anyhow::ensure!(
+            args.voices.is_none(),
+            "this checkpoint has baked-in voices and supports no other voice"
+        );
+        let baked = ptts::loader::load_config_voices(&vb, cfg, speaker_proj.as_ref())?;
+        for (voice, (name, emb)) in cfg.voices.iter().zip(baked) {
+            // The voice's own values win, as in `SynthBuilder::build`.
+            let mut values = given.clone();
+            values.extend(voice.conditions.clone());
+            voices.push((name, emb, Some(conditions(&values)?)));
+        }
+    }
     anyhow::ensure!(!voices.is_empty(), "no voices: pass --voices <dir>");
-    // Voices go in as the embedding the flow LM is prompted with, `emb` [1, T, D].
+    std::fs::create_dir_all(args.out.join("voices"))?;
     let mut vlen = 0;
-    for (name, path) in &voices {
-        let emb = ptts::loader::load_voice_emb(
-            path,
-            model_ext.as_deref(),
-            speaker_proj.as_ref(),
-            &xn::CpuDevice,
-        )
-        .with_context(|| format!("voice {name}"))?;
+    for (name, emb, voice_conditions) in &voices {
         let shape = emb.dims().to_vec();
         anyhow::ensure!(
             shape[2] == dims.d,
@@ -144,9 +175,14 @@ fn main() -> Result<()> {
         );
         vlen = vlen.max(shape[1]);
         let bytes: Vec<u8> = emb.to_vec()?.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let view = TensorView::new(Dtype::F32, shape, &bytes)?;
+        let mut views = vec![("emb", TensorView::new(Dtype::F32, shape, &bytes)?)];
+        let cond_bytes: Vec<u8> =
+            voice_conditions.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+        if voice_conditions.is_some() {
+            views.push(("conditions", TensorView::new(Dtype::F32, vec![dims.d], &cond_bytes)?));
+        }
         safetensors::serialize_to_file(
-            [("emb", view)],
+            views,
             None,
             &args.out.join(format!("voices/{name}.safetensors")),
         )?;
@@ -166,19 +202,13 @@ fn main() -> Result<()> {
         mimi::build(&wt, mimi::cache_len(window)).map_err(bad)?,
     )?;
 
-    // The host-side tensors, f32. `num_speakers` is the conditioning some checkpoints add to
-    // every frame (ptts `FlowLM::num_speakers`, one speaker), and zeros for those without it.
+    // The host-side tensors, f32, and the conditioning a voice without its own is spoken with.
+    // A baked-in voice's values fill in for any not given, as in `SynthBuilder::build`.
     let get = |n: &str| wt.get(n).map_err(anyhow::Error::msg);
-    let num_speakers: Vec<f32> = match (
-        wt.get("flow_lm.condition_provider.conditioners.num_speakers.embed.weight"),
-        wt.get("flow_lm.condition_provider.conditioners.num_speakers.output_proj.weight"),
-    ) {
-        (Ok((es, e)), Ok((_, p))) => {
-            let lut = es[1];
-            (0..dims.d).map(|o| (0..lut).map(|i| p[o * lut + i] * e[lut + i]).sum()).collect()
-        }
-        _ => vec![0f32; dims.d],
-    };
+    let mut defaults = given.clone();
+    for (name, value) in cfg.voices.first().map(|v| &v.conditions).into_iter().flatten() {
+        defaults.entry(name.clone()).or_insert_with(|| value.clone());
+    }
     let mut host: Vec<(&str, Vec<usize>, Vec<u8>)> = Vec::new();
     for n in ["flow_lm.conditioner.embed.weight", "flow_lm.input_linear.weight", "flow_lm.bos_emb"]
     {
@@ -186,9 +216,9 @@ fn main() -> Result<()> {
         host.push((n, shape.to_vec(), data.iter().flat_map(|v| v.to_le_bytes()).collect()));
     }
     host.push((
-        "flow_lm.num_speakers",
+        "flow_lm.conditions",
         vec![dims.d],
-        num_speakers.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        conditions(&defaults)?.iter().flat_map(|v| v.to_le_bytes()).collect(),
     ));
     let views: HashMap<&str, TensorView> = host
         .iter()
@@ -226,7 +256,8 @@ fn main() -> Result<()> {
             "d": dims.d, "heads": dims.heads, "layers": dims.layers, "ff": dims.ff,
             "ldim": dims.ldim, "flow_d": dims.flow_d, "flow_blocks": dims.flow_blocks,
         },
-        "voices": voices.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        "voices": voices.iter().map(|(n, _, _)| n).collect::<Vec<_>>(),
+        "conditions": given,
         "files": files,
     });
     std::fs::write(args.out.join("bundle.json"), serde_json::to_vec_pretty(&meta)?)?;

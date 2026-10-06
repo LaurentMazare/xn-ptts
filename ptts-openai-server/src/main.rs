@@ -4,7 +4,7 @@ mod model;
 mod mp3;
 mod utils;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::Router;
 use axum::routing::{get, post};
 use clap::Parser;
@@ -59,6 +59,16 @@ struct Args {
     /// comma-separated list of rule names. Has no effect with `--lang none`.
     #[arg(long, default_value = "default", env = "PTTS_REWRITES")]
     rewrites: String,
+
+    /// Set one of the checkpoint's conditioners, e.g. `padding_bonus=0.5`; repeatable. Those
+    /// not set take their defaults. In the environment, a comma-separated list.
+    #[arg(
+        long = "condition",
+        value_name = "NAME=VALUE",
+        env = "PTTS_CONDITION",
+        value_delimiter = ','
+    )]
+    conditions: Vec<String>,
 }
 
 fn init_tracing() {
@@ -115,6 +125,13 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
     // would catch them, but only after the checkpoint is on disk.
     quant.check_device(device)?;
     let normalize = args.lang.parse::<Normalize>()?.with_rules(args.rewrites.parse::<Rules>()?);
+    let mut conditions = Vec::new();
+    // Empty entries are skipped: compose files often pass `PTTS_CONDITION=` for none, which
+    // clap reads as one empty value, and a trailing comma leaves one too.
+    for condition in args.conditions.iter().filter(|c| !c.is_empty()) {
+        let (name, value) = condition.split_once('=').context("--condition takes NAME=VALUE")?;
+        conditions.push((name.to_string(), value.to_string()));
+    }
     let unavailable = match device {
         DeviceKind::Cuda if !cfg!(feature = "cuda") => Some("cuda"),
         DeviceKind::Vulkan if !cfg!(feature = "vulkan") => Some("vulkan"),
@@ -134,6 +151,7 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         args.temperature,
         args.seed,
         normalize,
+        &conditions,
     )
     .await
 }

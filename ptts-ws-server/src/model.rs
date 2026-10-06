@@ -125,6 +125,7 @@ pub async fn load_ptts(
     seed_base: u64,
     max_seq_len: usize,
     normalize: Normalize,
+    conditions: &[(String, String)],
 ) -> Result<AppState> {
     let mut m = match config {
         Some(config) if config.is_file() || config.extension().is_some_and(|v| v == "json") => {
@@ -144,12 +145,15 @@ pub async fn load_ptts(
         m.voice_files.extend(found);
     }
     let frame_rate = m.cfg.mimi.frame_rate;
-    let mut synth = SynthBuilder::new(m.cfg, &m.model_path, normalize)
+    let mut builder = SynthBuilder::new(m.cfg, &m.model_path, normalize)
         .tokenizer_file(&m.tokenizer_path)
         .device(device)
         .quant(quant)
-        .temperature(temperature)
-        .build()?;
+        .temperature(temperature);
+    for (name, value) in conditions {
+        builder = builder.condition(name, value);
+    }
+    let mut synth = builder.build()?;
     // Registered after the build, not through it: the builder propagates a bad
     // voice file and one should not take the server down. Order is preserved,
     // so a --voice-dir entry still overrides a bundled voice of the same name.

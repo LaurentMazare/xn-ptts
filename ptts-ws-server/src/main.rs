@@ -4,7 +4,7 @@ mod model;
 mod protocol;
 mod utils;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::Router;
 use axum::routing::any;
 use clap::Parser;
@@ -60,6 +60,11 @@ struct Args {
     /// comma-separated list of rule names. Has no effect with `--lang none`.
     #[arg(long, default_value = "default")]
     rewrites: String,
+
+    /// Set one of the checkpoint's conditioners, e.g. `padding_bonus=0.5`; repeatable. Those
+    /// not set take their defaults.
+    #[arg(long = "condition", value_name = "NAME=VALUE")]
+    conditions: Vec<String>,
 }
 
 fn init_tracing() {
@@ -113,6 +118,11 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
     // would catch them, but only after the checkpoint is on disk.
     quant.check_device(device)?;
     let normalize = args.lang.parse::<Normalize>()?.with_rules(args.rewrites.parse::<Rules>()?);
+    let mut conditions = Vec::new();
+    for condition in &args.conditions {
+        let (name, value) = condition.split_once('=').context("--condition takes NAME=VALUE")?;
+        conditions.push((name.to_string(), value.to_string()));
+    }
     let unavailable = match device {
         DeviceKind::Cuda if !cfg!(feature = "cuda") => Some("cuda"),
         DeviceKind::Vulkan if !cfg!(feature = "vulkan") => Some("vulkan"),
@@ -133,6 +143,7 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         args.seed,
         args.max_seq_len,
         normalize,
+        &conditions,
     )
     .await
 }
