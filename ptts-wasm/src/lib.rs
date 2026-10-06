@@ -12,7 +12,7 @@
 //! (see [`CPU_FRAMES_PER_STEP`]). The CPU runs on one thread or, in the `threads` build, on
 //! several (see `start_cpu_pool`); the `webgpu` feature adds the GPU.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -559,10 +559,14 @@ fn js_err(e: xn::Error) -> JsError {
 /// The state sits behind an `Rc<RefCell<Option<_>>>` because `generation_step` is async and a
 /// `RefCell` borrow may not be held across an await: the step takes the state out for its
 /// duration and puts it back after. A call that arrives meanwhile finds it missing and is
-/// refused, so calls must not overlap; `phonon-tts`'s worker awaits each one.
+/// refused, so calls must not overlap; `phonon-tts`'s worker awaits each one. The exception
+/// is `stop_generation`, which the step applies when it puts the state back.
 #[wasm_bindgen]
 pub struct Model {
     loaded: Rc<RefCell<Option<Loaded>>>,
+    /// Set by `stop_generation` while a step holds the model, so the stop is applied when
+    /// the step hands it back instead of being lost.
+    stop_requested: Rc<Cell<bool>>,
 }
 
 impl Model {
@@ -636,7 +640,7 @@ impl Model {
         )
         .await
         .map_err(js_err)?;
-        Ok(Model { loaded: Rc::new(RefCell::new(Some(loaded))) })
+        Ok(Model { loaded: Rc::new(RefCell::new(Some(loaded))), stop_requested: Rc::default() })
     }
 
     /// Registers a voice from a safetensors file and returns its index for
@@ -685,6 +689,7 @@ impl Model {
     /// chunk is finished. One frame per call on the CPU, several on WebGPU.
     pub fn generation_step(&self) -> js_sys::Promise {
         let cell = Rc::clone(&self.loaded);
+        let stop_requested = Rc::clone(&self.stop_requested);
         wasm_bindgen_futures::future_to_promise(async move {
             let Some(mut loaded) = cell.borrow_mut().take() else {
                 return Err(
@@ -693,6 +698,9 @@ impl Model {
             };
             let result = with_engine!(&mut loaded.engine, |e| e.step().await);
             Self::drop_generation_on_error(&mut loaded, &result);
+            if stop_requested.take() {
+                with_engine!(&mut loaded.engine, |e| e.gen_state = None);
+            }
             *cell.borrow_mut() = Some(loaded);
             match result {
                 Ok(Some(pcm)) => Ok(js_sys::Float32Array::from(pcm.as_slice()).into()),
@@ -702,10 +710,14 @@ impl Model {
         })
     }
 
-    /// Drops the generation in progress, if any.
+    /// Drops the generation in progress, if any. Called while a `generation_step` is pending,
+    /// it takes effect when that step returns: the step still delivers its frames, and the
+    /// next one reports the end.
     pub fn stop_generation(&self) {
-        if let Some(l) = self.loaded.borrow_mut().as_mut() {
-            with_engine!(&mut l.engine, |e| e.gen_state = None);
+        match self.loaded.borrow_mut().as_mut() {
+            Some(l) => with_engine!(&mut l.engine, |e| e.gen_state = None),
+            // A step holds the model: it drops the generation when it hands the model back.
+            None => self.stop_requested.set(true),
         }
     }
 
