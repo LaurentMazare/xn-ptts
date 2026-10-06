@@ -59,78 +59,118 @@ pub fn load_summed_conditions<T: WithDTypeF, B: Backend>(
     config: &TTSConfig,
     values: &HashMap<String, String>,
 ) -> Result<Option<Tensor<T, B>>> {
-    let conditioners = &config.conditioners;
-    let output_dim = config.flow_lm.d_model;
-    if let Some(name) = values.keys().find(|k| !conditioners.iter().any(|c| c.name() == *k)) {
-        xn::bail!("no conditioner named {name:?} in this checkpoint")
-    }
-    let mut sum: Option<Tensor<T, B>> = None;
-    for cfg in conditioners {
-        let name = cfg.name();
-        if let Some(fuser) = &config.fuser
-            && !fuser.sum.iter().any(|s| s == name)
-        {
-            xn::bail!("conditioner {name:?} is not in the fuser's sum, the only fusion supported")
-        }
-        let Some(value) = values.get(name).map(String::as_str).or_else(|| default_condition(name))
-        else {
-            xn::bail!("conditioner {name:?} has no default, a value has to be given for it")
-        };
-        let vb = vb.pp(name);
-        let cond = match cfg {
-            ConditionerConfig::Lut { lut, .. } => load_lut_condition(&vb, lut, value, output_dim)?,
-            ConditionerConfig::Continuous { continuous, .. } => {
-                load_continuous_condition(&vb, continuous, value, output_dim)?
+    Conditioners::load(vb, config)?.sum(values)
+}
+
+enum Condition<T: WithDTypeF, B: Backend> {
+    Lut { possible: Vec<String>, lut: LUTConditioner<T, B> },
+    Continuous { cfg: ContinuousConditionerConfig, proj: Option<Linear<T, B>> },
+}
+
+pub struct Conditioners<T: WithDTypeF, B: Backend> {
+    conditions: Vec<(String, Condition<T, B>)>,
+    device: B,
+}
+
+impl<T: WithDTypeF, B: Backend> Conditioners<T, B> {
+    pub fn load(vb: &Path<B>, config: &TTSConfig) -> Result<Self> {
+        let output_dim = config.flow_lm.d_model;
+        let mut conditions = Vec::with_capacity(config.conditioners.len());
+        for cfg in config.conditioners.iter() {
+            let name = cfg.name();
+            if let Some(fuser) = &config.fuser
+                && !fuser.sum.iter().any(|s| s == name)
+            {
+                xn::bail!(
+                    "conditioner {name:?} is not in the fuser's sum, the only fusion supported"
+                )
             }
-        };
-        sum = Some(match sum {
-            Some(s) => s.add(&cond)?,
-            None => cond,
-        });
+            let vb = vb.pp(name);
+            let condition = match cfg {
+                ConditionerConfig::Lut { lut, .. } => load_lut_condition(&vb, lut, output_dim)?,
+                ConditionerConfig::Continuous { continuous, .. } => {
+                    load_continuous_condition(&vb, continuous, output_dim)?
+                }
+            };
+            conditions.push((name.to_string(), condition));
+        }
+        Ok(Self { conditions, device: vb.device().clone() })
     }
-    Ok(sum)
+
+    pub fn sum(&self, values: &HashMap<String, String>) -> Result<Option<Tensor<T, B>>> {
+        if let Some(name) = values.keys().find(|k| !self.conditions.iter().any(|(n, _)| n == *k)) {
+            xn::bail!("no conditioner named {name:?} in this checkpoint")
+        }
+        let mut sum: Option<Tensor<T, B>> = None;
+        for (name, condition) in self.conditions.iter() {
+            let Some(value) =
+                values.get(name).map(String::as_str).or_else(|| default_condition(name))
+            else {
+                xn::bail!("conditioner {name:?} has no default, a value has to be given for it")
+            };
+            let cond = match condition {
+                Condition::Lut { possible, lut } => {
+                    let Some(id) = possible.iter().position(|v| v == value) else {
+                        xn::bail!("{value:?} is not one of the conditioner's values {possible:?}")
+                    };
+                    lut.embed_tokens(&[id as u32])?
+                }
+                Condition::Continuous { cfg, proj } => {
+                    let value: f32 = value
+                        .parse()
+                        .map_err(|_| xn::Error::msg(format!("{value:?} is not a number")))?;
+                    let emb = sin_embedding(cfg.scale_factor * value, cfg.dim, cfg.max_period)?;
+                    let emb = Tensor::from_vec(
+                        emb.into_iter().map(T::from_f32).collect(),
+                        (1, 1, cfg.dim),
+                        &self.device,
+                    )?;
+                    match proj {
+                        Some(proj) => proj.forward(&emb)?,
+                        None => emb,
+                    }
+                }
+            };
+            sum = Some(match sum {
+                Some(s) => s.add(&cond)?,
+                None => cond,
+            });
+        }
+        Ok(sum)
+    }
 }
 
 fn load_lut_condition<T: WithDTypeF, B: Backend>(
     vb: &Path<B>,
     cfg: &LutConditionerConfig,
-    value: &str,
     output_dim: usize,
-) -> Result<Tensor<T, B>> {
+) -> Result<Condition<T, B>> {
     if cfg.tokenizer != "noop" {
         xn::bail!("unsupported tokenizer {:?} for a lut conditioner", cfg.tokenizer)
     }
-    let Some(possible) = cfg.possible_values.as_ref() else {
+    let Some(possible) = cfg.possible_values.clone() else {
         xn::bail!("a lut conditioner without possible_values is not supported")
     };
-    let Some(id) = possible.iter().position(|v| v == value) else {
-        xn::bail!("{value:?} is not one of the conditioner's values {possible:?}")
-    };
     let lut = LUTConditioner::load(vb, cfg.n_bins, None, cfg.dim, output_dim)?;
-    lut.embed_tokens(&[id as u32])
+    Ok(Condition::Lut { possible, lut })
 }
 
 fn load_continuous_condition<T: WithDTypeF, B: Backend>(
     vb: &Path<B>,
     cfg: &ContinuousConditionerConfig,
-    value: &str,
     output_dim: usize,
-) -> Result<Tensor<T, B>> {
+) -> Result<Condition<T, B>> {
     if vb.contains("learnt_padding") {
         vb.tensor::<T>("learnt_padding", (1, 1, output_dim))?;
     }
-    let value: f32 =
-        value.parse().map_err(|_| xn::Error::msg(format!("{value:?} is not a number")))?;
-    let emb = sin_embedding(cfg.scale_factor * value, cfg.dim, cfg.max_period)?;
-    let emb =
-        Tensor::from_vec(emb.into_iter().map(T::from_f32).collect(), (1, 1, cfg.dim), vb.device())?;
-    if vb.contains("output_proj.weight") {
-        Linear::load(vb.pp("output_proj"), cfg.dim, output_dim)?.forward(&emb)
+    let proj = if vb.contains("output_proj.weight") {
+        Some(Linear::load(vb.pp("output_proj"), cfg.dim, output_dim)?)
     } else if cfg.dim == output_dim {
-        Ok(emb)
+        None
     } else {
         xn::bail!("conditioner of dim {} has no output_proj to {output_dim}", cfg.dim)
-    }
+    };
+    Ok(Condition::Continuous { cfg: cfg.clone(), proj })
 }
 
 fn sin_embedding(position: f32, dim: usize, max_period: f32) -> Result<Vec<f32>> {
