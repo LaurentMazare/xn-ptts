@@ -38,7 +38,7 @@ export class PhononTTS {
   features;
   /** Where generation runs: `'webgpu'` or `'cpu'`. */
   device;
-  /** Why `device` is what it is, e.g. `'default'` or `'this browser offers no WebGPU adapter'`. */
+  /** Why `device` is what it is, e.g. `'default'` or `'requested'`. */
   deviceReason;
   /** CPU threads generation runs on, counting the worker that owns the model. */
   threads;
@@ -65,7 +65,7 @@ export class PhononTTS {
       wasmUrl,
       threadsWasmUrl,
       threads = 'auto',
-      device = 'auto',
+      device,
     } = options ?? {};
     // Required, as in every other frontend: the spoken forms of `@`, `+` and `=` differ per
     // language, so normalizing German text as English is worse than not normalizing at all.
@@ -75,7 +75,7 @@ export class PhononTTS {
     if (quant !== 'f32' && quant !== 'q8') {
       throw new TypeError(`quant must be 'f32' or 'q8', got '${quant}'`);
     }
-    if (device !== 'auto' && device !== 'webgpu' && device !== 'cpu') {
+    if (device !== undefined && device !== 'auto' && device !== 'webgpu' && device !== 'cpu') {
       throw new TypeError(`device must be 'auto', 'webgpu' or 'cpu', got ${JSON.stringify(device)}`);
     }
     if (device === 'webgpu' && quant !== 'q8') {

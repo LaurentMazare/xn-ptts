@@ -116,7 +116,7 @@ The [package README](ios/PhononTTS/README.md) covers downloading the models inst
 
 ## 6. Use it in the browser
 
-The `phonon-tts` JavaScript package runs the model in the page, compiled to WebAssembly, in a Web Worker: on the GPU through WebGPU when the browser offers it, and on the CPU otherwise. Build it from the repository, which needs Rust with the `wasm32-unknown-unknown` target, [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/), Node 22.7 or later, [binaryen](https://github.com/WebAssembly/binaryen/releases) 124 or later, and a pinned nightly toolchain for the package's multithreaded build, which `make threads-toolchain` installs:
+The `phonon-tts` JavaScript package runs the model in the page, compiled to WebAssembly, in a Web Worker: on the CPU by default, or on the GPU through WebGPU when asked with `device: 'webgpu'` or `'auto'`. Build it from the repository, which needs Rust with the `wasm32-unknown-unknown` target, [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/), Node 22.7 or later, [binaryen](https://github.com/WebAssembly/binaryen/releases) 124 or later, and a pinned nightly toolchain for the package's multithreaded build, which `make threads-toolchain` installs:
 
 ```bash
 rustup target add wasm32-unknown-unknown

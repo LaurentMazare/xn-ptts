@@ -4,13 +4,26 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chooseDevice, isGguf } from '../device.js';
 
+test('the CPU by default, even when the browser has WebGPU', () => {
+  assert.deepEqual(chooseDevice({ quant: 'q8', hasWebGpu: true }), { device: 'cpu', reason: 'default' });
+});
+
 test('auto: WebGPU when the browser has it and the weights are q8', () => {
-  assert.deepEqual(chooseDevice({ quant: 'q8', hasWebGpu: true }), { device: 'webgpu', reason: 'default' });
+  assert.deepEqual(chooseDevice({ requested: 'auto', quant: 'q8', hasWebGpu: true }), {
+    device: 'webgpu',
+    reason: "'auto', and the browser has a WebGPU adapter",
+  });
 });
 
 test('auto: the CPU, with the reason, otherwise', () => {
-  assert.deepEqual(chooseDevice({ quant: 'q8', hasWebGpu: false }), { device: 'cpu', reason: 'this browser offers no WebGPU adapter' });
-  assert.deepEqual(chooseDevice({ quant: 'f32', hasWebGpu: true }), { device: 'cpu', reason: 'WebGPU needs q8 weights' });
+  assert.deepEqual(chooseDevice({ requested: 'auto', quant: 'q8', hasWebGpu: false }), {
+    device: 'cpu',
+    reason: 'this browser offers no WebGPU adapter',
+  });
+  assert.deepEqual(chooseDevice({ requested: 'auto', quant: 'f32', hasWebGpu: true }), {
+    device: 'cpu',
+    reason: 'WebGPU needs q8 weights',
+  });
 });
 
 test('a requested device is taken as asked', () => {
@@ -20,18 +33,13 @@ test('a requested device is taken as asked', () => {
 });
 
 test("auto: the CPU rather than a software fallback adapter, unless WebGPU is asked for", () => {
-  assert.deepEqual(chooseDevice({ quant: 'q8', hasWebGpu: true, fallbackAdapter: true }), {
+  assert.deepEqual(chooseDevice({ requested: 'auto', quant: 'q8', hasWebGpu: true, fallbackAdapter: true }), {
     device: 'cpu',
     reason: "the browser's WebGPU adapter is a software fallback",
   });
   assert.deepEqual(chooseDevice({ requested: 'webgpu', quant: 'q8', hasWebGpu: true, fallbackAdapter: true }), {
     device: 'webgpu',
     reason: 'requested',
-  });
-  // An explicit 'auto' behaves like the default.
-  assert.deepEqual(chooseDevice({ requested: 'auto', quant: 'q8', hasWebGpu: false }), {
-    device: 'cpu',
-    reason: 'this browser offers no WebGPU adapter',
   });
 });
 

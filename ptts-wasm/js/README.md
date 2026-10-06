@@ -72,7 +72,7 @@ stopButton.onclick = () => controller.abort();
 | `voices` | the default voice | voices to fetch during `load`. Others are fetched the first time they are used. |
 | `cache` | `true` | keep downloads in the Cache API |
 | `onProgress` | | `({ file, loaded, total, cached }) => void`, for a progress bar |
-| `device` | `'auto'` | `'auto'`, `'webgpu'` or `'cpu'`: where to generate, see [WebGPU](#webgpu) |
+| `device` | `'cpu'` | `'cpu'`, `'webgpu'` or `'auto'`: where to generate, see [WebGPU](#webgpu) |
 | `threads` | `'auto'` | CPU threads to generate on, or `'auto'` for 3. Needs a cross-origin isolated page, see [Threads](#threads) |
 | `workerUrl`, `wasmUrl`, `threadsWasmUrl` | beside `index.js` | for setups that serve the package's files from elsewhere |
 
@@ -138,9 +138,9 @@ How close to real time it gets depends on the device, on [WebGPU](#webgpu) and o
 
 ## WebGPU
 
-By default the model runs on the GPU when the browser hands out a WebGPU adapter and the weights are `q8` in a GGUF file, and on the CPU otherwise. A software fallback adapter counts as none, since it would run slower than the CPU. `q8` weights go to the GPU as they are; other weights would have to be quantized there, which means reading each one back to the host, and a browser cannot wait for that. WebGPU needs no cross-origin isolation, and it works in the same secure contexts as the cache.
+The model runs on the CPU unless asked otherwise. WebGPU is opt in, because it is not faster than the CPU on every device: on phones the threaded CPU build can beat it. Pass `device: 'webgpu'` to run on the GPU, and `load` rejects if it cannot start. Pass `device: 'auto'` to use the GPU when the browser hands out a WebGPU adapter and the weights are `q8` in a GGUF file, and the CPU otherwise. Under `'auto'` a software fallback adapter counts as none, since it would run slower than the CPU. `q8` weights go to the GPU as they are; other weights would have to be quantized there, which means reading each one back to the host, and a browser cannot wait for that. WebGPU needs no cross-origin isolation, and it works in the same secure contexts as the cache.
 
-On the GPU the model generates several frames per round trip to the GPU and hands them over together, so its chunks of audio are longer than the CPU's 80 ms. If WebGPU fails to start, `'auto'` falls back to the CPU and `tts.deviceReason` says why. That CPU run stays on one thread: it uses the build WebGPU was loaded in, rather than copying the weights into a second one. Pass `device: 'webgpu'` to insist on the GPU, and `load` rejects instead; pass `device: 'cpu'` to never try it. The GPU computes in a different order from the CPU, so its audio is not bit-identical to the CPU's.
+On the GPU the model generates several frames per round trip to the GPU and hands them over together, so its chunks of audio are longer than the CPU's 80 ms. If WebGPU fails to start, `'auto'` falls back to the CPU and `tts.deviceReason` says why. That CPU run stays on one thread: it uses the build WebGPU was loaded in, rather than copying the weights into a second one. The GPU computes in a different order from the CPU, so its audio is not bit-identical to the CPU's.
 
 ## Threads
 

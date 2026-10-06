@@ -49,6 +49,10 @@
     <label for="quant">Quantization</label>
     <select id="quant"></select>
   </div>
+  <div class="section">
+    <label for="device">Device</label>
+    <select id="device"><option value="cpu">cpu</option><option value="webgpu">webgpu</option><option value="auto">auto</option></select>
+  </div>
   <button id="load-btn" disabled>Load Weights</button>
   <button id="generate-btn" style="display:none">Generate</button>
   <div class="slider-section">
@@ -68,6 +72,7 @@ const loadBtn = document.getElementById('load-btn');
 const btn = document.getElementById('generate-btn');
 const voiceSelect = document.getElementById('voice');
 const quantSelect = document.getElementById('quant');
+const deviceSelect = document.getElementById('device');
 const progressBar = document.getElementById('progress-bar');
 const progressFill = document.getElementById('progress-fill');
 const canvas = document.getElementById('visualizer');
@@ -238,13 +243,21 @@ function onProgress({ file, loaded, total, cached }) {
 async function loadWeights() {
   loadBtn.disabled = true;
   quantSelect.disabled = true;
+  deviceSelect.disabled = true;
   try {
     log('Downloading tokenizer and model...');
-    tts = await PhononTTS.load({ lang: LANG, quant: quantSelect.value, model: demoModel.model, onProgress });
+    tts = await PhononTTS.load({
+      lang: LANG,
+      quant: quantSelect.value,
+      device: deviceSelect.value,
+      model: demoModel.model,
+      onProgress,
+    });
   } catch (e) {
     log('Error: ' + e.message);
     loadBtn.disabled = false;
     quantSelect.disabled = false;
+    deviceSelect.disabled = false;
     return;
   } finally {
     hideProgress();

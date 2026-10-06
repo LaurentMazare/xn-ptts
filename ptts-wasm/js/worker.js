@@ -102,7 +102,8 @@ async function webGpuAdapter() {
 async function handleInit(id, options) {
   settings = options;
   const { model: spec, quant, cache } = options;
-  const adapter = options.device === 'cpu' ? { hasWebGpu: false } : await webGpuAdapter();
+  const wantsGpu = options.device === 'webgpu' || options.device === 'auto';
+  const adapter = wantsGpu ? await webGpuAdapter() : { hasWebGpu: false };
   const choice = chooseDevice({ requested: options.device, quant, ...adapter });
   if (choice.device === 'webgpu' && !adapter.hasWebGpu) throw new Error('this browser offers no WebGPU adapter');
   // The module first, so a browser that cannot compile it finds out before the download.

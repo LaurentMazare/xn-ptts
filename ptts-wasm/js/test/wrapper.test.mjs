@@ -85,8 +85,9 @@ test('device is checked before the worker starts, handed to it, and reported bac
   assert.equal(tts.device, 'cpu');
   assert.equal(tts.deviceReason, 'this browser offers no WebGPU adapter');
   tts.dispose();
+  // Left out, it stays out, so the worker can tell the CPU default from a request for it.
   await PhononTTS.load({ lang: 'en', model: MODEL, workerUrl: 'worker.js' });
-  assert.equal(FakeWorker.last.init.device, 'auto');
+  assert.equal(FakeWorker.last.init.device, undefined);
 });
 
 test('threads is checked before the worker starts, handed to it, and reported back', async () => {

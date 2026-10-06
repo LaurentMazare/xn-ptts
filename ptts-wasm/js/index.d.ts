@@ -79,10 +79,11 @@ export interface LoadOptions {
    */
   threads?: number | 'auto';
   /**
-   * Where to generate. Default `'auto'`: on the GPU through WebGPU when the browser has it
-   * and `quant` is `'q8'`, falling back to the CPU if WebGPU fails to start. `'webgpu'`
-   * insists on the GPU and rejects if it cannot start; `'cpu'` never tries it.
-   * {@link PhononTTS.deviceReason} says why the model ended up where it did.
+   * Where to generate. Default `'cpu'`. WebGPU is opt in, since it is not faster than the CPU
+   * on every device. `'webgpu'` insists on the GPU and rejects if it cannot start. `'auto'`
+   * uses the GPU when the browser has a hardware WebGPU adapter and `quant` is `'q8'`, and
+   * the CPU otherwise or if WebGPU fails to start. {@link PhononTTS.deviceReason} says why
+   * the model ended up where it did.
    */
   device?: 'auto' | 'webgpu' | 'cpu';
 }
