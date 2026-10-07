@@ -589,6 +589,7 @@ impl Tts {
             seed,
             cfg_coef,
             max_tokens_per_chunk: None,
+            post_process: None,
         }
     }
 

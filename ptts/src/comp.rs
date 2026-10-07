@@ -140,6 +140,10 @@ mod compressor {
             self.delay.fill(0.0);
             self.delay_idx = 0;
         }
+
+        fn latency(&self) -> usize {
+            self.delay.len()
+        }
     }
 }
 
@@ -285,6 +289,10 @@ mod limiter {
             self.delay.fill(0.0);
             self.delay_idx = 0;
         }
+
+        fn latency(&self) -> usize {
+            self.delay.len()
+        }
     }
 }
 
@@ -305,6 +313,11 @@ pub trait AudioModule: Send {
     fn process(&mut self, buffer: &mut [f32]);
 
     fn reset(&mut self) {}
+
+    /// How many samples the output lags the input by.
+    fn latency(&self) -> usize {
+        0
+    }
 }
 
 /// A sequence of `AudioModule`s applied in order.
@@ -343,6 +356,10 @@ impl Chain {
         chain
     }
 
+    pub fn from_modules(sample_rate: u32, modules: &[ModuleConfig]) -> Self {
+        Self { modules: modules.iter().map(|m| m.build(sample_rate)).collect(), sample_rate }
+    }
+
     pub fn gain_compressor_limiter(gain_db: f32, sample_rate: u32) -> Self {
         let mut chain = Chain::new(sample_rate);
         chain
@@ -373,6 +390,17 @@ impl AudioModule for Chain {
             }
         }
     }
+
+    fn latency(&self) -> usize {
+        self.modules
+            .iter()
+            .map(|m| match m {
+                Module::Compressor(c) => c.latency(),
+                Module::Limiter(l) => l.latency(),
+                Module::Gain(g) => g.latency(),
+            })
+            .sum()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -382,7 +410,7 @@ pub struct ChainConfig {
     pub modules: Vec<ModuleConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModuleConfig {
     Compressor(CompressorConfig),
