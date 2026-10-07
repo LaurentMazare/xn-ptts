@@ -21,5 +21,8 @@ export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="$COMMON -C target-cpu=x86-64
 unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
 
 rustup target add aarch64-linux-android x86_64-linux-android >/dev/null
+# cargo-ndk skips the copy when the file already there is newer, so a cached build would leave a
+# library of other flags in place.
+rm -rf android/jniLibs
 cargo ndk -t arm64-v8a -t x86_64 -o android/jniLibs build --release -p ptts-ffi
 du -sh android/jniLibs/*/libptts_ffi.so
