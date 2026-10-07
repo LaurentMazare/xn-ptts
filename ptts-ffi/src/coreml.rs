@@ -1,0 +1,169 @@
+//! The engine on Apple platforms: the Core ML driver, with `dir` an exported bundle.
+//!
+//! Text preparation, normalization and tokenization are `ptts`'s, and generation is
+//! `ptts_coreml`'s.
+
+use crate::{PTTS_UNIT_ANE, PTTS_UNIT_CPU, PttsResult};
+use ptts::plan::Chunk;
+use ptts::preprocess::Normalize;
+use ptts_coreml::Weights;
+use ptts_coreml::phonon::driver::{Config, Phonon, Voice};
+use ptts_coreml::run::Compute;
+use std::path::{Path, PathBuf};
+
+pub struct Engine {
+    phonon: Phonon,
+    tokenizer: ptts::tok::Tok,
+    normalize: Normalize,
+    dir: PathBuf,
+    voices: Vec<String>,
+}
+
+fn voice_names(dir: &Path) -> Vec<String> {
+    ptts::loader::voices_in(&dir.join("voices")).into_iter().map(|(name, _)| name).collect()
+}
+
+/// A voice as the exporter writes it: an `emb` tensor of `[1, T, D]` or `[T, D]`, and for a
+/// voice baked into the checkpoint, the `conditions` it is spoken with.
+fn load_voice(dir: &Path, name: &str) -> Result<Voice, String> {
+    let w = Weights::open(&dir.join("voices").join(format!("{name}.safetensors")))?;
+    let (shape, data) = w.get("emb").map_err(|_| format!("voice {name} has no `emb` tensor"))?;
+    let len = if shape.len() == 3 { shape[1] } else { shape[0] };
+    let conditions = w.data("conditions").ok().map(<[f32]>::to_vec);
+    Ok(Voice { emb: data.to_vec(), len, conditions })
+}
+
+/// Mimi's frame rate, for the per-chunk frame budget.
+const FRAME_RATE: f64 = 12.5;
+
+impl Engine {
+    pub fn open(dir: &Path, unit: u32, lang: &str) -> Result<Self, String> {
+        let flow_unit = match unit {
+            PTTS_UNIT_ANE => Compute::CpuAndNeuralEngine,
+            PTTS_UNIT_CPU => Compute::CpuOnly,
+            u => return Err(format!("unknown compute unit {u}")),
+        };
+        let meta: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.join("bundle.json")).map_err(|e| format!("bundle.json: {e}"))?,
+        )
+        .map_err(|e| format!("bundle.json: {e}"))?;
+        let get =
+            |v: &serde_json::Value, k: &str| v[k].as_f64().ok_or(format!("bundle.json has no {k}"));
+        let int = |k: &str| get(&meta, k).map(|v| v as usize);
+        let dim = |k: &str| get(&meta["dims"], k).map(|v| v as usize);
+        let cfg = Config {
+            dims: ptts_coreml::phonon::flow_lm::Dims {
+                d: dim("d")?,
+                heads: dim("heads")?,
+                layers: dim("layers")?,
+                ff: dim("ff")?,
+                ldim: dim("ldim")?,
+                flow_d: dim("flow_d")?,
+                flow_blocks: dim("flow_blocks")?,
+            },
+            ctx: int("ctx")?,
+            prefill_len: int("prefill_len")?,
+            mimi_window: int("mimi_window")?,
+            max_frames: int("max_frames")?,
+            eos_threshold: get(&meta, "eos_threshold")? as f32,
+            temperature: get(&meta, "temperature")? as f32,
+            seed: 0,
+            flow_unit,
+        };
+        let voices = voice_names(dir);
+        let voice = load_voice(dir, voices.first().ok_or("no voices in the bundle")?)?;
+        let tokenizer =
+            ptts::tok::Tok::open(&dir.join("tokenizer.json")).map_err(|e| e.to_string())?;
+        let normalize = lang.parse::<Normalize>().map_err(|e| e.to_string())?;
+        Ok(Self {
+            phonon: Phonon::load(dir, cfg, voice)?,
+            tokenizer,
+            normalize,
+            dir: dir.to_path_buf(),
+            voices,
+        })
+    }
+
+    pub fn voices(&self) -> &[String] {
+        &self.voices
+    }
+
+    /// Switch to one of [`Self::voices`].
+    pub fn set_voice(&mut self, name: &str) -> Result<(), String> {
+        self.phonon.set_voice(load_voice(&self.dir, name)?)
+    }
+
+    /// Split `text` into chunks the prefill graph takes.
+    ///
+    /// The chunks every frontend makes, from [`ptts::plan::chunks`], with one addition the graph
+    /// forces: it has a fixed number of rows, so a single sentence longer than that is split
+    /// again at its middle word. The tokenizer's ids per word do not depend on the words around
+    /// them, so that loses nothing but the prosody across the cut.
+    fn plan(&self, text: &str) -> Result<Vec<Chunk>, String> {
+        let max = self.phonon.max_tokens();
+        let planned = ptts::plan::chunks(&self.tokenizer, text, self.normalize, max, FRAME_RATE)
+            .map_err(|e| e.to_string())?;
+        let mut chunks = Vec::new();
+        let mut todo: Vec<Chunk> = planned.into_iter().rev().collect();
+        while let Some(chunk) = todo.pop() {
+            if chunk.tokens.is_empty() {
+                continue;
+            }
+            if chunk.tokens.len() <= max {
+                chunks.push(chunk);
+                continue;
+            }
+            let words: Vec<&str> = chunk.text.split_whitespace().collect();
+            if words.len() < 2 {
+                return Err(format!(
+                    "one word is {} tokens, over the {max} the model takes",
+                    chunk.tokens.len()
+                ));
+            }
+            let (a, b) = words.split_at(words.len() / 2);
+            for half in [b, a] {
+                let half = Chunk::new(half.join(" "), &self.tokenizer, FRAME_RATE);
+                todo.push(half.map_err(|e| e.to_string())?);
+            }
+        }
+        Ok(chunks)
+    }
+
+    pub fn speak(
+        &mut self,
+        text: &str,
+        sink: &mut dyn FnMut(&[f32]) -> bool,
+    ) -> Result<PttsResult, String> {
+        let start = std::time::Instant::now();
+        let chunks = self.plan(text)?;
+        let (mut frames, mut samples, mut ttfa) = (0, 0, None);
+        let mut pcm_buf = Vec::new();
+        for chunk in chunks {
+            let (tokens, budget) = (&chunk.tokens, chunk.frame_budget);
+            let t = self.phonon.generate(
+                tokens,
+                chunk.frames_after_eos,
+                budget,
+                &mut |pcm: &[f32]| {
+                    // Core ML has been seen to hand back a stray non-finite sample; silence it
+                    // rather than send it to the speaker.
+                    pcm_buf.clear();
+                    pcm_buf.extend(pcm.iter().map(|v| if v.is_finite() { *v } else { 0.0 }));
+                    sink(&pcm_buf)
+                },
+            )?;
+            ttfa.get_or_insert(start.elapsed() - t.total + t.ttfa);
+            frames += t.frames;
+            samples += t.samples;
+            if t.stopped {
+                break;
+            }
+        }
+        Ok(PttsResult {
+            frames: frames as u32,
+            samples,
+            ttfa_ms: ttfa.unwrap_or_default().as_secs_f64() * 1e3,
+            total_ms: start.elapsed().as_secs_f64() * 1e3,
+        })
+    }
+}

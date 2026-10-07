@@ -1,4 +1,5 @@
-// C interface to the Core ML Phonon driver, which the PhononTTS Swift package wraps.
+// C interface to Phonon: the Core ML driver on Apple, which the PhononTTS Swift package wraps,
+// and the CPU everywhere else, which android/PhononTTS.kt wraps.
 // Declared by hand: keep it in step with ../src/lib.rs, which documents each call in full.
 #ifndef PTTS_H
 #define PTTS_H
@@ -20,12 +21,15 @@ typedef struct {
     double total_ms;
 } PttsResult;
 
-/// Called with each frame's audio as it is decoded, on the generating thread. Return false to stop.
+/// Called with audio as it is decoded, on the thread that called ptts_speak: one frame per call on
+/// Core ML, one or more on the CPU. Return false to stop.
 typedef bool (*PttsFrameFn)(const float *pcm, size_t n, void *user);
 
-/// Load a model bundle, compiling it for this device first if needed (about 10 s on an
-/// iPhone 16 Pro, once per install). `unit` is PTTS_UNIT_ANE or PTTS_UNIT_CPU; `lang` is en, fr,
-/// de, es, pt or none. NULL on failure; then ptts_last_error(NULL), on the same thread, says why.
+/// Load a model. On Apple, `dir` is an exported bundle, compiled for this device first if needed
+/// (about 10 s on an iPhone 16 Pro, once per install), and `unit` is PTTS_UNIT_ANE or
+/// PTTS_UNIT_CPU. Elsewhere, `dir` is a checkpoint folder and `unit` is PTTS_UNIT_CPU. `lang` is
+/// en, fr, de, es, pt or none. NULL on failure; then ptts_last_error(NULL), on the same thread,
+/// says why.
 PttsHandle *ptts_new(const char *dir, uint32_t unit, const char *lang);
 bool ptts_speak(PttsHandle *h, const char *text, PttsFrameFn cb, void *user, PttsResult *out);
 /// NUL-separated voice names, ending in a second NUL. Borrowed.

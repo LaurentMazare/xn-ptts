@@ -2,16 +2,19 @@
 name = "ptts-ffi"
 version.workspace = true
 edition = "2024"
-description = "C interface to the Core ML Phonon driver, which the PhononTTS Swift package wraps"
+description = "C interface to Phonon: Core ML on Apple, which the PhononTTS Swift package wraps, and the CPU elsewhere"
 repository.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["staticlib", "rlib"]
+# A static library for the iOS xcframework, a shared one for Android.
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-# Text preparation, normalization and the tokenizer come from ptts, so the iOS path speaks the
+# Text preparation, normalization and the tokenizer come from ptts, so both engines speak the
 # same prompt the other frontends do.
 ptts = { workspace = true, features = ["hf"] }
-ptts-coreml = { path = "../ptts-coreml" }
 serde_json = { workspace = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+ptts-coreml = { path = "../ptts-coreml" }
