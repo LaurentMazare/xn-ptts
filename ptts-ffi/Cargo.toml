@@ -1,5 +1,5 @@
 [package]
-name = "ptts-coreml-ffi"
+name = "ptts-ffi"
 version.workspace = true
 edition = "2024"
 description = "C interface to the Core ML Phonon driver, which the PhononTTS Swift package wraps"

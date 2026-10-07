@@ -2857,7 +2857,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ptts-coreml-ffi"
+name = "ptts-ffi"
 version = "0.4.0"
 dependencies = [
  "ptts",

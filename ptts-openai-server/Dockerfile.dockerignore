@@ -5,7 +5,7 @@
 !Cargo.lock
 !ptts
 !ptts-coreml
-!ptts-coreml-ffi
+!ptts-ffi
 !ptts-openai-server
 !ptts-pyo3
 !ptts-wasm
