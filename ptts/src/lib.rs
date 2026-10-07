@@ -74,6 +74,7 @@
 
 #[cfg(feature = "audio")]
 pub mod audio;
+pub mod comp;
 mod conditioners;
 mod conv;
 mod dummy_quantizer;

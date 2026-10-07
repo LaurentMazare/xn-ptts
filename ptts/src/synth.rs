@@ -57,6 +57,7 @@
 //! Driving the loop by hand, from an event loop with no threads to spawn, as
 //! `ptts-wasm` does, is what [`crate::tts_model::TTSModel`]'s primitives are for.
 
+use crate::comp::{AudioModule, Chain, ModuleConfig};
 use crate::conditioners::Conditioners;
 use crate::flow_lm::{NormalRng, StepInput};
 use crate::loader;
@@ -204,6 +205,8 @@ pub struct SpeechOptions {
     /// Classifier-free guidance coefficient. `1.0` and `None` both disable it.
     pub cfg_coef: Option<f32>,
     pub max_tokens_per_chunk: Option<usize>,
+    /// Audio modules run over the PCM, in order, before it is handed out.
+    pub post_process: Option<Vec<ModuleConfig>>,
 }
 
 impl SpeechOptions {
@@ -231,6 +234,11 @@ impl SpeechOptions {
         self.max_tokens_per_chunk = Some(max_tokens);
         self
     }
+
+    pub fn post_process(mut self, modules: impl IntoIterator<Item = ModuleConfig>) -> Self {
+        self.post_process = Some(modules.into_iter().collect());
+        self
+    }
 }
 
 /// Defaults applied to every request unless overridden per call.
@@ -241,6 +249,7 @@ struct Defaults {
     seed: u64,
     cfg_coef: Option<f32>,
     max_tokens_per_chunk: usize,
+    post_process: Vec<ModuleConfig>,
 }
 
 /// Merge per-request overrides onto the settings a [`SynthBuilder`] was given.
@@ -271,6 +280,7 @@ fn resolve(defaults: &Defaults, opts: &SpeechOptions) -> Result<Defaults> {
             _ => None,
         },
         max_tokens_per_chunk: opts.max_tokens_per_chunk.unwrap_or(defaults.max_tokens_per_chunk),
+        post_process: opts.post_process.clone().unwrap_or_else(|| defaults.post_process.clone()),
     })
 }
 
@@ -330,6 +340,7 @@ impl<Q: BackendQ> SynthOf<Q> {
             cfg_base,
             seq_budget,
             normalize: self.normalize,
+            post_process: settings.post_process.clone(),
         })
     }
 
@@ -727,6 +738,8 @@ struct SessionOf<Q: BackendQ> {
     /// Slots the voice prompt already occupies, so the budget check can use it
     /// instead of [`plan::PROMPT_SEQ_HEADROOM`]'s fixed reserve.
     prompt_len: usize,
+    /// Audio modules run over every generation's PCM, fresh for each one.
+    post_process: Vec<ModuleConfig>,
     /// Set while a generation is running. See the note on this type.
     in_flight: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -792,6 +805,7 @@ impl<Q: BackendQ> SessionOf<Q> {
         let base_state = self.base.clone();
         let cfg_base = self.cfg_base.clone();
         let mimi_init = self.model.init_mimi_state(1)?;
+        let mut post = Chain::from_modules(self.sample_rate(), &self.post_process);
 
         let (pcm_tx, pcm_rx) = std::sync::mpsc::channel::<Result<Vec<f32>>>();
         let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Frame<Q>>();
@@ -808,6 +822,9 @@ impl<Q: BackendQ> SessionOf<Q> {
         let decode_handle = std::thread::spawn(move || {
             let mut first_tx = Some(first_tx);
             let mut state = mimi_init.clone();
+            // The post-processing chain delays its output: its first `skip` samples are the
+            // zeros it was primed with, dropped here, and the stream's last are flushed below.
+            let mut skip = post.latency();
             while let Ok(frame) = latent_rx.recv() {
                 let first = match frame {
                     Frame::ChunkEnd => {
@@ -847,6 +864,13 @@ impl<Q: BackendQ> SessionOf<Q> {
                 let pcm = decode_model
                     .decode_latent(&latent, &mut state)
                     .and_then(|audio| audio.narrow(0, ..1)?.contiguous()?.to_vec())
+                    .map(|mut pcm| {
+                        post.process(&mut pcm);
+                        let n = skip.min(pcm.len());
+                        skip -= n;
+                        pcm.drain(..n);
+                        pcm
+                    })
                     .map_err(Error::from);
                 let failed = pcm.is_err();
                 if decode_tx.send(pcm).is_err() || failed {
@@ -858,6 +882,13 @@ impl<Q: BackendQ> SessionOf<Q> {
                 if reset_after {
                     state = mimi_init.clone();
                 }
+            }
+            let latency = post.latency();
+            if latency > skip {
+                let mut tail = vec![0.0; latency];
+                post.process(&mut tail);
+                tail.drain(..skip);
+                let _ = decode_tx.send(Ok(tail));
             }
         });
 
@@ -1125,6 +1156,7 @@ pub struct SynthBuilder {
     eos_threshold: Option<f32>,
     voice: Option<String>,
     max_tokens_per_chunk: usize,
+    post_process: Vec<ModuleConfig>,
     voices: Vec<(String, PathBuf)>,
     normalize: Normalize,
     conditions: HashMap<String, String>,
@@ -1177,6 +1209,7 @@ impl SynthBuilder {
             eos_threshold: None,
             voice: None,
             max_tokens_per_chunk: MAX_TOKENS_PER_CHUNK,
+            post_process: vec![],
             voices: vec![],
             conditions: HashMap::new(),
         }
@@ -1247,6 +1280,13 @@ impl SynthBuilder {
     /// sentence boundaries.
     pub fn max_tokens_per_chunk(mut self, max_tokens: usize) -> Self {
         self.max_tokens_per_chunk = max_tokens;
+        self
+    }
+
+    /// Audio modules run over the PCM of every request, in order, unless the
+    /// request's [`SpeechOptions::post_process`] replaces them.
+    pub fn post_process(mut self, modules: impl IntoIterator<Item = ModuleConfig>) -> Self {
+        self.post_process = modules.into_iter().collect();
         self
     }
 
@@ -1386,6 +1426,7 @@ impl SynthBuilder {
                 seed: self.seed,
                 cfg_coef: self.cfg_coef,
                 max_tokens_per_chunk: self.max_tokens_per_chunk,
+                post_process: self.post_process.clone(),
             },
             normalize: self.normalize,
             conditioners,
@@ -1711,6 +1752,7 @@ mod tests {
             seed: 42,
             cfg_coef: None,
             max_tokens_per_chunk: 50,
+            post_process: vec![],
         }
     }
 
