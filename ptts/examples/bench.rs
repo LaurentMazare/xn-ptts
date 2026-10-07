@@ -3,6 +3,11 @@
 //! Loads a local model once, then generates the same utterance `--iters` times and reports
 //! time-to-first-audio, per-frame time, total generate time and RTF. Model load and voice
 //! conditioning are timed separately and excluded from the per-iteration statistics.
+//!
+//! By default each iteration is a `Synth::stream` call, so the numbers are the ones a caller
+//! gets: the flow LM and Mimi on their own threads, Mimi decoding whatever frames have queued
+//! up in one call. `--breakdown` instead runs both on this thread, one frame at a time, which
+//! is slower overall but times each stage on its own.
 
 #[path = "model_helpers.rs"]
 mod model_helpers;
@@ -14,6 +19,7 @@ use clap::Parser;
 use ptts::flow_lm::{NormalRng, StepInput};
 use ptts::plan::{Chunk, EosPolicy};
 use ptts::preprocess::{Normalize, Rules};
+use ptts::synth::{DeviceKind, Quant, SpeechOptions, Synth, SynthBuilder};
 use ptts::tok::Tok;
 use ptts::tts_model::{MAX_TOKENS_PER_CHUNK, TTSConfig, TTSModel, TTSState};
 use xn::{BackendQ, Tensor};
@@ -78,6 +84,12 @@ struct Args {
     #[arg(long, default_value_t = false)]
     per_iter: bool,
 
+    /// Run the flow LM and Mimi on this thread, one frame at a time, and time each stage,
+    /// instead of measuring `Synth::stream`. Slower overall than the real path, and its time
+    /// to first audio is lower, since nothing runs beside the first decode.
+    #[arg(long, default_value_t = false)]
+    breakdown: bool,
+
     /// Language the input is normalized as before tokenizing: `en`, `fr`, `de`, `es` or `pt`.
     /// Required, as everywhere else: there is nothing safe to guess.
     /// `none` measures the unnormalized text, as runs that predate this flag did.
@@ -96,14 +108,35 @@ struct Run {
     /// Start of the iteration to the first audio samples, so text conditioning is included but
     /// the voice conditioning shared by every iteration is not.
     ttfa: Duration,
-    /// Per frame, sampling plus Mimi decoding.
+    /// Per frame, sampling plus Mimi decoding. Only with `--breakdown`.
     frames: Vec<Duration>,
-    /// The sampling half of each frame.
+    /// The sampling half of each frame. Only with `--breakdown`.
     sample_t: Vec<Duration>,
-    /// The Mimi decode half of each frame.
+    /// The Mimi decode half of each frame. Only with `--breakdown`.
     decode_t: Vec<Duration>,
+    /// Frames generated.
+    nframes: usize,
     total: Duration,
     samples: usize,
+}
+
+/// Generates the utterance once through `Synth`, as any caller would.
+fn one_synth(tts: &Synth, opts: &SpeechOptions, args: &Args) -> Result<Run> {
+    let start = Instant::now();
+    let mut ttfa = None;
+    let mut samples = 0usize;
+    for pcm in tts.stream_with(&args.input, opts)? {
+        let pcm = pcm?;
+        if !pcm.is_empty() {
+            ttfa.get_or_insert_with(|| start.elapsed());
+            samples += pcm.len();
+        }
+    }
+    let total = start.elapsed();
+    let ttfa = ttfa.context("no audio produced")?;
+    let frame_samples = tts.sample_rate() as f64 / tts.config().mimi.frame_rate;
+    let nframes = (samples as f64 / frame_samples).round() as usize;
+    Ok(Run { ttfa, frames: vec![], sample_t: vec![], decode_t: vec![], nframes, total, samples })
 }
 
 /// Generates the utterance once, reusing the voice-conditioned state.
@@ -158,7 +191,8 @@ fn one<Q: BackendQ>(
 
     let total = start.elapsed();
     let ttfa = ttfa.context("no audio produced")?;
-    Ok(Run { ttfa, frames, sample_t, decode_t, total, samples })
+    let nframes = frames.len();
+    Ok(Run { ttfa, frames, sample_t, decode_t, nframes, total, samples })
 }
 
 fn ms(d: Duration) -> f64 {
@@ -286,67 +320,132 @@ impl Bench<'_> {
         model.prompt_audio(&mut base_state, &voice_emb)?;
         let voice_ms = ms(t_voice.elapsed());
 
-        for _ in 0..args.warmup {
-            one(&model, &base_state, &chunks, args)?;
-        }
-        let mut runs = Vec::with_capacity(args.iters);
-        for i in 0..args.iters {
-            let r = one(&model, &base_state, &chunks, args)?;
-            if args.per_iter {
-                println!(
-                    "iter {i:>3}: total {:>8.2}ms  ttfa {:>7.2}ms  frames {:>4}",
-                    ms(r.total),
-                    ms(r.ttfa),
-                    r.frames.len()
-                );
-            }
-            runs.push(r);
-        }
-        anyhow::ensure!(
-            runs.iter().all(|r| r.samples > 0),
-            "no audio generated, nothing to measure"
-        );
-        let first = &runs[0];
-        let audio_ms = |r: &Run| r.samples as f64 / model.sample_rate() as f64 * 1e3;
-        let totals: Vec<f64> = runs.iter().map(|r| ms(r.total)).collect();
-        let ttfas: Vec<f64> = runs.iter().map(|r| ms(r.ttfa)).collect();
-        // Pooled across iterations: per-frame variation matters more than which run it came
-        // from, and one run has too few frames for a stable tail.
-        let frames: Vec<f64> = runs.iter().flat_map(|r| r.frames.iter().copied().map(ms)).collect();
-        let sample_t: Vec<f64> =
-            runs.iter().flat_map(|r| r.sample_t.iter().copied().map(ms)).collect();
-        let decode_t: Vec<f64> =
-            runs.iter().flat_map(|r| r.decode_t.iter().copied().map(ms)).collect();
-        // Wall time per unit of audio produced, so below 1.0 is faster than realtime.
-        let rtfs: Vec<f64> = runs.iter().map(|r| ms(r.total) / audio_ms(r)).collect();
-
-        println!();
-        println!(
-            "model {}  threads {}  input {} chars  audio {:.0}ms  frames/iter {}",
-            args.model.display(),
-            xn::get_num_threads(),
-            self.1.apply(&args.input).len(),
-            audio_ms(first),
-            first.frames.len(),
-        );
-        println!("load {load_ms:.1}ms, voice conditioning {voice_ms:.1}ms (both excluded below)");
-        println!();
-        println!(
-            "{:<22} {:>5}  {:>9} {:>9} {:>9} {:>9} {:>9}",
-            "metric", "n", "min", "mean", "p50", "p95", "max"
-        );
-        for (label, unit, prec, xs) in [
-            ("total generate", "ms", 2, &totals),
-            ("time to first audio", "ms", 2, &ttfas),
-            ("per-frame", "ms", 3, &frames),
-            ("  flow_lm sample", "ms", 3, &sample_t),
-            ("  mimi decode", "ms", 3, &decode_t),
-            ("rtf (lower is better)", "ratio", 4, &rtfs),
-        ] {
-            row(label, unit, prec, &Stats::of(xs));
-        }
+        let runs = measure(args, || one(&model, &base_state, &chunks, args))?;
+        report(args, self.1, &runs, model.sample_rate() as f64, load_ms, voice_ms);
         Ok(())
     }
+}
+
+/// Runs `--warmup` unmeasured iterations, then `--iters` measured ones.
+fn measure(args: &Args, mut one: impl FnMut() -> Result<Run>) -> Result<Vec<Run>> {
+    for _ in 0..args.warmup {
+        one()?;
+    }
+    let mut runs = Vec::with_capacity(args.iters);
+    for i in 0..args.iters {
+        let r = one()?;
+        if args.per_iter {
+            println!(
+                "iter {i:>3}: total {:>8.2}ms  ttfa {:>7.2}ms  frames {:>4}",
+                ms(r.total),
+                ms(r.ttfa),
+                r.nframes
+            );
+        }
+        runs.push(r);
+    }
+    anyhow::ensure!(runs.iter().all(|r| r.samples > 0), "no audio generated, nothing to measure");
+    Ok(runs)
+}
+
+fn report(
+    args: &Args,
+    normalize: Normalize,
+    runs: &[Run],
+    sample_rate: f64,
+    load_ms: f64,
+    voice_ms: f64,
+) {
+    let first = &runs[0];
+    let audio_ms = |r: &Run| r.samples as f64 / sample_rate * 1e3;
+    let totals: Vec<f64> = runs.iter().map(|r| ms(r.total)).collect();
+    let ttfas: Vec<f64> = runs.iter().map(|r| ms(r.ttfa)).collect();
+    // Wall time per unit of audio produced, so below 1.0 is faster than realtime.
+    let rtfs: Vec<f64> = runs.iter().map(|r| ms(r.total) / audio_ms(r)).collect();
+
+    println!();
+    println!(
+        "model {}  threads {}  input {} chars  audio {:.0}ms  frames/iter {}",
+        args.model.display(),
+        xn::get_num_threads(),
+        normalize.apply(&args.input).len(),
+        audio_ms(first),
+        first.nframes,
+    );
+    if args.breakdown {
+        println!("--breakdown: flow LM and Mimi on one thread, one frame at a time");
+    } else {
+        println!("Synth::stream: flow LM and Mimi on their own threads, as callers run it");
+    }
+    println!("load {load_ms:.1}ms, voice conditioning {voice_ms:.1}ms (both excluded below)");
+    println!();
+    println!(
+        "{:<22} {:>5}  {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "metric", "n", "min", "mean", "p50", "p95", "max"
+    );
+    let mut rows =
+        vec![("total generate", "ms", 2, totals), ("time to first audio", "ms", 2, ttfas)];
+    if args.breakdown {
+        // Pooled across iterations: per-frame variation matters more than which run it came
+        // from, and one run has too few frames for a stable tail.
+        let pooled = |f: fn(&Run) -> &Vec<Duration>| -> Vec<f64> {
+            runs.iter().flat_map(|r| f(r).iter().copied().map(ms)).collect()
+        };
+        rows.push(("per-frame", "ms", 3, pooled(|r| &r.frames)));
+        rows.push(("  flow_lm sample", "ms", 3, pooled(|r| &r.sample_t)));
+        rows.push(("  mimi decode", "ms", 3, pooled(|r| &r.decode_t)));
+    } else {
+        // Frames overlap and Mimi decodes several at once, so only the average is meaningful.
+        let per_frame = runs.iter().map(|r| ms(r.total) / r.nframes as f64).collect();
+        rows.push(("per-frame (average)", "ms", 3, per_frame));
+    }
+    rows.push(("rtf (lower is better)", "ratio", 4, rtfs));
+    for (label, unit, prec, xs) in rows {
+        row(label, unit, prec, &Stats::of(&xs));
+    }
+}
+
+/// Measures `Synth::stream`, loading the model the way the other frontends do.
+fn bench_synth(args: &Args, normalize: Normalize, quant: Quant) -> Result<()> {
+    let cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(&args.config)?)
+        .with_context(|| format!("failed to read config {}", args.config.display()))?;
+    let tokenizer_path = match args.tokenizer.clone() {
+        Some(path) => path,
+        None => args.config.parent().context("config path has no parent")?.join("tokenizer.json"),
+    };
+    let baked = cfg.voices.iter().any(|v| args.voice.as_os_str() == v.name.as_str());
+    let voice = if baked { args.voice.to_string_lossy().into_owned() } else { "bench".into() };
+
+    let t_load = Instant::now();
+    let device = if args.cpu { DeviceKind::Cpu } else { DeviceKind::Auto };
+    let mut builder = SynthBuilder::new(cfg, &args.model, normalize)
+        .tokenizer_file(tokenizer_path)
+        .device(device)
+        .quant(quant)
+        .temperature(args.temperature)
+        .seed(args.seed)
+        .voice(&voice);
+    for condition in &args.conditions {
+        let (name, value) = condition.split_once('=').context("--condition takes NAME=VALUE")?;
+        builder = builder.condition(name, value);
+    }
+    if !baked {
+        builder = builder.add_voice(&voice, &args.voice);
+    }
+    let tts = builder.build()?;
+    let load_ms = ms(t_load.elapsed());
+
+    // `Synth` conditions on a voice the first time it speaks in it and keeps the result, as a
+    // server does, so this primes it and later iterations start from the kept state. The
+    // session is thrown away, so its budget only has to exceed any voice prompt.
+    let opts = SpeechOptions::default();
+    let t_voice = Instant::now();
+    drop(tts.session(&opts, 2048)?);
+    let voice_ms = ms(t_voice.elapsed());
+
+    let runs = measure(args, || one_synth(&tts, &opts, args))?;
+    report(args, normalize, &runs, tts.sample_rate() as f64, load_ms, voice_ms);
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -373,6 +472,10 @@ fn main() -> Result<()> {
         xn::with_simd128(),
         xn::with_f16c()
     );
-    xn::Runner::new().cpu_only(args.cpu).dtype(dtype).run(Bench(&args, normalize), 0)?;
+    if args.breakdown {
+        xn::Runner::new().cpu_only(args.cpu).dtype(dtype).run(Bench(&args, normalize), 0)?;
+    } else {
+        bench_synth(&args, normalize, Quant::from_str(args.quant.as_deref().unwrap_or("f32"))?)?;
+    }
     Ok(())
 }
