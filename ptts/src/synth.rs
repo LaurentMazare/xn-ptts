@@ -795,12 +795,18 @@ impl<Q: BackendQ> SessionOf<Q> {
 
         let (pcm_tx, pcm_rx) = std::sync::mpsc::channel::<Result<Vec<f32>>>();
         let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Frame<Q>>();
+        // The decoder says when the first frame's audio is out, and the flow-LM waits for it
+        // before its second step. Run side by side, the two contend for the CPU and the first
+        // decode, which is all the time to first audio waits on, comes out several times
+        // slower; held back, the flow-LM loses one decode's time, far ahead of real time.
+        let (first_tx, first_rx) = std::sync::mpsc::channel::<()>();
 
         // Decoder: latents in, PCM out. Reset between chunks so each chunk
         // starts from a clean codec state, matching the pre-refactor behavior.
         let decode_model = Arc::clone(&self.model);
         let decode_tx = pcm_tx.clone();
         let decode_handle = std::thread::spawn(move || {
+            let mut first_tx = Some(first_tx);
             let mut state = mimi_init.clone();
             while let Ok(frame) = latent_rx.recv() {
                 let first = match frame {
@@ -846,6 +852,9 @@ impl<Q: BackendQ> SessionOf<Q> {
                 if decode_tx.send(pcm).is_err() || failed {
                     return;
                 }
+                if let Some(first_tx) = first_tx.take() {
+                    let _ = first_tx.send(());
+                }
                 if reset_after {
                     state = mimi_init.clone();
                 }
@@ -857,7 +866,8 @@ impl<Q: BackendQ> SessionOf<Q> {
         let backbone_handle = std::thread::spawn(move || {
             // Dropped when this thread ends, which is after its last write.
             let _in_flight = in_flight;
-            let result = run_backbone(&model, chunks, base_state, cfg_base, rng, &latent_tx);
+            let result =
+                run_backbone(&model, chunks, base_state, cfg_base, rng, &latent_tx, first_rx);
             if let Err(e) = result {
                 let _ = pcm_tx.send(Err(e));
             }
@@ -974,7 +984,10 @@ fn run_backbone<Q: BackendQ>(
     cfg_base: Option<(f32, TTSState<Q>)>,
     mut rng: Box<dyn crate::flow_lm::Rng + Send>,
     latent_tx: &std::sync::mpsc::Sender<Frame<Q>>,
+    first_decoded: std::sync::mpsc::Receiver<()>,
 ) -> Result<()> {
+    // Taken after the first frame: only the stream's first audio is worth the wait.
+    let mut first_decoded = Some(first_decoded);
     for chunk in chunks.iter() {
         let mut state = base_state.clone();
         let mut cfg_state = cfg_base.clone();
@@ -1000,6 +1013,12 @@ fn run_backbone<Q: BackendQ>(
             // A closed channel means the consumer went away; stop quietly and
             // let the decoder thread report any error of its own.
             if latent_tx.send(Frame::Latent(next.clone())).is_err() {
+                return Ok(());
+            }
+            // A closed channel here means the decoder stopped, for the same reasons.
+            if let Some(first_decoded) = first_decoded.take()
+                && first_decoded.recv().is_err()
+            {
                 return Ok(());
             }
             if eos.should_stop(is_eos) {
