@@ -43,3 +43,6 @@ __pycache__/
 # SwiftPM build output.
 .build/
 .swiftpm/
+
+# android/build.sh output
+android/jniLibs/

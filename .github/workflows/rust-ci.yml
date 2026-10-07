@@ -48,6 +48,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy
+          targets: aarch64-linux-android
           cache-key: clippy
       # `--all-targets` so the examples are linted too, and the whole workspace including
       # `ptts-ws-server`, which used to be excluded from every job.
@@ -55,6 +56,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: ptts, every optional feature on
         run: cargo clippy -p ptts --features hf,audio --all-targets -- -D warnings
+      # The C interface as android/build.sh builds it, so it keeps compiling for Android. No NDK
+      # is needed: nothing links and no build script compiles C.
+      - name: ptts-ffi for Android
+        env:
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS: -C target-feature=+dotprod,+fp16
+        run: cargo clippy -p ptts-ffi --all-targets --target aarch64-linux-android -- -D warnings
 
   test:
     name: Test ${{ matrix.os }} / ${{ matrix.rust }}
@@ -252,12 +259,12 @@ jobs:
           targets: aarch64-apple-ios aarch64-apple-ios-sim
           cache-key: coreml
           audio-deps: "false"
-      # The Core ML runtime and the C interface only exist on Apple targets, so the Linux clippy
-      # job compiles them out and never sees most of their code.
+      # The Core ML runtime and the C interface's Core ML engine only exist on Apple targets, so
+      # the Linux clippy job compiles them out and never sees most of their code.
       - name: Clippy, macOS
-        run: cargo clippy -p ptts-coreml -p ptts-coreml-ffi --features ptts-coreml/gguf --all-targets -- -D warnings
+        run: cargo clippy -p ptts-coreml -p ptts-ffi --features ptts-coreml/gguf --all-targets -- -D warnings
       - name: Clippy, iOS
-        run: cargo clippy -p ptts-coreml-ffi --target aarch64-apple-ios -- -D warnings
+        run: cargo clippy -p ptts-ffi --target aarch64-apple-ios -- -D warnings
       # What an app actually consumes: the framework for iPhone, simulator and Mac, and the
       # Swift package compiled against it, in Swift 6 language mode.
       - name: Framework and Swift package

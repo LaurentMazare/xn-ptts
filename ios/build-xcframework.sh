@@ -13,11 +13,11 @@ PROFILE=release
 rustup target add "${TARGETS[@]}" >/dev/null
 for t in "${TARGETS[@]}"; do
   echo "building $t"
-  cargo build --profile "$PROFILE" -p ptts-coreml-ffi --target "$t"
+  cargo build --profile "$PROFILE" -p ptts-ffi --target "$t"
 done
 
 HEADERS="$(mktemp -d)"
-cp ptts-coreml-ffi/include/ptts.h "$HEADERS/"
+cp ptts-ffi/include/ptts.h "$HEADERS/"
 cat > "$HEADERS/module.modulemap" <<'MAP'
 module PhononCore {
     header "ptts.h"
@@ -29,11 +29,11 @@ OUT=ios/PhononTTS/PhononCore.xcframework
 rm -rf "$OUT"
 args=()
 for t in "${TARGETS[@]}"; do
-  args+=(-library "$TARGET_DIR/$t/$PROFILE/libptts_coreml_ffi.a" -headers "$HEADERS")
+  args+=(-library "$TARGET_DIR/$t/$PROFILE/libptts_ffi.a" -headers "$HEADERS")
 done
 xcodebuild -create-xcframework "${args[@]}" -output "$OUT" >/dev/null
 rm -rf "$HEADERS"
-du -sh "$OUT"/*/libptts_coreml_ffi.a
+du -sh "$OUT"/*/libptts_ffi.a
 
 # The same framework zipped, with the checksum a client's Package.swift needs to fetch it by
 # URL instead of by path: `.binaryTarget(name: "PhononCore", url: ..., checksum: ...)`.
