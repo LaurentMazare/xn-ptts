@@ -133,7 +133,13 @@ async fn flush_buffer(
     let text = std::mem::take(text_buffer);
     if let Err(e) = generate_one(app, session, &text, stream_id_now, encoder, reply_tx).await {
         tracing::warn!(error = %e, stream_id = stream_id_now, "generation failed");
-        send_error(reply_tx, error_codes::INTERNAL, format!("generation failed: {e}"))?;
+        // A single sentence too long for the session's KV budget is the request's
+        // fault, not the server's.
+        let code = match e.downcast_ref::<ptts::Error>() {
+            Some(ptts::Error::SeqBudgetExceeded { .. }) => error_codes::BAD_REQUEST,
+            _ => error_codes::INTERNAL,
+        };
+        send_error(reply_tx, code, format!("generation failed: {e}"))?;
     }
     Ok(())
 }
