@@ -233,25 +233,20 @@ async fn generate_one(
 ) -> Result<()> {
     use base64::Engine;
 
-    // One request is one utterance: prepare and tokenize it here rather than
-    // letting `Session::stream` split it on sentence boundaries, which is what
-    // this server did before and what its stream ids assume. Normalization is
-    // the session's, and runs before `prepare_text_prompt`.
-    let text = session.normalization().apply(text);
     // Normalization drops whole classes of characters, so a buffer that was
     // non-empty when it was flushed can be empty here: emoji or quotes on their
-    // own. There is nothing to say, and an empty token list would come back to
-    // the client as an INTERNAL error rather than as silence.
-    if text.trim().is_empty() {
+    // own. There is nothing to say, and empty text would come back to the
+    // client as an INTERNAL error rather than as silence.
+    if session.normalization().apply(text).trim().is_empty() {
         return Ok(());
     }
-    let (prepared, frames_after_eos) = ptts::tts_model::prepare_text_prompt(&text);
-    let tokens = session.tokenize(&prepared)?;
     let seed = app.seed_base ^ (stream_id as u64).wrapping_mul(0x9E3779B97F4A7C15);
-    let rng = Box::new(ptts::flow_lm::NormalRng::new(app.temperature, seed)?);
 
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
-    let stream = session.stream_tokens(tokens, frames_after_eos, rng)?;
+    // One request is one stream id, but it is spoken in sentence chunks as the
+    // other frontends speak it: as a single chunk, a long request would need
+    // more KV slots than the session holds.
+    let stream = session.stream_seeded(text, seed)?;
     // The generation threads are `Synth`'s; this one just moves chunks onto the
     // tokio channel so the socket writer stays async.
     let join = tokio::task::spawn_blocking(move || -> Result<()> {
