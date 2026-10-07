@@ -417,7 +417,9 @@ fn bench_synth(args: &Args, normalize: Normalize, quant: Quant) -> Result<()> {
     let voice = if baked { args.voice.to_string_lossy().into_owned() } else { "bench".into() };
 
     let t_load = Instant::now();
-    let device = if args.cpu { DeviceKind::Cpu } else { DeviceKind::Auto };
+    // Quantized weights run only on the CPU, so a GPU build picks it for them, as `--breakdown`
+    // does, rather than failing to build.
+    let device = if args.cpu || quant != Quant::F32 { DeviceKind::Cpu } else { DeviceKind::Auto };
     let mut builder = SynthBuilder::new(cfg, &args.model, normalize)
         .tokenizer_file(tokenizer_path)
         .device(device)

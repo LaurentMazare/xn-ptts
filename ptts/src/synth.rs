@@ -796,9 +796,9 @@ impl<Q: BackendQ> SessionOf<Q> {
         let (pcm_tx, pcm_rx) = std::sync::mpsc::channel::<Result<Vec<f32>>>();
         let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Frame<Q>>();
         // The decoder says when the first frame's audio is out, and the flow-LM waits for it
-        // before its second step. Run side by side, the two contend for the CPU and the first
-        // decode, which is all the time to first audio waits on, comes out several times
-        // slower; held back, the flow-LM loses one decode's time, far ahead of real time.
+        // before its second step. Run side by side, the two compete for the device and the
+        // first decode, which is all the time to first audio waits on, comes out slower; held
+        // back, the flow-LM loses one decode's time, far ahead of real time.
         let (first_tx, first_rx) = std::sync::mpsc::channel::<()>();
 
         // Decoder: latents in, PCM out. Reset between chunks so each chunk
