@@ -26,11 +26,11 @@ typedef struct {
 typedef bool (*PttsFrameFn)(const float *pcm, size_t n, void *user);
 
 /// Load a model. On Apple, `dir` is an exported bundle, compiled for this device first if needed
-/// (about 10 s on an iPhone 16 Pro, once per install), and `unit` is PTTS_UNIT_ANE or
-/// PTTS_UNIT_CPU. Elsewhere, `dir` is a checkpoint folder and `unit` is PTTS_UNIT_CPU. `lang` is
-/// en, fr, de, es, pt or none. NULL on failure; then ptts_last_error(NULL), on the same thread,
-/// says why. A bundle without voices fails to load; a checkpoint folder without voices loads,
-/// lists none, and speaks in no particular voice.
+/// (once per install), and `unit` is PTTS_UNIT_ANE or PTTS_UNIT_CPU. Elsewhere, `dir` is a
+/// checkpoint folder and `unit` is PTTS_UNIT_CPU. `lang` is en, fr, de, es, pt or none. NULL on
+/// failure; then ptts_last_error(NULL), on the same thread, says why. A bundle without voices fails
+/// to load; a checkpoint folder without voices loads, lists none, and speaks in no particular
+/// voice.
 PttsHandle *ptts_new(const char *dir, uint32_t unit, const char *lang);
 bool ptts_speak(PttsHandle *h, const char *text, PttsFrameFn cb, void *user, PttsResult *out);
 /// NUL-separated voice names, ending in a second NUL. Borrowed.

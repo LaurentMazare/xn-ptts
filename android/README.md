@@ -30,18 +30,18 @@ everywhere but is slower.
 
 ## 2. Get a model
 
-The library loads a folder holding `tokenizer.json`, the weights, and voices in `embeddings/` or
-`voices/`. Kyutai's Pocket TTS checkpoint, with weights quantized to q8 (147 MB), is these files:
+The library loads a checkpoint folder:
 
-| File in the folder | URL |
+| File | What it is |
 |---|---|
-| `tts_b6369a24.gguf` | https://huggingface.co/lmz/pocket-tts-without-voice-cloning-q8/resolve/c2d23606a738c5afb5e24e44f9d2f5d6af1b4528/tts_b6369a24.gguf |
-| `tokenizer.json` | https://huggingface.co/kyutai/pocket-tts-without-voice-cloning/resolve/8843db76457a91db32077edf8dfcd1c0e3e755fd/tokenizer.json |
-| `embeddings/alba.safetensors` | https://huggingface.co/kyutai/pocket-tts-without-voice-cloning/resolve/8843db76457a91db32077edf8dfcd1c0e3e755fd/embeddings/alba.safetensors |
+| `tokenizer.json` | The checkpoint's tokenizer. |
+| `model.q8.gguf` or `model.safetensors` | The weights: q8_0 GGUF, or f32 safetensors. GGUF is used when both are there. |
+| `config.json` | Optional. Without it, the default config is used. |
+| `voices/<name>.safetensors` or `embeddings/<name>.safetensors` | The voices, each named after its file. |
+| `default-voice.safetensors` | Optional. Listed as the voice `default`, and spoken when no voice is set. |
 
-The other voices are `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine` and `azelma`, at the
-same path. Download the files into the app's files directory on first run, rather than shipping
-them in the APK.
+Download the folder into the app's files directory on first run, rather than shipping it in the
+APK.
 
 ## 3. The interface
 
@@ -110,8 +110,8 @@ thread {
         .setTransferMode(AudioTrack.MODE_STREAM)
         .build()
     track.play()
-    PhononTTS(File(filesDir, "pocket-tts").path, "en").use { tts ->
-        tts.setVoice("alba")
+    PhononTTS(File(filesDir, "model").path, "en").use { tts ->
+        tts.setVoice(tts.voices.first())
         tts.speak("Hello from Phonon.") { pcm ->
             track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
             true // false stops early
@@ -143,7 +143,6 @@ PttsHandle *h = ptts_new(model_dir, PTTS_UNIT_CPU, "en");
 if (!h) {
     // ptts_last_error(NULL) says why.
 }
-ptts_set_voice(h, "alba");
 PttsResult result;
 if (!ptts_speak(h, "Hello from Phonon.", on_audio, NULL, &result)) {
     // ptts_last_error(h) says why.

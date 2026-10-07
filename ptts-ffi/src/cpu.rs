@@ -2,7 +2,7 @@
 //! folder as the other frontends read it.
 //!
 //! The folder holds `tokenizer.json`, the weights (q8_0 GGUF or f32 safetensors, named as in
-//! [`WEIGHTS`]), an optional `config.json` (Kyutai's checkpoint has none) and its voices
+//! [`WEIGHTS`]), an optional `config.json` (without one, the default config) and its voices
 //! in `voices/` or `embeddings/`, or as `default-voice.safetensors`.
 
 use crate::{PTTS_UNIT_CPU, PttsResult};
@@ -11,20 +11,15 @@ use ptts::synth::{DeviceKind, Quant, SpeechOptions, Synth, SynthBuilder};
 use ptts::tts_model::TTSConfig;
 use std::path::Path;
 
-/// Weight files tried in order, with the format each loads as. q8_0 leads: on a phone it is
-/// both the smaller download and the faster model. The `tts_b6369a24` names are Kyutai's.
-const WEIGHTS: [(&str, Quant); 4] = [
-    ("model.q8.gguf", Quant::Q80),
-    ("tts_b6369a24.gguf", Quant::Q80),
-    ("model.safetensors", Quant::F32),
-    ("tts_b6369a24.safetensors", Quant::F32),
-];
+/// Weight files tried in order, with the format each loads as.
+const WEIGHTS: [(&str, Quant); 2] =
+    [("model.q8.gguf", Quant::Q80), ("model.safetensors", Quant::F32)];
 
 pub struct Engine {
     synth: Synth,
     voices: Vec<String>,
     voice: Option<String>,
-    /// Samples per Mimi frame, to count frames in what the stream hands back.
+    /// Samples per frame, to count frames in what the stream hands back.
     frame_size: usize,
 }
 

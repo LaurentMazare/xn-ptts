@@ -12,8 +12,8 @@ cd "$(dirname "$0")/.."
 # ARM64_FEATURES= to run on older ones, at the cost of xn's fast q8_0 kernels.
 ARM64_FEATURES="${ARM64_FEATURES-+dotprod,+fp16}"
 # These replace .cargo/config.toml's target-cpu=native, which is the build machine's CPU.
-# Stripping keeps the exported ptts_* functions and takes a third off the library. Google Play
-# requires 16 KB pages from Android 15; NDKs before r28 do not align to them by default.
+# Stripping keeps the exported ptts_* functions. Google Play requires 16 KB pages from Android 15;
+# NDKs before r28 do not align to them by default.
 COMMON="-C strip=symbols -C link-arg=-Wl,-z,max-page-size=16384"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="$COMMON -C target-cpu=generic${ARM64_FEATURES:+ -C target-feature=$ARM64_FEATURES}"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="$COMMON -C target-cpu=x86-64"
