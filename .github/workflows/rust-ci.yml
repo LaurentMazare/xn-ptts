@@ -57,14 +57,11 @@ jobs:
       - name: ptts, every optional feature on
         run: cargo clippy -p ptts --features hf,audio --all-targets -- -D warnings
       # The C interface as android/build.sh builds it, so it keeps compiling for Android. No NDK
-      # is needed: nothing links and no build script compiles C. On this target clippy flags the
-      # `thread_local!` in lib.rs as not `const`, though it is.
+      # is needed: nothing links and no build script compiles C.
       - name: ptts-ffi for Android
         env:
           CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS: -C target-feature=+dotprod,+fp16
-        run: >-
-          cargo clippy -p ptts-ffi --all-targets --target aarch64-linux-android
-          -- -D warnings -A clippy::missing_const_for_thread_local
+        run: cargo clippy -p ptts-ffi --all-targets --target aarch64-linux-android -- -D warnings
 
   test:
     name: Test ${{ matrix.os }} / ${{ matrix.rust }}

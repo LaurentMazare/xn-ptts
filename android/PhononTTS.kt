@@ -9,7 +9,8 @@ import com.sun.jna.Pointer
 import com.sun.jna.Structure
 
 /**
- * A loaded model. Loading is the slow part, so keep one around and reuse it.
+ * A loaded model. Loading is the slow part, so keep one around and reuse it, and [close] it when
+ * done: nothing else frees the model.
  *
  * Every call blocks, so make them off the main thread, and from one thread at a time.
  *
@@ -22,8 +23,19 @@ class PhononTTS(modelDir: String, lang: String) : AutoCloseable {
 
     private var onAudio: (FloatArray) -> Boolean = { true }
 
+    // What onAudio threw. JNA would log it and hand native code `false`, which reads as "stop", so
+    // speak() would return as if nothing went wrong: keep it, stop, and rethrow it from speak().
+    private var thrown: Throwable? = null
+
     // A field rather than a local, so the callback outlives every call that hands it to native code.
-    private val onFrame = Lib.FrameFn { pcm, n, _ -> onAudio(pcm.getFloatArray(0, n.toInt())) }
+    private val onFrame = Lib.FrameFn { pcm, n, _ ->
+        try {
+            onAudio(pcm.getFloatArray(0, n.toInt()))
+        } catch (t: Throwable) {
+            thrown = t
+            false
+        }
+    }
 
     /** The voices this checkpoint ships, sorted. */
     val voices: List<String>
@@ -45,12 +57,19 @@ class PhononTTS(modelDir: String, lang: String) : AutoCloseable {
     /**
      * Speak [text], handing [onAudio] each piece of audio as soon as it is made: 24 kHz mono
      * floats in [-1, 1]. Return false from [onAudio] to stop early. Returns once all the audio
-     * has been handed over, with the utterance's timings.
+     * has been handed over, with the utterance's timings. What [onAudio] throws, [speak] rethrows.
+     * [onAudio] must not call back into this object.
      */
     fun speak(text: String, onAudio: (FloatArray) -> Boolean): Result {
         this.onAudio = onAudio
+        thrown = null
         val out = Result()
-        check(lib.ptts_speak(open(), text, onFrame, null, out))
+        val ok = lib.ptts_speak(open(), text, onFrame, null, out)
+        thrown?.let {
+            thrown = null
+            throw it
+        }
+        check(ok)
         return out
     }
 

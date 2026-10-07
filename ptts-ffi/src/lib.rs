@@ -55,6 +55,8 @@ pub type PttsFrameFn = extern "C" fn(*const f32, usize, *mut c_void) -> bool;
 thread_local! {
     /// The last `ptts_new` failure on this thread. Thread-local, so a failure elsewhere cannot
     /// free the string a caller is still reading.
+    // Clippy asks for a `const` initializer on Android, where it already is one.
+    #[cfg_attr(target_os = "android", allow(clippy::missing_const_for_thread_local))]
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
@@ -89,7 +91,9 @@ fn open(dir: &Path, unit: u32, lang: &str) -> Result<PttsHandle, String> {
 /// `lang` (`en`, `fr`, `de`, `es`, `pt`, or `none`). On Apple, `dir` is an exported bundle,
 /// compiled for this device first if it has not been (about 10 s on an iPhone 16 Pro, once per
 /// install); elsewhere it is a checkpoint folder, and only `PTTS_UNIT_CPU` exists. Null on
-/// failure; then `ptts_last_error(NULL)`, on the same thread, says why.
+/// failure; then `ptts_last_error(NULL)`, on the same thread, says why. A bundle without voices
+/// fails to load; a checkpoint folder without voices loads, lists none, and speaks in no
+/// particular voice.
 ///
 /// # Safety
 /// `dir` and `lang` must be NUL-terminated UTF-8.
