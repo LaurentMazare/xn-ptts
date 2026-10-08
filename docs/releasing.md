@@ -18,7 +18,7 @@ Phonon is the model identity. `ptts` is the Rust, Python, npm, and Swift package
 
 ## Publish
 
-A `v<version>` tag publishes the Python wheels, npm package, and versioned Docker image through their existing workflows. Confirm all registry settings and the selected model's release readiness before pushing the tag. The native workflow requires that the tag match the workspace version and attaches the desktop and Swift downloads, checksums, and Homebrew formula. It creates a draft GitHub Release when no release exists, so its notes and assets can be reviewed before publication. It does not replace existing assets on a rerun.
+A `v<version>` tag publishes the Python wheels, npm package, and versioned Docker image through their existing workflows. Confirm all registry settings and the selected model's release readiness before pushing the tag. The native workflow requires that the tag match the workspace version and attaches the desktop and Swift downloads, checksums, and Homebrew formula. It creates a draft GitHub Release when no release exists, so its notes and assets can be reviewed before publication. Retries verify existing assets and upload missing files. They refuse to change existing contents, keeping versioned URLs and Swift checksums stable. Rebuilding all artifacts may change their bytes; use a new version for changed release assets.
 
 Publish the `ptts` Cargo crate with `cargo publish -p ptts` after the package checks pass. Installing its command from crates.io requires `cargo install ptts --locked --features cli`.
 

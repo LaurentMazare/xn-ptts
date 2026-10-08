@@ -126,7 +126,7 @@ jobs:
           targets: aarch64-apple-ios aarch64-apple-ios-sim
           cache-key: swift-release
           audio-deps: 'false'
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Build the framework and wrapper
@@ -139,7 +139,7 @@ jobs:
           set -euo pipefail
           tag_args=()
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag_args=(--tag "$GITHUB_REF_NAME"); fi
-          python scripts/package-swift.py --framework ios/PhononTTS/PhononCore.xcframework.zip "${tag_args[@]}"
+          python scripts/package-swift.py --framework ios/PhononTTS/PhononCore.xcframework.zip ${tag_args[@]+"${tag_args[@]}"}
           unzip -q dist/ptts-swift-*.zip -d unpacked
           package=$(find unpacked -name Package.swift -type f)
           swift package --package-path "$(dirname "$package")" dump-package
