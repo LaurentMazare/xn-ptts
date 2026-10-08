@@ -299,7 +299,7 @@ pub fn load_config_voices<B: Backend>(
     Ok(voices)
 }
 
-fn project_latents<B: Backend>(
+pub(crate) fn project_latents<B: Backend>(
     tensor: &Tensor<f32, B>,
     label: &str,
     speaker_proj: Option<&Linear<f32, B>>,

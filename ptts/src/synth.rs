@@ -628,6 +628,30 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
         Ok(())
     }
 
+    fn add_voice_from_latents(
+        &mut self,
+        name: &str,
+        latents: &[f32],
+        channels: usize,
+        frames: usize,
+    ) -> Result<()> {
+        self.check_no_baked_voices()?;
+        if latents.len() != channels * frames {
+            return Err(Error::invalid_argument(format!(
+                "latents have {} values, expected {channels} x {frames}",
+                latents.len()
+            )));
+        }
+        let dev = self.model.device().clone();
+        let latents = Tensor::from_vec(latents.to_vec(), (1, channels, frames), &dev)?;
+        let emb =
+            loader::project_latents(&latents, "the voice latents", self.model.speaker_proj())?
+                .to::<Q::T>()?;
+        self.forget_primed(name);
+        self.voices.insert(name.to_string(), Voice { emb, null_emb: None, conditions: None });
+        Ok(())
+    }
+
     fn set_conditions(&mut self, conditions: HashMap<String, String>) -> Result<()> {
         let mut values = conditions.clone();
         if let Some(voice) = self.cfg.voices.first() {
@@ -1614,6 +1638,22 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
         frames: usize,
         dim: usize,
         null_emb: Option<&[f32]>,
+    ) -> Result<()>;
+
+    /// Register a voice from the speaker encoder's latents already in memory,
+    /// laid out as `channels` rows of `frames`.
+    ///
+    /// This is the `speaker_wavs` tensor of a voice file, `[1, channels, frames]`
+    /// before the checkpoint's speaker projection: what
+    /// [`Self::add_voice_file`] reads from such a file, and the form in which
+    /// voices are stored and exchanged. The projection is applied here, so it
+    /// fails on a checkpoint that has none.
+    fn add_voice_from_latents(
+        &mut self,
+        name: &str,
+        latents: &[f32],
+        channels: usize,
+        frames: usize,
     ) -> Result<()>;
 
     fn set_conditions(&mut self, conditions: HashMap<String, String>) -> Result<()>;
