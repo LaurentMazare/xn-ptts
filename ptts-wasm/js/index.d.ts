@@ -99,7 +99,7 @@ export interface SpeechOptions {
    * `Number.MAX_SAFE_INTEGER`, pass a `bigint`.
    */
   seed?: number | bigint;
-  /** Aborting stops the generation; the stream ends with what was produced so far. */
+  /** Aborting stops generation and discards unread chunks. Stop scheduled playback separately. */
   signal?: AbortSignal;
 }
 
@@ -133,7 +133,7 @@ export interface SpeechStream extends AsyncIterable<Float32Array> {
   readonly sampleRate: number;
   /** Resolves with timing stats once generation ends, or rejects if it failed. */
   readonly done: Promise<SpeechStats>;
-  /** Stop generating. Breaking out of a `for await` loop does the same. */
+  /** Stop generating and discard unread chunks. Await `done` for cleanup. Breaking out of a `for await` loop does the same. */
   cancel(): void;
 }
 

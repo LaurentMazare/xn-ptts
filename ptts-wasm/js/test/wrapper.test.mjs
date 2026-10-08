@@ -301,3 +301,36 @@ test('config is required before a worker or download starts', async () => {
   }
   assert.equal(FakeWorker.last, null);
 });
+
+test('cancel discards unread audio and the model can speak again', async () => {
+  FakeWorker.script = { frames: 20, fail: null };
+  const tts = await load();
+  const worker = FakeWorker.last;
+  let resolveBuffered;
+  const buffered = new Promise((resolve) => { resolveBuffered = resolve; });
+  const reply = worker.reply.bind(worker);
+  let chunks = 0;
+  worker.reply = (data) => {
+    reply(data);
+    if (data.type === 'chunk' && ++chunks === 3) queueMicrotask(resolveBuffered);
+  };
+  const speech = tts.stream('A longer sentence.');
+  await buffered;
+  speech.cancel();
+  const iterator = speech[Symbol.asyncIterator]();
+  assert.equal((await iterator.next()).done, true, 'cancelled audio must not reach playback');
+  assert.equal((await speech.done).cancelled, true);
+  FakeWorker.script = { frames: 2, fail: null };
+  assert.equal((await tts.synth('Speak again.')).length, 8);
+  tts.dispose();
+});
+
+test('cancel also discards audio buffered before generation completed', async () => {
+  FakeWorker.script = { frames: 3, fail: null };
+  const tts = await load();
+  const speech = tts.stream('Hello.');
+  await speech.done;
+  speech.cancel();
+  assert.equal((await speech[Symbol.asyncIterator]().next()).done, true);
+  tts.dispose();
+});

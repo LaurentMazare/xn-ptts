@@ -246,6 +246,7 @@ export class PhononTTS {
     let finished = false;
     let failure = null;
     let started = false;
+    let cancelled = false;
 
     let resolveDone, rejectDone;
     const done = new Promise((res, rej) => ((resolveDone = res), (rejectDone = rej)));
@@ -266,7 +267,9 @@ export class PhononTTS {
       wake();
     };
     const cancel = () => {
-      if (finished) return;
+      buffered.length = 0;
+      if (finished || cancelled) return;
+      cancelled = true;
       if (started) this.#worker.postMessage({ type: 'cancel', id });
       else finish(null, { cancelled: true });
     };
@@ -275,6 +278,7 @@ export class PhononTTS {
 
     const handlers = {
       chunk: ({ pcm }) => {
+        if (cancelled) return;
         buffered.push(pcm);
         wake();
       },
