@@ -110,12 +110,19 @@ cargo run --release -p ptts --example export_coreml -- --dir "$MODEL_DIR" phonon
 Then add `ios/PhononTTS` to your Xcode project as a local package, add the `phonon-coreml` folder to your app as a folder reference named `Models`, and speak:
 
 ```swift
+import Foundation
 import PhononTTS
 
-let models = try PhononModels.install(bundled: Bundle.main.url(forResource: "Models", withExtension: nil)!)
+guard let bundled = Bundle.main.url(forResource: "Models", withExtension: nil) else {
+    throw PhononError(description: "Add the exported model folder to your app as a folder reference named Models.")
+}
+let models = try PhononModels.install(bundled: bundled)
 let tts = try await Phonon.load(models: models, language: .english)
-try await PhononPlayer().play(tts.stream("Hello world"))
+let player = try PhononPlayer()
+try await player.play(tts.stream("Hello world"))
 ```
+
+Keep `tts` and `player` in your app or view state while speech is playing. `play` returns when generation finishes; scheduled audio can still be playing.
 
 The [package README](ios/PhononTTS/README.md) covers downloading the models instead of bundling them, voices, and the rest of the API.
 
