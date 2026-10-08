@@ -14,6 +14,8 @@ The CLI release workflow builds the following CPU archives. Once published, they
 | Mac Intel | `x86_64-apple-darwin` | macOS 15 or later; x86-64-v3 CPU |
 | Windows x64 | `x86_64-pc-windows-msvc` | Windows 10 or later; x86-64-v3 CPU |
 
+Mac downloads target macOS 15, the oldest Mac runner used to check them. Older macOS versions require a source build and their own verification.
+
 x86-64-v3 includes AVX2, FMA, and F16C. Older x86 CPUs need a source build suited to their CPU. These downloads use CPU execution; GPU support requires a source build with the relevant backend feature.
 
 Extract the archive. On Linux or Mac, put the extracted `ptts` file in a directory on your `PATH`, for example `~/.local/bin`. On Windows, run `ptts.exe` in PowerShell, or add its folder to `PATH`. Rust and Python are not required for these downloads. Mac may prompt you to allow the downloaded executable in System Settings because it is not notarized.
