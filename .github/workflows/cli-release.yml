@@ -1,4 +1,4 @@
-name: CLI binaries
+name: Native packages
 
 on:
   push:
@@ -6,6 +6,10 @@ on:
     branches: [main]
     paths:
       - 'ptts/**'
+      - 'ptts-ffi/**'
+      - 'ptts-coreml/**'
+      - 'ios/**'
+      - 'scripts/package-swift.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'LICENSE-*'
@@ -18,6 +22,10 @@ on:
   pull_request:
     paths:
       - 'ptts/**'
+      - 'ptts-ffi/**'
+      - 'ptts-coreml/**'
+      - 'ios/**'
+      - 'scripts/package-swift.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'LICENSE-*'
@@ -105,9 +113,61 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  swift:
+    name: Swift release package
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+      IPHONEOS_DEPLOYMENT_TARGET: '18.0'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-apple-ios aarch64-apple-ios-sim
+          cache-key: swift-release
+          audio-deps: 'false'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Build the framework and wrapper
+        run: |
+          ./ios/build-xcframework.sh
+          swift build --package-path ios/PhononTTS
+      - name: Package the release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_args=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag_args=(--tag "$GITHUB_REF_NAME"); fi
+          python scripts/package-swift.py --framework ios/PhononTTS/PhononCore.xcframework.zip ${tag_args[@]+"${tag_args[@]}"}
+          unzip -q dist/ptts-swift-*.zip -d unpacked
+          package=$(find unpacked -name Package.swift -type f)
+          swift package --package-path "$(dirname "$package")" dump-package
+          (cd dist && shasum -a 256 -c SHA256SUMS-apple)
+          # Check the packaged wrapper against the exact staged framework. The public
+          # URL can only be checked after publication; the release zip stays unchanged.
+          package_dir=$(dirname "$package")
+          unzip -q dist/PhononCore.xcframework.zip -d "$package_dir"
+          python - "$package" <<'PY'
+          import pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text()
+          start = text.index('        .binaryTarget(')
+          end = text.index('\n        .target(', start)
+          text = text[:start] + '        .binaryTarget(name: "PhononCore", path: "PhononCore.xcframework"),' + text[end:]
+          path.write_text(text)
+          PY
+          swift build --package-path "$package_dir"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: swift-package
+          path: dist/*
+          if-no-files-found: error
+
   release:
-    name: Attach CLI downloads
-    needs: build
+    name: Attach native packages
+    needs: [build, swift]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -120,7 +180,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@v8
         with:
-          pattern: cli-*
+          pattern: '{cli-*,swift-package}'
           merge-multiple: true
           path: dist
       - name: Attach archives and checksums
@@ -132,7 +192,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          cat ./*.sha256 > SHA256SUMS
+          cat ./*.sha256 SHA256SUMS-apple > SHA256SUMS
           sha256sum --check SHA256SUMS
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --verify-tag --draft --title "$TAG" \

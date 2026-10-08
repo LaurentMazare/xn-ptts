@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build PhononCore.xcframework, the compiled Rust core the PhononTTS Swift package wraps:
+# Build PhononCore.xcframework, the compiled Rust core the ptts Swift package wraps:
 # iPhone, the iOS simulator and Apple-silicon Macs, each a static library with the C header.
 #
 # Output: ios/PhononTTS/PhononCore.xcframework
