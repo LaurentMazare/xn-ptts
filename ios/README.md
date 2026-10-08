@@ -8,7 +8,7 @@ For contributors. Apps start with [`PhononTTS/README.md`](PhononTTS/README.md).
 | `build-xcframework.sh` | Builds `PhononTTS/PhononCore.xcframework` from `ptts-ffi`, for iPhone, the simulator and Apple-silicon Macs, plus a zip and its checksum for a future URL-based release. |
 | [`../ptts-ffi/`](../ptts-ffi/) | The C interface the framework exports. `include/ptts.h` is written by hand and must match `src/lib.rs`. |
 | [`../ptts-coreml/`](../ptts-coreml/) | The Core ML graphs and the driver that runs them. |
-| [`../ptts/examples/export_coreml.rs`](../ptts/examples/export_coreml.rs) | Converts a checkpoint into a model bundle. Without `--dir` it downloads `kyutai/pocket-tts`. |
+| [`../ptts/examples/export_coreml.rs`](../ptts/examples/export_coreml.rs) | Converts a checkpoint into a model bundle. Supply `--dir` for a local folder or `--repo` for an HF checkpoint. |
 
 ```bash
 ./ios/build-xcframework.sh

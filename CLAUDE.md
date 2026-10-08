@@ -64,15 +64,15 @@ compares outputs should set `XN_KAI=0`, which turns it off at run time, or allow
 Run the CLI example:
 
 ```
-cargo run --release --example ptts --features hf,audio -- "hello world" -o out.wav
+cargo run --release --example ptts --features hf,audio -- --dir "$MODEL_DIR" --lang en "hello world" -o out.wav
 ```
 
-It downloads weights from the `kyutai/pocket-tts` HuggingFace repo on first run. Which files that means — the repo id, the weight and tokenizer file names, the bundled voice list, the config to assume when a directory ships none — lives in `ptts/examples/model_helpers.rs`, not in the library: it changes with each published checkpoint, and `ptts` only reads the files it is handed. Built-in voice IDs: `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`. `--voice` also accepts a path to a 10s audio file or a voice safetensors: either a precomputed `emb` or the training pipeline's `speaker_wavs` latents, which `ptts::loader::load_voice_emb` runs through the checkpoint's speaker projection. `--repo <id>` downloads from another Hub repo with the same layout (`config.json`, weights, tokenizer, optional `embeddings/*.safetensors` voices and an optional `default-voice.safetensors`, which is picked when no `--voice` is given); `--weights <file>` names the weights file inside the repo or directory so only that one is downloaded (`--weights model.q8.gguf --quant q8` for the pre-quantized weights); `--tokenizer <file>` points at a `tokenizer.json` outside the checkpoint, for a repo that ships only a SentencePiece `tokenizer.model`; `--dir` loads a local checkpoint instead of downloading; `--device auto|cpu|cuda|vulkan|metal` picks the backend; `--lang en|fr|de|es|pt|none` picks the text-normalization language and is **required**.
+Every native entry point requires an explicit model source: `--repo OWNER/MODEL` or `--dir /path/to/model` for the examples, `config=` for Python, and `--config` for the servers. Each checkpoint supplies `config.json`, `tokenizer.json`, weights, and optional voice assets. There is no built-in model config or model default. Shared local resolution lives in `ptts/src/checkpoint.rs`; the library does not download. `--weights` selects a nonstandard weights filename explicitly. `--revision` applies to all Hub files. `--lang` is required.
 
 `say` is the same thing in fifteen lines, for checking that the library works:
 
 ```
-cargo run --release --example say --features hf -- "hello world"
+cargo run --release --example say --features hf -- "$MODEL_DIR" "hello world"
 ```
 
 Benchmark a local model:
@@ -99,7 +99,7 @@ make test         # node --test js/test/*.test.mjs -- the wrapper's logic, no br
 
 Requires `wasm-pack` 0.12 or later (`cargo install wasm-pack`), node 22.7 or later, and binaryen's `wasm-opt` 124 or later on `PATH`: wasm-pack otherwise downloads binaryen 117, and releases up to 123 abort on this module. The threaded build (`pkg/wasm-threads/`, the `threads` feature) also needs the nightly pinned in the Makefile with `rust-src`, since wasm threads need std rebuilt with atomics: `make threads-toolchain` installs it. `js/worker.js` loads that build only on a cross-origin isolated page, and the single-threaded one otherwise; `js/threads.js` picks the thread count, and `make serve` serves the demo with the isolation headers (`scripts/serve.mjs`). Both builds have the `webgpu` feature: `src/lib.rs` has one engine generic over the device, with only the readback differing, and `js/device.js` keeps the CPU as the default: `device: 'webgpu'` opts into WebGPU, and `'auto'` takes it only when the browser offers a hardware adapter and the weights are q8 GGUF. WebGPU is opt in because it is not faster than the CPU on every device, phones in particular. `scripts/pack.mjs` assembles the package and stamps its version from `workspace.package.version`, so `js/package.json` deliberately has no `version`; it also derives what to copy from that file's `files` list. It deletes the `.gitignore` wasm-pack writes into `pkg/wasm/`: npm reads a subdirectory `.gitignore` as that directory's `.npmignore`, which would silently publish a package without its wasm. `make demo` and `make serve` take `MODEL_DIR`, a model folder: it is linked into `site/model/`, and `scripts/demo-model.mjs` writes `site/model.json` describing its weights and voices, since a static server cannot list a directory for the page. Wasm SIMD flags (`+simd128,+relaxed-simd`) and `getrandom_backend="wasm_js"` come from `.cargo/config.toml`. `relaxed-simd` is required rather than an optimization: `xn`'s quantized kernels call `f32x4_relaxed_madd` unconditionally, so browsers without Relaxed SIMD cannot compile the module at all.
 
-Kyutai's published checkpoint URLs, pinned to HF revisions, are in `js/models.js`. Files are cached by URL, so bump those revisions together with the package version. `.github/workflows/npm-publish.yml` builds the package on PRs that touch it and publishes it on a `v*` tag through npm trusted publishing (OIDC, no token).
+The browser requires an explicit `ModelSpec` with config, tokenizer, weights, and voice URLs. Use revision-pinned HF URLs or versioned local paths because files are cached by URL. `.github/workflows/npm-publish.yml` builds the package on PRs that touch it and publishes it on a `v*` tag through npm trusted publishing (OIDC, no token).
 
 ## Python build
 
@@ -160,7 +160,7 @@ The library implements Phonon: text → tokens → flow-matching language model 
 - `say` / `ptts` / `bench` examples, `ptts-pyo3` and the two servers: `ptts::tok::Tok` (the `hf` feature), a Hugging Face `tokenizers` wrapper. The examples find the file beside the weights and pass it to `SynthBuilder::tokenizer_file`.
 - `ptts-wasm`: the same `ptts::tok::Tok`, built from the `tokenizer.json` the `phonon-tts` worker fetches and handed to `Model::new`; the browser passes text, not token ids.
 
-Every frontend loads a `tokenizer.json` and nothing else, and none is bundled or defaulted to: each checkpoint has its own vocabulary, and loading the wrong one yields plausible audio from the wrong ids, so `Tok::open` refuses to guess. `ptts --tokenizer <path>` and `bench --tokenizer <path>` override where the examples look; otherwise they, `ptts-pyo3` and the two servers all expect `tokenizer.json` in the HF repo or beside the config. A checkpoint that carries only a `tokenizer.model` needs converting once with `scripts/convert-tokenizer.py`, which writes the equivalent json.
+Every frontend loads a `tokenizer.json` and nothing else, and none is bundled or defaulted to: each checkpoint has its own vocabulary, and loading the wrong one yields plausible audio from the wrong ids, so `Tok::open` refuses to guess. `ptts --tokenizer <path>` and `bench --tokenizer <path>` override where the examples look; otherwise they, `ptts-pyo3` and the two servers all expect `tokenizer.json` in the HF repo or beside the config.
 
 Top-level orchestrator is `tts_model::TTSModel<Q>`, generic over a backend-quantization parameter `Q: BackendQ` from `xn`. It owns:
 
@@ -174,7 +174,7 @@ run the flow LM and the Mimi decoder on two threads. `Synth` erases the `Q` para
 dereferences to) so a CLI flag can pick the weight format; the generic `SynthOf<Q>` is
 private. `ptts-wasm` still drives `TTSModel` directly.
 
-Generation is streaming and stateful: callers `init_flow_lm_state(batch, seq_len)`, then `prompt_text*` / `prompt_audio` to seed the state, then step-decode latents and feed them into `MimiDecoderState`. `lsd_decode_steps` controls flow-matching solver steps; `eos_threshold` controls termination. The default `TTSConfig::v202601` configuration is the canonical one consumed by all three frontends.
+Generation is streaming and stateful: callers `init_flow_lm_state(batch, seq_len)`, then `prompt_text*` / `prompt_audio` to seed the state, then step-decode latents and feed them into `MimiDecoderState`. `lsd_decode_steps` controls flow-matching solver steps; `eos_threshold` controls termination. Every frontend reads the supplied checkpoint's own model config.
 
 A config can list `conditioners` (`lut` or `continuous`), which are summed into one vector added to every generated frame's input. Their values are given by name: `--condition NAME=VALUE` on the examples (`ptts`, `bench`, `export_coreml`) and both servers (`PTTS_CONDITION` for the OpenAI one), `conditions=` on `ptts-pyo3`, `conditions` on `PhononTTS.load`. Those not given take their defaults (`num_speakers` 1, `padding_bonus` and `duration_delta` 0); one with no default is an error. A config's baked-in `voices` each carry their own values, which win over those given. `loader::load_conditions` computes the vector for frontends that keep it themselves: the Core ML export fixes it in the bundle, in `host.safetensors` and, for a baked-in voice, in its voice file. The browser build refuses checkpoints with baked-in voices.
 

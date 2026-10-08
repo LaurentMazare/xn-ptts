@@ -220,8 +220,10 @@ def test_nothing_is_downloaded_before_the_arguments_are_checked():
 @pytest.fixture(scope="module")
 def tts() -> ptts.TTS:
     # Private rehearsals use the installed wheel and a local directory or Hub repo ID.
-    # With no override, the legacy public/default checkpoint tests still work.
+    # Model tests require an explicit checkpoint; ordinary wheel checks need none.
     model = os.environ.get("PTTS_TEST_MODEL")
+    if not model:
+        pytest.skip("set PTTS_TEST_MODEL for checkpoint synthesis tests")
     return ptts.TTS(
         config=model,
         revision=os.environ.get("PTTS_TEST_REVISION") if model else None,

@@ -43,8 +43,8 @@ struct Args {
 
     /// Hugging Face model repo to download the checkpoint from: config.json,
     /// weights, tokenizer and voices.
-    #[arg(long, default_value = model_helpers::REPO_ID, conflicts_with = "dir")]
-    repo: String,
+    #[arg(long, required_unless_present = "dir", conflicts_with = "dir")]
+    repo: Option<String>,
 
     /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.
     #[arg(long, conflicts_with = "dir")]
@@ -56,14 +56,13 @@ struct Args {
     dir: Option<std::path::PathBuf>,
 
     /// Tokenizer to load, as a path to a `tokenizer.json`. Defaults to the one
-    /// the checkpoint ships. A checkpoint that carries only a SentencePiece
-    /// `tokenizer.model` needs converting once with `scripts/convert-tokenizer.py`.
+    /// the checkpoint ships.
     #[arg(long)]
     tokenizer: Option<std::path::PathBuf>,
 
     /// Weights file to load from the repo or directory, e.g. `model.q8.gguf` for
     /// a checkpoint that ships both f32 and quantized weights. Defaults to the
-    /// manifest entry or legacy weights matching --quant, then f32 weights.
+    /// standard weights matching --quant, then f32 weights.
     #[arg(long)]
     weights: Option<String>,
 
@@ -131,7 +130,10 @@ fn main() -> Result<()> {
 
     let source = match args.dir.as_deref() {
         Some(dir) => model_helpers::Source::Dir(dir),
-        None => model_helpers::Source::Hub { repo: &args.repo, revision: args.revision.as_deref() },
+        None => model_helpers::Source::Hub {
+            repo: args.repo.as_deref().context("--repo or --dir is required")?,
+            revision: args.revision.as_deref(),
+        },
     };
     let quant = args.quant.as_deref().unwrap_or("f32").parse::<Quant>()?;
     quant.check_device(args.device.parse::<DeviceKind>()?)?;
@@ -284,6 +286,13 @@ fn peak_rss_mb() -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_source_is_required_before_loading() {
+        let err = Args::try_parse_from(["ptts", "--lang", "en", "hello"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert!(err.to_string().contains("--repo"));
+    }
 
     #[test]
     fn a_local_directory_rejects_a_hub_revision_before_loading() {

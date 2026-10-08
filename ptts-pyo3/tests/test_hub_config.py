@@ -65,9 +65,9 @@ def test_phonon_hub_requires_config_before_fetching_weights(hub):
 
 
 @pytest.mark.parametrize("repo", ["kyutai/pocket-tts", "kyutai/pocket-tts-without-voice-cloning"])
-def test_known_pocket_repos_keep_the_config_fallback(hub, repo):
+def test_pocket_repos_also_require_config(hub, repo):
     hub.repo = repo
-    with pytest.raises(LookupError, match="no weights"):
+    with pytest.raises(LookupError, match="config.json"):
         load(hub)
 
 
@@ -76,3 +76,9 @@ def test_config_authentication_errors_remain_io_errors(hub):
     with pytest.raises(OSError):
         load(hub)
     assert not any(p.endswith((".gguf", ".safetensors")) for p in hub.requests)
+
+
+def test_missing_model_source_never_selects_a_hub_repo(hub):
+    with pytest.raises(ValueError, match="config is required"):
+        ptts.TTS(lang="en")
+    assert hub.requests == []

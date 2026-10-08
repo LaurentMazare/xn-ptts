@@ -70,57 +70,6 @@ pub struct TTSConfig {
 }
 
 impl TTSConfig {
-    pub fn v202601() -> Self {
-        Self {
-            flow_lm: FlowLMConfig {
-                d_model: 1024,
-                num_heads: 16,
-                num_layers: 6,
-                dim_feedforward: 4096,
-                max_period: 10000.0,
-                n_bins: 4000,
-                lut_dim: 1024,
-                flow_dim: 512,
-                flow_depth: 6,
-                ldim: 32,
-            },
-            mimi: MimiConfig {
-                channels: 1,
-                sample_rate: 24000,
-                frame_rate: 12.5,
-                dimension: 512,
-                quantizer_dimension: 32,
-                quantizer_output_dimension: 512,
-                n_filters: 64,
-                n_residual_layers: 1,
-                ratios: vec![6, 5, 4],
-                kernel_size: 7,
-                last_kernel_size: 3,
-                residual_kernel_size: 3,
-                dilation_base: 2,
-                compress: 2,
-                transformer_d_model: 512,
-                transformer_num_heads: 8,
-                transformer_num_layers: 2,
-                transformer_layer_scale: 0.01,
-                transformer_context: 250,
-                transformer_max_period: 10000.0,
-                transformer_dim_feedforward: 2048,
-                downsample_channel_wise: false,
-            },
-            lsd_decode_steps: 1,
-            eos_threshold: -4.0,
-            model_id: None,
-            audio_prompt_min_duration: 10.0,
-            audio_prompt_max_duration: 10.0,
-            cfg_null_audio_empty: false,
-            speaker_mimi: None,
-            conditioners: vec![],
-            fuser: None,
-            voices: vec![],
-        }
-    }
-
     pub fn model_ext(&self) -> Option<String> {
         self.model_id.as_ref().map(|id| format!("{}@{}", id.sig, id.epoch))
     }
@@ -519,7 +468,7 @@ mod tests {
 
     #[test]
     fn config_round_trips_and_fills_defaults() {
-        let cfg = TTSConfig::v202601();
+        let cfg = crate::test_config();
         let json = serde_json::to_value(&cfg).unwrap();
         let back: TTSConfig = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), json);
@@ -548,7 +497,7 @@ mod tests {
     #[test]
     fn config_ignores_keys_it_no_longer_reads() {
         // Published config.json files still carry these, and have to keep loading.
-        let mut json = serde_json::to_value(TTSConfig::v202601()).unwrap();
+        let mut json = serde_json::to_value(crate::test_config()).unwrap();
         let fields = json.as_object_mut().unwrap();
         fields.insert("temp".into(), serde_json::json!(0.7));
         let fuser = serde_json::json!({"sum": [], "streaming_sum": [], "prepend": [], "cross": []});

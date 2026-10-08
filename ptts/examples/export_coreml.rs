@@ -32,8 +32,8 @@ struct Args {
     /// Output directory.
     out: PathBuf,
     /// Hugging Face repo to download the checkpoint from.
-    #[arg(long, default_value = model_helpers::REPO_ID)]
-    repo: String,
+    #[arg(long, required_unless_present = "dir", conflicts_with = "dir")]
+    repo: Option<String>,
 
     /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.
     #[arg(long, conflicts_with = "dir")]
@@ -77,7 +77,10 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(model_helpers::LOG_DIRECTIVES).init();
     let source = match args.dir.as_deref() {
         Some(dir) => Source::Dir(dir),
-        None => Source::Hub { repo: &args.repo, revision: args.revision.as_deref() },
+        None => Source::Hub {
+            repo: args.repo.as_deref().context("--repo or --dir is required")?,
+            revision: args.revision.as_deref(),
+        },
     };
     let ck = model_helpers::locate(source, args.weights.as_deref(), args.quant.parse()?)?;
     let cfg = &ck.config;

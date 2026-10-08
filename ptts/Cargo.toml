@@ -16,8 +16,6 @@ rand = { workspace = true, features = ["std_rng"] }
 rand_distr = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
-semver = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rubato = { workspace = true, optional = true }

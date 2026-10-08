@@ -28,10 +28,10 @@ __all__ = [
 class TTS:
     """A loaded Phonon model.
 
-    `config` is a local directory, `config.json`, `ptts-model.json`, a Hugging Face repo id,
-    or `None` for the legacy Pocket TTS default. Local paths never download anything;
-    Hub files are downloaded on first use and cached. `revision` selects a branch, tag,
-    or commit for every Hub file and is only accepted with a Hub source.
+    `config` must name a local directory/config.json or a Hugging Face repo ID.
+    There is no default model. Local paths never download anything; Hub files are
+    downloaded on first use and cached. `revision` selects a branch, tag, or commit
+    for every Hub file and is only accepted with a Hub source.
 
     `lang` is required and keyword-only: text is normalized before it is tokenized, and the
     spoken forms of `@`, `+` and `=` differ per language, so there is nothing safe to default

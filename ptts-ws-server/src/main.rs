@@ -20,8 +20,8 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     addr: String,
 
-    /// Local model directory, config.json, ptts-model.json, or Hugging Face repo ID.
-    #[arg(long)]
+    /// Required local model directory, config.json, or Hugging Face repo ID.
+    #[arg(long, required = true)]
     config: Option<std::path::PathBuf>,
 
     /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.

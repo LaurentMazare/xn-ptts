@@ -17,7 +17,7 @@ PY
 
 To use it from your own project, install it with `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Either one compiles the Rust code, so it needs Rust installed.
 
-`config` accepts a local directory, `config.json`, or `ptts-model.json`, and downloads nothing for a local path. Rust examples, Python, and both servers use the [shared checkpoint resolver](../ptts/src/checkpoint.rs). A manifest selects exact files, verifies supplied hashes, and declares the default voice. Without one, q8 prefers `model.q8.gguf`, other formats prefer f32 weights, and voices are discovered under `voices/` or `embeddings/`, plus `default-voice.safetensors` as `default`. `config` can also be a Hugging Face repo ID; that existing download path remains separate from local manifest loading.
+`config` must name a local directory, a `config.json`, or a Hugging Face repo ID. There is no default model. Local paths download nothing. Rust examples, Python, and both servers use the [shared checkpoint resolver](../ptts/src/checkpoint.rs). Every checkpoint supplies its own `config.json` and `tokenizer.json`. q8 prefers `model.q8.gguf`; other formats prefer `model.safetensors`. Voices come from `voices/` or `embeddings/`, plus `default-voice.safetensors` as `default`. Hub downloads use the supplied `revision` for all files.
 
 `lang` is required: `en`, `fr`, `de`, `es` or `pt` picks how numbers, symbols and abbreviations are spelled out; `none` uses the text as written.
 
@@ -36,7 +36,7 @@ with tts.stream("A longer sentence.", voice=voice) as audio:
 
 `tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early.
 
-`tts.voices` lists the voices that were found. When no voice is given, the manifest's declared default is used, otherwise `default` if present, then the first by name. Pass `voice="name"` to any speech method to select one.
+`tts.voices` lists the voices that were found. When no voice is given, the checkpoint's configured default is used, then `default` if present, then the first by name. Pass `voice="name"` to any speech method to select one.
 
 ## Command line
 

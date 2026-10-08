@@ -16,7 +16,7 @@ Point `MODEL_DIR` at the model folder, the one holding `config.json`, `model.q8.
 export MODEL_DIR=/path/to/model
 ```
 
-Rust examples, Python, and both servers share the [checkpoint resolver and optional `ptts-model.json` manifest](ptts/src/checkpoint.rs). The manifest defines exact files, hashes, and a default voice; existing model directories continue to work without one.
+Rust examples, Python, and both servers share the [checkpoint resolver](ptts/src/checkpoint.rs). Supply a local model directory or an HF repo explicitly. Each model supplies its own `config.json`, `tokenizer.json`, weights, and voice assets. No model or model config is selected automatically.
 
 ## 2. Run it
 
@@ -34,9 +34,9 @@ uv run --project ptts-pyo3 --locked ptts --lang en \
   --model "$MODEL_DIR" --quant q8 "Hello world" -o out.wav
 ```
 
-`--quant q8` runs the model in q8, the format `model.q8.gguf` is stored in. The Rust and Python examples below set q8 too. A manifest with only q8 weights rejects a request for f32; legacy directories can still expand those weights to f32, which is slower and uses more memory. `--lang` is required. It picks how numbers, symbols and abbreviations are spelled out before synthesis: `en`, `fr`, `de`, `es` or `pt`, or `none` to use the text as written.
+`--quant q8` runs the model in q8, the format `model.q8.gguf` is stored in. The Rust and Python examples below set q8 too. Loading q8 weights as f32 expands them, which is slower and uses more memory. `--lang` is required. It picks how numbers, symbols and abbreviations are spelled out before synthesis: `en`, `fr`, `de`, `es` or `pt`, or `none` to use the text as written.
 
-When no voice is specified, native integrations use the manifest's default voice if declared, otherwise `default`, then the first registered voice by name. Swift uses its exported bundle's voice selection. For a fixed choice, pass `--voice Freya` to either CLI, `voice="Freya"` to Python, or call `tts.setVoice("Freya")` in Swift.
+When no voice is specified, native integrations use the checkpoint's configured default, then `default`, then the first registered voice by name. Swift uses its exported bundle's voice selection. For a fixed choice, pass `--voice Freya` to either CLI, `voice="Freya"` to Python, or call `tts.setVoice("Freya")` in Swift.
 
 ## 3. Use it from Rust
 
@@ -190,7 +190,7 @@ curl http://localhost:8880/v1/audio/speech -H "Content-Type: application/json" \
   -d '{"input": "Hello world", "voice": "Freya"}' -o hello.mp3
 ```
 
-Without the mount, the image speaks with Kyutai's Pocket TTS checkpoint, which it carries. The [server README](ptts-openai-server/README.md) covers running it without Docker, the API, and setup for clients such as Open WebUI and Home Assistant. For streaming text in and audio out over one WebSocket connection, there is `ptts-ws-server`.
+The image contains no model weights. Supply a mounted model folder or an HF repo through `PTTS_CONFIG`. The [server README](ptts-openai-server/README.md) covers running it without Docker, the API, and setup for clients such as Open WebUI and Home Assistant. For streaming text in and audio out over one WebSocket connection, there is `ptts-ws-server`.
 
 ## License
 

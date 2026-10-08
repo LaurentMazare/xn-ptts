@@ -3,7 +3,7 @@
 //! ```python
 //! import ptts
 //!
-//! tts = ptts.TTS(lang="en")
+//! tts = ptts.TTS(config="/path/to/model", lang="en")
 //! tts.save("out.wav", "Hello world")
 //! ```
 //!
@@ -17,13 +17,11 @@
 
 use numpy::{PyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use ptts::checkpoint::{
-    Checkpoint, POCKET_TTS_NO_CLONING_REPO, POCKET_TTS_REPO as DEFAULT_REPO_ID, POCKET_TTS_VOICES,
-    ResolveOptions, is_local_source, read_config, weight_candidates,
+    Checkpoint, ResolveOptions, is_local_source, read_config, weight_candidates,
 };
-use ptts::loader::{DEFAULT_VOICE_FILE, VOICE_DIRS};
+use ptts::loader::DEFAULT_VOICE_FILE;
 use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant, SpeechOptions, SpeechStream, Synth};
-use ptts::tts_model::TTSConfig;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
@@ -64,7 +62,7 @@ impl<R, E: Into<ptts::Error>> IntoPy<R> for Result<R, E> {
     }
 }
 
-/// Resolve a local directory/config/manifest, a Hub repo ID, or the legacy default.
+/// Resolve an explicitly supplied local directory/config or Hub repo ID.
 fn resolve(config: Option<&str>, revision: Option<&str>, quant: Quant) -> ptts::Result<Checkpoint> {
     match config {
         Some(path) if is_local_source(std::path::Path::new(path)) => {
@@ -76,11 +74,13 @@ fn resolve(config: Option<&str>, revision: Option<&str>, quant: Quant) -> ptts::
             Checkpoint::resolve(path, ResolveOptions { quant, weights: None })
         }
         Some(repo_id) => resolve_hub(&hub(repo_id)?, repo_id, revision, quant),
-        None => resolve_hub(&hub(DEFAULT_REPO_ID)?, DEFAULT_REPO_ID, revision, quant),
+        None => Err(ptts::Error::InvalidArgument(
+            "config is required: supply a local model directory or Hugging Face repo ID".into(),
+        )),
     }
 }
 
-/// A Hub repo: its own `config.json` (with a legacy Pocket TTS fallback), weights, a
+/// A Hub repo: its own `config.json`, weights, a
 /// tokenizer, and voices under `voices/` or `embeddings/` plus an optional
 /// `default-voice.safetensors`. Only the files that are used get downloaded.
 fn resolve_hub(
@@ -89,8 +89,9 @@ fn resolve_hub(
     revision: Option<&str>,
     quant: Quant,
 ) -> ptts::Result<Checkpoint> {
+    let cfg = read_config(hub_get(repo, "config.json", revision)?)?;
     // One listing rather than a request per guessed name, and the only way to learn a repo's
-    // voices. Offline it fails, and then every name is tried, which the cache can still serve.
+    // voices. If listing is unavailable, only standard weight and default-voice paths are tried.
     let listing: Option<Vec<String>> = repo
         .list_tree()
         .maybe_revision(revision.map(str::to_owned))
@@ -125,13 +126,6 @@ fn resolve_hub(
         }
     };
 
-    let cfg = match get_optional("config.json")? {
-        Some(path) => read_config(&path)?,
-        None if matches!(repo_id, DEFAULT_REPO_ID | POCKET_TTS_NO_CLONING_REPO) => {
-            TTSConfig::v202601()
-        }
-        None => read_config(hub_get(repo, "config.json", revision)?)?,
-    };
     let candidates = weight_candidates(quant);
     let mut model_path = None;
     for name in candidates {
@@ -150,22 +144,7 @@ fn resolve_hub(
     };
     let tokenizer_path = hub_get(repo, "tokenizer.json", revision)?;
 
-    let voice_files: Vec<(String, String)> = match &listing {
-        // Directory by directory, so a name in both resolves the same way every time.
-        Some(files) => VOICE_DIRS
-            .iter()
-            .flat_map(|&dir| {
-                files.iter().filter_map(move |f| {
-                    hub_voice_name(f).filter(|(d, _)| *d == dir).map(|(_, name)| (name, f))
-                })
-            })
-            .map(|(name, f)| (name.to_string(), f.clone()))
-            .collect(),
-        None => POCKET_TTS_VOICES
-            .iter()
-            .map(|v| (v.to_string(), format!("embeddings/{v}.safetensors")))
-            .collect(),
-    };
+    let voice_files = ptts::loader::voice_paths(listing.clone().unwrap_or_default());
     let mut voices = vec![];
     for (name, file) in
         voice_files.into_iter().chain([("default".to_string(), DEFAULT_VOICE_FILE.to_string())])
@@ -182,16 +161,7 @@ fn resolve_hub(
         tokenizer: Some(tokenizer_path),
         voices,
         quant,
-        manifest: None,
     })
-}
-
-/// The directory and voice name of a repo file that is a voice: a `.safetensors` directly
-/// under one of [`VOICE_DIRS`]. Anything deeper, or in another directory, is not.
-fn hub_voice_name(path: &str) -> Option<(&str, &str)> {
-    let (dir, file) = path.split_once('/')?;
-    let name = file.strip_suffix(".safetensors")?;
-    (VOICE_DIRS.contains(&dir) && !name.contains('/')).then_some((dir, name))
 }
 
 /// Add a voice unless one of that name is already there: the first found wins, so `voices/`
@@ -728,8 +698,14 @@ mod tests {
 
     #[test]
     fn only_files_directly_in_a_voice_dir_are_voices() {
-        assert_eq!(hub_voice_name("voices/Freya.safetensors"), Some(("voices", "Freya")));
-        assert_eq!(hub_voice_name("embeddings/alba.safetensors"), Some(("embeddings", "alba")));
+        assert_eq!(
+            ptts::loader::voice_file_name("voices/Freya.safetensors"),
+            Some(("voices", "Freya"))
+        );
+        assert_eq!(
+            ptts::loader::voice_file_name("embeddings/alba.safetensors"),
+            Some(("embeddings", "alba"))
+        );
         for path in [
             "embeddings_v2/alba.safetensors",
             "languages/french/embeddings/alba.safetensors",
@@ -737,7 +713,7 @@ mod tests {
             "voices/readme.md",
             "default-voice.safetensors",
         ] {
-            assert_eq!(hub_voice_name(path), None, "{path}");
+            assert_eq!(ptts::loader::voice_file_name(path), None, "{path}");
         }
     }
 

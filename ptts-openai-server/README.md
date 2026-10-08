@@ -4,13 +4,19 @@ A speech server for Phonon compatible with OpenAI's text-to-speech API: `POST /v
 
 ## Docker
 
+Set `MODEL_DIR` to a local folder holding the checkpoint's config, tokenizer, weights, and voices:
+
 ```bash
-docker run -p 8880:8880 ghcr.io/gradium-ai/ptts-openai-server
+docker run -p 8880:8880 -v "$MODEL_DIR:/models:ro" \
+  -e PTTS_CONFIG=/models -e PTTS_LANG=en -e PTTS_QUANT=q8 \
+  ghcr.io/gradium-ai/ptts-openai-server
 ```
 
-That is all: the image has Kyutai's Pocket TTS checkpoint (CC-BY-4.0) baked in, with its eight voices (`alba`, `azelma`, `cosette`, `eponine`, `fantine`, `javert`, `jean`, `marius`; `default` is `alba`), and runs it at q8 on the CPU. It is built for `linux/amd64` (an x86-64 CPU with AVX2, from about 2013 on) and `linux/arm64`.
+The image contains the server and no model weights. It is built for `linux/amd64` (an x86 CPU with AVX2) and `linux/arm64`. Every model supplies its own `config.json` and `tokenizer.json`.
 
-Every flag below has an environment variable, so the image is configured with `-e`: `-e PTTS_LANG=fr`, `-e PTTS_QUANT=f32`, or your own voices with `-v ./voices:/voices:ro -e PTTS_VOICE_DIR=/voices`. A checkpoint of your own goes the same way, mounted and named by `PTTS_CONFIG`. [compose.yaml](compose.yaml) does the same with Docker Compose:
+To download from HF instead, set `PTTS_CONFIG=OWNER/MODEL` and `PTTS_REVISION` to the desired revision. Set `HF_TOKEN` for a private repo. You can mount a writable `HF_HOME` to retain the download cache.
+
+Every flag below has an environment variable, so the image is configured with `-e`. Additional voices can be mounted with `-v ./voices:/voices:ro -e PTTS_VOICE_DIR=/voices`. [compose.yaml](compose.yaml) mounts the folder named by `MODEL_DIR`:
 
 ```bash
 docker compose -f ptts-openai-server/compose.yaml up
@@ -29,7 +35,7 @@ brew install opus lame pkg-config                            # macOS
 cargo run --release -p ptts-openai-server -- --config "$MODEL_DIR" --quant q8 --lang en
 ```
 
-`--config` names a checkpoint folder (or a `config.json` in one) or a Hugging Face repo id. Without it, Kyutai's checkpoint is downloaded from the Hub.
+`--config` names a checkpoint folder (or a `config.json` in one) or a Hugging Face repo id. It is required; no model is selected automatically.
 
 It listens on `0.0.0.0:8880` (`--addr` to change it). There is no authentication and no limit on concurrent requests, and every request can ask for up to 4096 characters of speech, so anyone who can reach the port can keep the CPU busy. On a machine others can reach, bind to `--addr 127.0.0.1:8880` or put it behind a proxy that checks access. `--lang` is required: it picks how numbers and symbols are spelled out. `--device auto` uses the GPU backend the binary was built with, if any; quantized weights such as `--quant q8` run on the CPU only. A checkpoint whose config lists conditioners, such as `padding_bonus`, takes their values with `--condition padding_bonus=0.5` (repeatable, or `PTTS_CONDITION=padding_bonus=0.5,num_speakers=2` in the environment); those not given take their defaults. `--help` lists the rest.
 

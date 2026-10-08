@@ -20,9 +20,8 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8880", env = "PTTS_ADDR")]
     addr: String,
 
-    /// Local model directory, config.json, ptts-model.json, or Hugging Face repo ID.
-    /// Kyutai's Pocket TTS checkpoint from the Hub when not given.
-    #[arg(long, env = "PTTS_CONFIG")]
+    /// Required local model directory, config.json, or Hugging Face repo ID.
+    #[arg(long, env = "PTTS_CONFIG", required = true)]
     config: Option<std::path::PathBuf>,
 
     /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.

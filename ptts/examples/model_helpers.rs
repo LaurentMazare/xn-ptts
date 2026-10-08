@@ -1,22 +1,18 @@
 //! Download transport for the native examples.
 //!
-//! Local checkpoint resolution and manifest validation live in `ptts::checkpoint`.
+//! Local checkpoint resolution lives in `ptts::checkpoint`.
 //! The library does not download; these examples keep their blocking Hub transport.
 #![allow(dead_code, unused_imports)]
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-pub use ptts::checkpoint::{Checkpoint, POCKET_TTS_REPO as REPO_ID};
-use ptts::checkpoint::{
-    POCKET_TTS_NO_CLONING_REPO, POCKET_TTS_VOICES, ResolveOptions, TOKENIZER_CANDIDATES,
-    read_config, weight_candidates,
-};
+pub use ptts::checkpoint::Checkpoint;
+use ptts::checkpoint::{ResolveOptions, read_config, weight_candidates};
 pub use ptts::loader::{is_unused_by_tts_model, load_voice_emb, load_weights, remap_key};
 use ptts::synth::Quant;
 #[cfg(feature = "hf")]
 pub use ptts::tok::Tok;
-use ptts::tts_model::TTSConfig;
 
 /// Default tracing directives. `RUST_LOG` overrides these.
 pub const LOG_DIRECTIVES: &str =
@@ -49,11 +45,7 @@ pub fn from_hub(
         revision = revision.unwrap_or("main"),
         "resolving checkpoint on the Hugging Face Hub"
     );
-    let config = match repo.get_optional("config.json") {
-        Some(path) => read_config(&path)?,
-        None if matches!(repo_id, REPO_ID | POCKET_TTS_NO_CLONING_REPO) => TTSConfig::v202601(),
-        None => read_config(repo.get("config.json")?)?,
-    };
+    let config = read_config(repo.get("config.json")?)?;
     let weights = match weights {
         Some(name) => repo.get(name)?,
         None => weight_candidates(quant)
@@ -66,18 +58,20 @@ pub fn from_hub(
                 )
             })?,
     };
-    let tokenizer = TOKENIZER_CANDIDATES.iter().find_map(|name| repo.get_optional(name));
+    let tokenizer = Some(repo.get("tokenizer.json")?);
     let mut voices = vec![];
-    for voice in POCKET_TTS_VOICES {
-        if let Some(path) = repo.get_optional(&format!("embeddings/{voice}.safetensors")) {
-            voices.push((voice.to_string(), path));
+    for (name, file) in repo.voice_files()? {
+        if let Some(path) = repo.get_optional(&file) {
+            voices.push((name, path));
         }
     }
-    if let Some(path) = repo.get_optional(ptts::loader::DEFAULT_VOICE_FILE) {
+    if !voices.iter().any(|(name, _)| name == "default")
+        && let Some(path) = repo.get_optional(ptts::loader::DEFAULT_VOICE_FILE)
+    {
         voices.push(("default".to_string(), path));
     }
     voices.sort();
-    Ok(Checkpoint { config, weights, tokenizer, voices, quant, manifest: None })
+    Ok(Checkpoint { config, weights, tokenizer, voices, quant })
 }
 
 /// A Hugging Face model repo, wrapped so a download failure names the repo and the file --
@@ -118,6 +112,21 @@ impl HubRepo {
                     self.repo_id
                 )
             })
+    }
+
+    fn voice_files(&self) -> Result<Vec<(String, String)>> {
+        let entries = self
+            .repo
+            .list_tree()
+            .maybe_revision(self.revision.clone())
+            .recursive(true)
+            .send()
+            .with_context(|| format!("cannot list voice files in {}", self.repo_id))?;
+        let files = entries.into_iter().filter_map(|entry| match entry {
+            hf_hub::repository::files::RepoTreeEntry::File { path, .. } => Some(path),
+            _ => None,
+        });
+        Ok(ptts::loader::voice_paths(files))
     }
 
     /// Like [`Self::get`] but maps any failure to `None`, for files that may legitimately be

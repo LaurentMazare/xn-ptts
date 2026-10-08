@@ -445,7 +445,7 @@ impl Loaded {
     async fn load(
         model_weights: Vec<u8>,
         tokenizer_json: &[u8],
-        config_json: Option<Vec<u8>>,
+        config_json: Vec<u8>,
         quant: &str,
         lang: &str,
         rewrites: Option<&str>,
@@ -465,13 +465,8 @@ impl Loaded {
             };
             values.insert(name.to_string(), value.to_string());
         }
-        let cfg: TTSConfig = match config_json {
-            Some(json) => match serde_json::from_slice(&json) {
-                Ok(cfg) => cfg,
-                Err(e) => xn::bail!("cannot parse config.json: {e}"),
-            },
-            None => TTSConfig::v202601(),
-        };
+        let cfg: TTSConfig = serde_json::from_slice(&config_json)
+            .map_err(|e| xn::Error::msg(format!("cannot parse config.json: {e}")))?;
         // Such a checkpoint speaks only its own voices, each with its own conditioning, and
         // voices here come from files.
         if !cfg.voices.is_empty() {
@@ -592,7 +587,7 @@ impl Model {
 impl Model {
     /// Loads a model. `model_weights` is a safetensors or GGUF checkpoint, `tokenizer_json`
     /// the contents of the `tokenizer.json` for its vocabulary, and `config_json` its
-    /// `config.json`, or `undefined` for the original Pocket TTS architecture.
+    /// `config.json`. All three are required.
     ///
     /// One thing a config cannot ask this build for: classifier-free guidance. Guidance is a
     /// caller's option in `ptts::synth` (`SpeechOptions::cfg_coef`), not a field of the
@@ -622,7 +617,7 @@ impl Model {
     pub async fn load(
         model_weights: Vec<u8>,
         tokenizer_json: Vec<u8>,
-        config_json: Option<Vec<u8>>,
+        config_json: Vec<u8>,
         quant: String,
         lang: String,
         rewrites: Option<String>,

@@ -1,26 +1,23 @@
-//! The shortest thing that makes a sound.
+//! The shortest thing that makes a sound from an explicitly supplied model folder.
 //!
 //! ```text
-//! cargo run --release --example say --features hf -- "hello world"
+//! cargo run --release --example say --features hf -- /path/to/model "hello world"
 //! ```
 
-#[path = "model_helpers.rs"]
-mod model_helpers;
-
+use anyhow::Context as _;
+use ptts::checkpoint::{Checkpoint, ResolveOptions};
 use ptts::preprocess::Lang;
+use ptts::synth::Quant;
 
 fn main() -> anyhow::Result<()> {
-    let text = std::env::args().nth(1).unwrap_or_else(|| "Hello from Phonon.".to_string());
-
-    let checkpoint =
-        model_helpers::from_hub(model_helpers::REPO_ID, None, None, ptts::synth::Quant::F32)?;
-    // Which language to normalize as has no default: see `SynthBuilder::new`.
+    let mut args = std::env::args().skip(1);
+    let dir = args.next().context("usage: say <model directory> [text]")?;
+    let text = args.next().unwrap_or_else(|| "Hello from Phonon.".to_string());
+    let checkpoint = Checkpoint::resolve(dir, ResolveOptions { quant: Quant::Q80, weights: None })?;
     let mut tts = checkpoint.builder(Lang::En).build()?;
     checkpoint.register_voices(&mut tts);
-
-    let pcm = tts.say_with(&text, &ptts::synth::SpeechOptions::default().voice("alba"))?;
+    let pcm = tts.say(&text)?;
     ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate())?;
-
     println!("wrote out.wav ({:.2}s)", pcm.len() as f32 / tts.sample_rate() as f32);
     Ok(())
 }
