@@ -10,12 +10,29 @@ pub async fn ws_handler(
     State(app): State<AppState>,
     ws: WebSocketUpgrade,
 ) -> axum::response::Response {
-    async fn handle_socket(socket: WebSocket, app: AppState) {
+    use axum::response::IntoResponse;
+    let permit = match app.requests.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                "the server is busy; retry after an active WebSocket session closes",
+            )
+                .into_response();
+        }
+    };
+    async fn handle_socket(
+        socket: WebSocket,
+        app: AppState,
+        _permit: tokio::sync::OwnedSemaphorePermit,
+    ) {
         if let Err(e) = serve(socket, app).await {
             tracing::error!(error = %e, "ws session terminated");
         }
     }
-    ws.on_upgrade(move |socket| handle_socket(socket, app))
+    // A session retains its primed voice and KV cache between messages, so its
+    // slot is held for the whole connection, including while idle.
+    ws.on_upgrade(move |socket| handle_socket(socket, app, permit))
 }
 
 async fn serve(socket: WebSocket, app: AppState) -> Result<()> {
@@ -310,4 +327,85 @@ fn send_error(
     tx.send(TtsReply::Error { message, code })
         .map_err(|_| anyhow::anyhow!("reply channel closed"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite;
+
+    #[tokio::test]
+    #[ignore = "requires PTTS_TEST_MODEL pointing to a q8 checkpoint"]
+    async fn session_limit_covers_idle_connections_and_releases_after_close() {
+        use ptts::synth::{DeviceKind, Quant};
+        let path = std::path::PathBuf::from(
+            std::env::var("PTTS_TEST_MODEL").expect("set PTTS_TEST_MODEL"),
+        );
+        let app = crate::model::load_ptts(
+            &path,
+            None,
+            None,
+            DeviceKind::Cpu,
+            Quant::Q80,
+            0.3,
+            7,
+            1024,
+            "en".parse().unwrap(),
+            &[],
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )
+        .await
+        .unwrap();
+        let router = axum::Router::new()
+            .route("/speech/tts", axum::routing::any(ws_handler))
+            .with_state(app.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/speech/tts", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let (mut first, response) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(app.requests.available_permits(), 0);
+        let error = tokio_tungstenite::connect_async(&url).await.unwrap_err();
+        let tungstenite::Error::Http(response) = error else {
+            panic!("expected a busy HTTP response, got {error}");
+        };
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        let body = String::from_utf8(response.into_body().unwrap()).unwrap();
+        assert!(body.contains("busy"));
+
+        first
+            .send(tungstenite::Message::Text(r#"{"type":"setup","output_format":"pcm"}"#.into()))
+            .await
+            .unwrap();
+        let ready = first.next().await.unwrap().unwrap().into_text().unwrap();
+        let ready: serde_json::Value = serde_json::from_str(&ready).unwrap();
+        assert_eq!(ready["type"], "ready");
+        assert_eq!(app.requests.available_permits(), 0);
+        first.send(tungstenite::Message::Text(r#"{"type":"end_of_stream"}"#.into())).await.unwrap();
+        let ended = first.next().await.unwrap().unwrap().into_text().unwrap();
+        let ended: serde_json::Value = serde_json::from_str(&ended).unwrap();
+        assert_eq!(ended["type"], "end_of_stream");
+        let permit = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            app.requests.clone().acquire_owned(),
+        )
+        .await
+        .expect("closed session leaked its slot")
+        .unwrap();
+        drop(permit);
+        let (mut second, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        second.close(None).await.unwrap();
+        drop(second);
+        let permit = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            app.requests.clone().acquire_owned(),
+        )
+        .await
+        .expect("disconnect before setup leaked its slot")
+        .unwrap();
+        drop(permit);
+        server.abort();
+    }
 }
