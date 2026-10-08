@@ -1,7 +1,7 @@
 # docker compose -f ptts-openai-server/compose.yaml up
 services:
   ptts-openai-server:
-    image: ghcr.io/gradium-ai/ptts-openai-server:latest
+    image: "${PTTS_IMAGE:-ghcr.io/gradium-ai/ptts-openai-server:latest}"
     ports:
       - "8880:8880"
     environment:
