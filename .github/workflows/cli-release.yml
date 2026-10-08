@@ -17,7 +17,6 @@ on:
       - 'scripts/homebrew-cli.py'
       - 'scripts/upload-release.py'
       - 'docs/cli.md'
-      - 'docs/releasing.md'
       - '.github/workflows/cli-release.yml'
       - '.github/actions/setup-rust/**'
   pull_request:
@@ -34,7 +33,6 @@ on:
       - 'scripts/homebrew-cli.py'
       - 'scripts/upload-release.py'
       - 'docs/cli.md'
-      - 'docs/releasing.md'
       - '.github/workflows/cli-release.yml'
       - '.github/actions/setup-rust/**'
   workflow_dispatch:
