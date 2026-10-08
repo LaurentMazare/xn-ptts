@@ -27,6 +27,8 @@ cargo install --path ptts --locked --features cli
 ptts --lang en --dir "$MODEL_DIR" --quant q8 "Hello world" -o out.wav
 ```
 
+Both Rust and Python install a command named `ptts`, with different flags. `PATH` order selects which one runs. To select the Python CLI explicitly in its environment, use `python -m ptts`; the `uv run --project` command below selects the project's Python command.
+
 With Python, from the repository root (the first run builds the package, a few minutes):
 
 ```bash
