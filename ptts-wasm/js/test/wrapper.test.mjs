@@ -325,7 +325,7 @@ test('cancel discards unread audio and the model can speak again', async () => {
   tts.dispose();
 });
 
-test('cancel also discards audio buffered before generation completed', async () => {
+test('cancel also discards audio still buffered after generation completed', async () => {
   FakeWorker.script = { frames: 3, fail: null };
   const tts = await load();
   const speech = tts.stream('Hello.');

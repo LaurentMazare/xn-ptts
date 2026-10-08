@@ -356,18 +356,21 @@ async function generate() {
     audio.src = url;
     container.appendChild(audio);
     hookAudioElement(audio, sampleRate);
-    // Playback may still be running after generation has finished.
-    playbackTimer = setTimeout(() => {
-      stopBtn.disabled = true;
-    }, Math.max(0, (nextStartTime - audioCtx.currentTime) * 1000));
   } catch (e) {
     log('Error: ' + e.message);
     console.error(e);
   } finally {
     btn.disabled = false;
     activeSpeech = null;
-    if (stopped) stopBtn.disabled = true;
     generating = false;
+    // Partial audio can still be playing after completion or a generation error.
+    if (stopped || nextStartTime <= audioCtx.currentTime) {
+      stopBtn.disabled = true;
+    } else {
+      playbackTimer = setTimeout(() => {
+        stopBtn.disabled = true;
+      }, (nextStartTime - audioCtx.currentTime) * 1000);
+    }
   }
 }
 
@@ -401,7 +404,8 @@ function hookAudioElement(audio, sampleRate) {
     analyser = replayAnalyser;
     startVisualizer();
   });
-  audio.addEventListener('ended', () => {
+  // Pausing manually and reaching the end both fire this event.
+  audio.addEventListener('pause', () => {
     if (!generating) stopBtn.disabled = true;
   });
 }
