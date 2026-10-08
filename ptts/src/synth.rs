@@ -136,7 +136,8 @@ pub enum Quant {
 }
 
 impl Quant {
-    /// Error if this weight format cannot run on `device`.
+    /// Error if the device backend was not compiled in or this weight format cannot run on it.
+    /// This checks build features without initializing the device.
     ///
     /// [`SynthBuilder::build`] checks this too, but a caller that downloads a
     /// checkpoint before building should check first, so an impossible
@@ -148,6 +149,17 @@ impl Quant {
             return Err(Error::unsupported(format!(
                 "quantization ({}) is CPU-only, but the selected device is {device:?}",
                 self.as_str()
+            )));
+        }
+        let unavailable = match device {
+            DeviceKind::Cuda if !cfg!(feature = "cuda") => Some("cuda"),
+            DeviceKind::Vulkan if !cfg!(feature = "vulkan") => Some("vulkan"),
+            DeviceKind::Metal if !cfg!(feature = "metal") => Some("metal"),
+            _ => None,
+        };
+        if let Some(name) = unavailable {
+            return Err(Error::unsupported(format!(
+                "device '{name}' is not available in this build; rebuild with the '{name}' feature or use 'cpu'"
             )));
         }
         Ok(())

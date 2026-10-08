@@ -141,6 +141,42 @@ fn quantization_on_a_gpu_is_rejected_before_the_weights_are_touched() {
 }
 
 #[test]
+fn unavailable_f32_backends_fail_before_reading_model_files() {
+    for (device, name, compiled) in [
+        (DeviceKind::Cuda, "cuda", cfg!(feature = "cuda")),
+        (DeviceKind::Vulkan, "vulkan", cfg!(feature = "vulkan")),
+        (DeviceKind::Metal, "metal", cfg!(feature = "metal")),
+    ] {
+        if compiled {
+            continue;
+        }
+        let err = builder("/definitely/not/a/model/weights.safetensors")
+            .device(device)
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
+        assert!(err.to_string().contains(name), "{err}");
+        assert!(err.to_string().contains("not available in this build"), "{err}");
+    }
+}
+
+#[test]
+fn preflight_accepts_compiled_backends_without_initializing_them() {
+    Quant::F32.check_device(DeviceKind::Auto).unwrap();
+    Quant::Q80.check_device(DeviceKind::Cpu).unwrap();
+    for (device, compiled) in [
+        (DeviceKind::Cpu, true),
+        (DeviceKind::Cuda, cfg!(feature = "cuda")),
+        (DeviceKind::Vulkan, cfg!(feature = "vulkan")),
+        (DeviceKind::Metal, cfg!(feature = "metal")),
+    ] {
+        if compiled {
+            Quant::F32.check_device(device).unwrap();
+        }
+    }
+}
+
+#[test]
 fn speech_options_build_up_fluently() {
     let opts = SpeechOptions::default()
         .voice("alba")

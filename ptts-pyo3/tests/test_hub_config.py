@@ -82,3 +82,18 @@ def test_missing_model_source_never_selects_a_hub_repo(hub):
     with pytest.raises(ValueError, match="config is required"):
         ptts.TTS(lang="en")
     assert hub.requests == []
+
+
+@pytest.mark.parametrize("device", ["cuda", "vulkan", "metal"])
+def test_unavailable_device_is_rejected_before_hub_access(hub, device):
+    if device in ptts.available_devices():
+        pytest.skip("backend is included in this wheel")
+    with pytest.raises(NotImplementedError, match=f"device '{device}' is not available"):
+        ptts.TTS(config=hub.repo, revision=hub.revision, device=device, quant="f32", lang="en")
+    assert hub.requests == []
+
+
+def test_quantized_gpu_is_rejected_before_hub_access(hub):
+    with pytest.raises(NotImplementedError, match="CPU-only"):
+        ptts.TTS(config=hub.repo, device="cuda", quant="q8", lang="en")
+    assert hub.requests == []
