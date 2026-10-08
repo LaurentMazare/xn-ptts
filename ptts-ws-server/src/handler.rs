@@ -192,7 +192,12 @@ async fn handle_setup(
     tracing::info!(?voice_name, "starting new TTS session");
     // Conditioning on the voice happens once here, not per request: every
     // generation below clones this primed state.
-    let opts = SpeechOptions::default().voice(voice_name.clone());
+    // Sentences are grouped up to the most a session speaks in one chunk, not
+    // the usual few dozen tokens: every chunk boundary adds a pause, and a
+    // request that fits in one chunk should be spoken as one.
+    let opts = SpeechOptions::default()
+        .voice(voice_name.clone())
+        .max_tokens_per_chunk(ptts::plan::MAX_FIT_TOKENS);
     let session = match app.synth.session(&opts, app.max_seq_len) {
         Ok(session) => session,
         Err(e) => {

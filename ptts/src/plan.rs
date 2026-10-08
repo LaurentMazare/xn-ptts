@@ -154,10 +154,11 @@ pub fn chunks(
 /// prompt rows, cuts what is left over with this, and should keep `max` at or under
 /// [`MAX_FIT_TOKENS`].
 ///
-/// A sentence is cut after the comma, semicolon or colon nearest its middle, as long as each side
-/// keeps a quarter of `max`: a piece of a few words reads badly. The piece before the cut keeps
-/// that mark, so [`prepare_text_prompt`] does not end it with a full stop, and the model does not
-/// read it as a finished sentence. A sentence with no such mark is cut at the word nearest its
+/// A chunk is cut at the sentence end nearest its middle, if it holds more than one sentence.
+/// Otherwise it is cut after the comma, semicolon or colon nearest its middle. Either way each
+/// side must keep a quarter of `max`: a piece of a few words reads badly. A piece cut after a
+/// comma keeps it, so [`prepare_text_prompt`] does not end it with a full stop, and the model does
+/// not read it as a finished sentence. A sentence with no such mark is cut at the word nearest its
 /// middle, and that piece does get the full stop. Every piece starts with a capital letter, but
 /// otherwise holds the same words the sentence did. A single word longer than `max` cannot be
 /// cut and is left as it is, for the caller to refuse.
@@ -183,9 +184,10 @@ pub fn fit(
     Ok(fitted)
 }
 
-/// Where to cut `words`, as the number of words before the cut: after the clause mark nearest
-/// the middle in tokens that leaves `min_side` tokens on each side, else after the word nearest
-/// the middle. Takes at least two words, and always leaves at least one on each side.
+/// Where to cut `words`, as the number of words before the cut: after the sentence end nearest
+/// the middle in tokens that leaves `min_side` tokens on each side, else after such a clause mark,
+/// else after the word nearest the middle. Takes at least two words, and always leaves at least
+/// one on each side.
 fn cut(words: &[&str], min_side: usize, tokenizer: &dyn Tokenizer) -> Result<usize> {
     // `ends[i]` is the number of tokens in `words[..=i]`.
     let mut ends = Vec::with_capacity(words.len());
@@ -196,16 +198,19 @@ fn cut(words: &[&str], min_side: usize, tokenizer: &dyn Tokenizer) -> Result<usi
     }
     let inner = || ends[..words.len() - 1].iter().copied().enumerate();
     let imbalance = |&(_, end): &(usize, usize)| end.abs_diff(total - end);
-    // A clause mark can sit inside closing quotes or brackets: `"yes,"`, `“yes,”`, `oui,»`.
+    // A mark can sit inside closing quotes or brackets: `"yes,"`, `“yes,”`, `oui,»`.
     let closers = ['"', '\'', ')', ']', '”', '’', '»'];
-    let clause = inner()
-        .filter(|&(i, end)| {
-            words[i].trim_end_matches(closers).ends_with([',', ';', ':'])
-                && end >= min_side
-                && total - end >= min_side
-        })
-        .min_by_key(imbalance);
-    let (i, _) = clause
+    let after = |marks: &[char]| {
+        inner()
+            .filter(|&(i, end)| {
+                words[i].trim_end_matches(closers).ends_with(marks)
+                    && end >= min_side
+                    && total - end >= min_side
+            })
+            .min_by_key(imbalance)
+    };
+    let (i, _) = after(&['.', '!', '?'])
+        .or_else(|| after(&[',', ';', ':']))
         .or_else(|| inner().min_by_key(imbalance))
         .ok_or_else(|| Error::invalid_argument("nothing to cut: fewer than two words"))?;
     Ok(i + 1)
@@ -348,6 +353,16 @@ mod tests {
             prompts(&fit_text(text, 8)),
             ["One two three four \"five,\"", "Six seven eight nine ten eleven twelve."]
         );
+    }
+
+    #[test]
+    fn fit_prefers_a_sentence_end_to_a_comma() {
+        let tok = Words::default();
+        let text = "one two, three four five six. seven eight nine ten.";
+        let planned = chunks(&tok, text, Normalize::OFF, 50, 12.5).unwrap();
+        assert_eq!(planned.len(), 1);
+        let fitted = fit(planned, 8, &tok, 12.5).unwrap();
+        assert_eq!(prompts(&fitted), ["One two, three four five six.", "Seven eight nine ten."]);
     }
 
     #[test]
