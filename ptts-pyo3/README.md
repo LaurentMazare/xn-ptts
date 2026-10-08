@@ -59,10 +59,3 @@ Rust toolchain and takes a few minutes.
 ## License
 
 MIT or Apache-2.0, at your option. The model weights are not part of the package and come with their own license.
-
-### Reproduce a Hub checkpoint
-
-Pass `revision="COMMIT"` with a Hub repo ID to download the config, weights, tokenizer,
-and voices from that commit. The CLI accepts `--model OWNER/MODEL --revision COMMIT`.
-Branch and tag names are accepted; use a commit for reproducibility.
-A local path rejects `revision`, since it downloads nothing.

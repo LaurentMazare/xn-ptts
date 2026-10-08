@@ -280,3 +280,24 @@ fn peak_rss_mb() -> Option<f64> {
 fn peak_rss_mb() -> Option<f64> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_local_directory_rejects_a_hub_revision_before_loading() {
+        let err = Args::try_parse_from([
+            "ptts",
+            "--dir",
+            "./missing",
+            "--revision",
+            "test-commit",
+            "--lang",
+            "en",
+            "Hello",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+}

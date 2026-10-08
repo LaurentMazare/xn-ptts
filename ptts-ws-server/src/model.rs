@@ -51,7 +51,7 @@ async fn load_from_hf(
     quant: Quant,
     pocket: bool,
 ) -> Result<Checkpoint> {
-    tracing::info!(repo_id, "downloading model artifacts");
+    tracing::info!(repo_id, revision = revision.unwrap_or("main"), "downloading model artifacts");
     let repo = crate::utils::HfRepo::model(repo_id, revision)?;
     let config =
         if pocket { TTSConfig::v202601() } else { read_config(repo.get("config.json").await?)? };

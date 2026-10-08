@@ -222,9 +222,13 @@ def tts() -> ptts.TTS:
     # Private rehearsals use the installed wheel and a local directory or Hub repo ID.
     # With no override, the legacy public/default checkpoint tests still work.
     model = os.environ.get("PTTS_TEST_MODEL")
-    if model is None:
-        return ptts.TTS(lang="en")
-    return ptts.TTS(config=model, revision=os.environ.get("PTTS_TEST_REVISION"), lang="en", device="cpu", quant="q8")
+    return ptts.TTS(
+        config=model,
+        revision=os.environ.get("PTTS_TEST_REVISION") if model else None,
+        lang="en",
+        device="cpu",
+        quant="q8",
+    )
 
 
 @pytest.mark.checkpoint

@@ -43,7 +43,11 @@ pub fn from_hub(
     quant: Quant,
 ) -> Result<Checkpoint> {
     let repo = HubRepo::open(repo_id, revision)?;
-    tracing::info!(?repo_id, "resolving checkpoint on the Hugging Face Hub");
+    tracing::info!(
+        repo_id,
+        revision = revision.unwrap_or("main"),
+        "resolving checkpoint on the Hugging Face Hub"
+    );
     let config = match repo.get_optional("config.json") {
         Some(path) => read_config(&path)?,
         None => TTSConfig::v202601(),

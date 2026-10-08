@@ -198,11 +198,3 @@ The code in this repository is licensed under either of
 at your option. The model weights are not part of this repository and come with their own license.
 
 Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in this repository, as defined in the Apache-2.0 license, is dual licensed as above, without any additional terms or conditions.
-
-### Reproduce a Hub checkpoint
-
-Use a Hugging Face commit revision to keep every downloaded file on the same checkpoint.
-Rust CLI: `--repo OWNER/MODEL --revision COMMIT --quant q8 --lang en`.
-Python: `ptts.TTS(config="OWNER/MODEL", revision="COMMIT", quant="q8", lang="en")`.
-Both servers accept `--config OWNER/MODEL --revision COMMIT`; the HTTP server also accepts `PTTS_REVISION`.
-Branch and tag names are accepted, but a commit is needed for reproducibility. Local paths reject a Hub revision.
