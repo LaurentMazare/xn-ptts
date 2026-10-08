@@ -1,10 +1,10 @@
 # Releasing ptts
 
-Phonon is the model identity. `ptts` is the Rust, Python, npm, and Swift package name; `xn-ptts` is the repository. The native command and the Python console script are both named `ptts` and have different flags. Use `python -m ptts` to choose the Python CLI explicitly.
+Phonon is the model identity. `ptts` is the Rust, Python, and Swift package name. The npm package is `phonon-tts` because the `ptts` name could not be secured. `xn-ptts` is the repository. The native command and the Python console script are both named `ptts` and have different flags. Use `python -m ptts` to choose the Python CLI explicitly.
 
 ## Before the first public release
 
-- Confirm publishing access for crates.io, PyPI, npm, GHCR, and GitHub Releases. Configure PyPI's trusted publisher for `maturin-pub.yml`. Create the npm `ptts` package with an authenticated first publication, then configure its trusted publisher for `npm-publish.yml`; a publisher for `phonon-tts` does not authorize `ptts`. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+- Confirm publishing access for crates.io, PyPI, npm, GHCR, and GitHub Releases. Configure PyPI's trusted publisher for `maturin-pub.yml`. Confirm ownership of the existing npm `phonon-tts` package and configure its trusted publisher for `npm-publish.yml`. The current placeholder version is not the runtime release. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 - Select and license the Phonon checkpoint and voices. Prepare its public HF repository privately at the final repo ID and a fixed revision. Prepare the browser files and exported Core ML model bundle from that same checkpoint.
 - Test the installed CLI, Python wheel, packed npm package, Docker image, and Swift package with that private revision. Keep private weights and converted models out of public workflow artifacts and shared Actions caches.
 - Verify the advertised devices and CPU requirements. Desktop download requirements are in the [CLI guide](cli.md). Python wheel builds and installation tests are in `maturin-pub.yml`; x86 Linux and Windows wheels use x86-64-v3, so older CPUs need a source build. Check each wheel platform before advertising it.
