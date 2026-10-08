@@ -46,6 +46,10 @@ struct Args {
     #[arg(long, default_value = model_helpers::REPO_ID, conflicts_with = "dir")]
     repo: String,
 
+    /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.
+    #[arg(long, conflicts_with = "dir")]
+    revision: Option<String>,
+
     /// Load from a local directory holding config.json, weights, tokenizer and
     /// voices/ instead of downloading from the Hugging Face Hub.
     #[arg(long)]
@@ -127,7 +131,7 @@ fn main() -> Result<()> {
 
     let source = match args.dir.as_deref() {
         Some(dir) => model_helpers::Source::Dir(dir),
-        None => model_helpers::Source::Hub(&args.repo),
+        None => model_helpers::Source::Hub { repo: &args.repo, revision: args.revision.as_deref() },
     };
     let quant = args.quant.as_deref().unwrap_or("f32").parse::<Quant>()?;
     quant.check_device(args.device.parse::<DeviceKind>()?)?;

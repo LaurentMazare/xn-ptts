@@ -189,6 +189,7 @@ def test_thread_count_round_trips():
         # `src/lib.rs` is where that mapping lives, and this is what holds it to it.
         ({"quant": "q3k"}, ValueError, "q3k"),
         ({"device": "tpu"}, ValueError, "tpu"),
+        ({"config": "./missing", "revision": "test-commit"}, ValueError, "revision"),
         ({"config": "/definitely/not/a/checkpoint/config.json"}, LookupError, "config.json"),
         ({"device": "cuda", "quant": "q8_0"}, NotImplementedError, "CPU-only"),
     ],
@@ -221,7 +222,9 @@ def tts() -> ptts.TTS:
     # Private rehearsals use the installed wheel and a local directory or Hub repo ID.
     # With no override, the legacy public/default checkpoint tests still work.
     model = os.environ.get("PTTS_TEST_MODEL")
-    return ptts.TTS(config=model, lang="en", device="cpu", quant="q8")
+    if model is None:
+        return ptts.TTS(lang="en")
+    return ptts.TTS(config=model, revision=os.environ.get("PTTS_TEST_REVISION"), lang="en", device="cpu", quant="q8")
 
 
 @pytest.mark.checkpoint

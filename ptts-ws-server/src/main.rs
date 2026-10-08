@@ -24,6 +24,10 @@ struct Args {
     #[arg(long)]
     config: Option<std::path::PathBuf>,
 
+    /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.
+    #[arg(long)]
+    revision: Option<String>,
+
     /// Optional directory of additional voice safetensors to load. Each
     /// `*.safetensors` file is loaded as a voice keyed by its file stem; load
     /// errors are logged and skipped rather than fatal.
@@ -137,6 +141,7 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
     }
     model::load_ptts(
         args.config.as_ref(),
+        args.revision.as_deref(),
         args.voice_dir.as_ref(),
         device,
         quant,

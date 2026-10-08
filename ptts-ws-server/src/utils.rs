@@ -18,23 +18,34 @@ use std::path::PathBuf;
 pub struct HfRepo {
     repo: HFRepository<RepoTypeModel>,
     repo_id: String,
+    revision: Option<String>,
 }
 
 impl HfRepo {
     /// Open the model repo `repo_id` (e.g. `"kyutai/pocket-tts"`) on the Hub.
     /// The client reads `HF_TOKEN`, `HF_ENDPOINT` and the cache location from
     /// the environment.
-    pub fn model(repo_id: &str) -> Result<Self> {
+    pub fn model(repo_id: &str, revision: Option<&str>) -> Result<Self> {
         let client = HFClient::new().context("failed to initialize the Hugging Face Hub client")?;
         let (owner, name) = hf_hub::split_id(repo_id);
-        Ok(Self { repo: client.model(owner, name), repo_id: repo_id.to_string() })
+        Ok(Self {
+            repo: client.model(owner, name),
+            repo_id: repo_id.to_string(),
+            revision: revision.map(str::to_owned),
+        })
     }
 
     /// Download `filename` (or fetch it from the local cache), returning its
     /// path on disk. On failure the error names the repo and the file.
     pub async fn get(&self, filename: &str) -> Result<PathBuf> {
-        self.repo.download_file().filename(filename).send().await.with_context(|| {
-            format!("failed to fetch `{filename}` from model repo `{}`", self.repo_id)
-        })
+        self.repo
+            .download_file()
+            .filename(filename)
+            .maybe_revision(self.revision.clone())
+            .send()
+            .await
+            .with_context(|| {
+                format!("failed to fetch `{filename}` from model repo `{}`", self.repo_id)
+            })
     }
 }

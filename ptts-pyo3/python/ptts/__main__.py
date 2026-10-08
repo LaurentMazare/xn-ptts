@@ -44,6 +44,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "-d", "--device", help=f"one of {', '.join(['auto', *available_devices()])} (default: auto)"
     )
+    p.add_argument("--revision", help="Hugging Face branch, tag, or commit")
     p.add_argument("-q", "--quant", help=f"weight format: {', '.join(available_quants())}")
     p.add_argument("-t", "--temperature", type=float, help="sampling temperature")
     p.add_argument("-s", "--seed", type=int, help="sampling seed, for a reproducible run")
@@ -86,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         set_num_threads(args.threads)
 
     kwargs: dict[str, object] = {"lang": args.lang}
-    for name in ("config", "device", "quant", "voice", "seed", "temperature", "rewrites"):
+    for name in ("config", "device", "quant", "voice", "seed", "temperature", "rewrites", "revision"):
         value = getattr(args, {"config": "model"}.get(name, name))
         if value is not None:
             kwargs[name] = value

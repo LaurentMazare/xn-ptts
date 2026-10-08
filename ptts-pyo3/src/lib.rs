@@ -65,24 +65,39 @@ impl<R, E: Into<ptts::Error>> IntoPy<R> for Result<R, E> {
 }
 
 /// Resolve a local directory/config/manifest, a Hub repo ID, or the legacy default.
-fn resolve(config: Option<&str>, quant: Quant) -> ptts::Result<Checkpoint> {
+fn resolve(config: Option<&str>, revision: Option<&str>, quant: Quant) -> ptts::Result<Checkpoint> {
     match config {
         Some(path) if is_local_source(std::path::Path::new(path)) => {
+            if revision.is_some() {
+                return Err(ptts::Error::InvalidArgument(
+                    "revision requires a Hugging Face repo ID".into(),
+                ));
+            }
             Checkpoint::resolve(path, ResolveOptions { quant, weights: None })
         }
-        Some(repo_id) => resolve_hub(&hub(repo_id)?, repo_id, quant),
-        None => resolve_hub(&hub(DEFAULT_REPO_ID)?, DEFAULT_REPO_ID, quant),
+        Some(repo_id) => resolve_hub(&hub(repo_id)?, repo_id, revision, quant),
+        None => resolve_hub(&hub(DEFAULT_REPO_ID)?, DEFAULT_REPO_ID, revision, quant),
     }
 }
 
 /// A Hub repo: `config.json` (optional, as the Pocket TTS repo has none), weights, a
 /// tokenizer, and voices under `voices/` or `embeddings/` plus an optional
 /// `default-voice.safetensors`. Only the files that are used get downloaded.
-fn resolve_hub(repo: &HubRepo, repo_id: &str, quant: Quant) -> ptts::Result<Checkpoint> {
+fn resolve_hub(
+    repo: &HubRepo,
+    repo_id: &str,
+    revision: Option<&str>,
+    quant: Quant,
+) -> ptts::Result<Checkpoint> {
     // One listing rather than a request per guessed name, and the only way to learn a repo's
     // voices. Offline it fails, and then every name is tried, which the cache can still serve.
-    let listing: Option<Vec<String>> =
-        repo.list_tree().recursive(true).send().ok().map(|entries| {
+    let listing: Option<Vec<String>> = repo
+        .list_tree()
+        .maybe_revision(revision.map(str::to_owned))
+        .recursive(true)
+        .send()
+        .ok()
+        .map(|entries| {
             entries
                 .into_iter()
                 .filter_map(|entry| match entry {
@@ -99,7 +114,7 @@ fn resolve_hub(repo: &HubRepo, repo_id: &str, quant: Quant) -> ptts::Result<Chec
         if listing.as_ref().is_some_and(|files| !files.iter().any(|f| f == name)) {
             return Ok(None);
         }
-        match hub_get(repo, name) {
+        match hub_get(repo, name, revision) {
             Ok(path) => Ok(Some(path)),
             Err(ptts::Error::NotFound(_)) => Ok(None),
             Err(e) if listing.is_none() => {
@@ -130,7 +145,7 @@ fn resolve_hub(repo: &HubRepo, repo_id: &str, quant: Quant) -> ptts::Result<Chec
             ))
         }));
     };
-    let tokenizer_path = hub_get(repo, "tokenizer.json")?;
+    let tokenizer_path = hub_get(repo, "tokenizer.json", revision)?;
 
     let voice_files: Vec<(String, String)> = match &listing {
         // Directory by directory, so a name in both resolves the same way every time.
@@ -202,19 +217,27 @@ fn hub(repo_id: &str) -> ptts::Result<HubRepo> {
 }
 
 /// Download `filename` from `repo`, or find it in the local cache.
-fn hub_get(repo: &HubRepo, filename: &str) -> ptts::Result<std::path::PathBuf> {
+fn hub_get(
+    repo: &HubRepo,
+    filename: &str,
+    revision: Option<&str>,
+) -> ptts::Result<std::path::PathBuf> {
     // Only a genuine not-found is a name that failed to resolve. Offline, a timeout, a 429 or a
     // 5xx are environment failures: they reach Python as `OSError`, which is what a caller
     // retries on, rather than as a `LookupError` that says the file does not exist.
-    repo.download_file().filename(filename).send().map_err(|e| match e {
-        hf_hub::HFError::EntryNotFound { .. } | hf_hub::HFError::LocalEntryNotFound { .. } => {
-            ptts::Error::NotFound(format!("`{filename}` is not in the repo: {e}"))
-        }
-        hf_hub::HFError::Io(io) => ptts::Error::Io(io),
-        other => {
-            ptts::Error::Io(std::io::Error::other(format!("cannot fetch `{filename}`: {other}")))
-        }
-    })
+    repo.download_file()
+        .filename(filename)
+        .maybe_revision(revision.map(str::to_owned))
+        .send()
+        .map_err(|e| match e {
+            hf_hub::HFError::EntryNotFound { .. } | hf_hub::HFError::LocalEntryNotFound { .. } => {
+                ptts::Error::NotFound(format!("`{filename}` is not in the repo: {e}"))
+            }
+            hf_hub::HFError::Io(io) => ptts::Error::Io(io),
+            other => ptts::Error::Io(std::io::Error::other(format!(
+                "cannot fetch `{filename}`: {other}"
+            ))),
+        })
 }
 
 /// Flatten a conditioning embedding of shape `[T, dim]` or `[1, T, dim]`.
@@ -242,7 +265,7 @@ struct Tts {
 
 #[pymethods]
 impl Tts {
-    /// `TTS(config=None, device=None, quant=None, voice=None, temperature=0.3, seed=..., cfg_coef=None, eos_threshold=None, *, lang, rewrites=None, conditions=None)`
+    /// `TTS(config=None, device=None, quant=None, voice=None, temperature=0.3, seed=..., cfg_coef=None, eos_threshold=None, *, lang, rewrites=None, conditions=None, revision=None)`
     ///
     /// `lang` is required and keyword-only: the language text is normalized as
     /// before it is tokenized, one of `"en"`, `"fr"`, `"de"`, `"es"` or
@@ -269,6 +292,7 @@ impl Tts {
         lang,
         rewrites = None,
         conditions = None,
+        revision = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -284,6 +308,7 @@ impl Tts {
         lang: Option<&str>,
         rewrites: Option<&str>,
         conditions: Option<HashMap<String, Bound<'_, PyAny>>>,
+        revision: Option<String>,
     ) -> PyResult<Self> {
         let conditions = conditions
             .unwrap_or_default()
@@ -327,7 +352,7 @@ impl Tts {
         }
         // Loading reads hundreds of megabytes and runs no Python.
         py.detach(move || {
-            let artifacts = resolve(config.as_deref(), quant).py()?;
+            let artifacts = resolve(config.as_deref(), revision.as_deref(), quant).py()?;
             let mut builder = artifacts
                 .builder(normalize)
                 .device(device)

@@ -45,9 +45,14 @@ impl std::ops::Deref for AppState {
 
 /// Existing async Hub transport. Local candidates use the shared checkpoint resolver.
 /// Manifest-aware Hub acquisition is the next release work item.
-async fn load_from_hf(repo_id: &str, quant: Quant, pocket: bool) -> Result<Checkpoint> {
+async fn load_from_hf(
+    repo_id: &str,
+    revision: Option<&str>,
+    quant: Quant,
+    pocket: bool,
+) -> Result<Checkpoint> {
     tracing::info!(repo_id, "downloading model artifacts");
-    let repo = crate::utils::HfRepo::model(repo_id)?;
+    let repo = crate::utils::HfRepo::model(repo_id, revision)?;
     let config =
         if pocket { TTSConfig::v202601() } else { read_config(repo.get("config.json").await?)? };
     let mut weights = None;
@@ -91,6 +96,7 @@ async fn load_from_hf(repo_id: &str, quant: Quant, pocket: bool) -> Result<Check
 #[allow(clippy::too_many_arguments)]
 pub async fn load_ptts(
     config: Option<&std::path::PathBuf>,
+    revision: Option<&str>,
     voice_dir: Option<&std::path::PathBuf>,
     device: DeviceKind,
     quant: Quant,
@@ -103,6 +109,7 @@ pub async fn load_ptts(
     quant.check_device(device)?;
     let (m, model_name) = match config {
         Some(path) if is_local_source(path) => {
+            anyhow::ensure!(revision.is_none(), "--revision requires a Hugging Face repo ID");
             let checkpoint = Checkpoint::resolve(path, ResolveOptions { quant, weights: None })?;
             let absolute = std::fs::canonicalize(path)?;
             let dir = if absolute.is_dir() {
@@ -118,9 +125,15 @@ pub async fn load_ptts(
         }
         Some(repo_id) => {
             let repo_id = repo_id.to_str().context("invalid repo ID path")?;
-            (load_from_hf(repo_id, quant, repo_id == DEFAULT_REPO_ID).await?, repo_id.to_string())
+            (
+                load_from_hf(repo_id, revision, quant, repo_id == DEFAULT_REPO_ID).await?,
+                repo_id.to_string(),
+            )
         }
-        None => (load_from_hf(DEFAULT_REPO_ID, quant, true).await?, DEFAULT_REPO_ID.to_string()),
+        None => (
+            load_from_hf(DEFAULT_REPO_ID, revision, quant, true).await?,
+            DEFAULT_REPO_ID.to_string(),
+        ),
     };
     let extra_voices = if let Some(voice_dir) = voice_dir {
         let found = ptts::loader::voices_in(voice_dir);
@@ -194,6 +207,7 @@ mod checkpoint_tests {
             .unwrap();
         let loaded = load_ptts(
             Some(&path),
+            None,
             Some(&extra_dir),
             DeviceKind::Cpu,
             Quant::Q80,
