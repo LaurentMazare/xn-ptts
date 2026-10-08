@@ -24,8 +24,9 @@ use crate::{Error, Result};
 /// plus slack.
 pub const PROMPT_SEQ_HEADROOM: usize = 512;
 
-/// The most text tokens a chunk may have when [`fit`] cuts for a fixed budget, whatever room
-/// the budget leaves.
+/// The most text tokens a chunk may have after [`fit`] cuts an oversized sentence, whatever
+/// room a fixed budget leaves. Normal sentence grouping targets 50 tokens by default; that
+/// target does not split a sentence on its own.
 ///
 /// A chunk much longer than this outruns the length of speech the model learnt to say in one
 /// go: it stops near that length anyway and skips words to get there.
@@ -182,6 +183,26 @@ pub fn fit(
         }
     }
     Ok(fitted)
+}
+
+/// Cut chunks to `max` tokens and reject a piece that cannot be split further.
+///
+/// Call this before sizing a KV cache from the chunks. [`fit`] leaves a single oversized word
+/// untouched so callers with their own fixed prompt limit can report an appropriate error.
+pub fn fit_or_error(
+    chunks: Vec<Chunk>,
+    max: usize,
+    tokenizer: &dyn Tokenizer,
+    frame_rate: f64,
+) -> Result<Vec<Chunk>> {
+    let chunks = fit(chunks, max, tokenizer, frame_rate)?;
+    if let Some(chunk) = chunks.iter().find(|chunk| chunk.tokens.len() > max) {
+        return Err(Error::invalid_argument(format!(
+            "a text chunk is {} tokens and cannot fit the {max}-token limit; shorten or split it",
+            chunk.tokens.len()
+        )));
+    }
+    Ok(chunks)
 }
 
 /// Where to cut `words`, as the number of words before the cut: after the sentence end nearest
@@ -382,6 +403,20 @@ mod tests {
         let texts_before: Vec<String> = planned.iter().map(|c| c.text.clone()).collect();
         assert_eq!(texts(&fit(planned, 3, &tok, 12.5).unwrap()), texts_before);
         assert_eq!(texts(&fit_text("one", 0)), ["one"]);
+    }
+
+    #[test]
+    fn fit_or_error_bounds_a_long_sentence_before_cache_sizing() {
+        let tok = Words::default();
+        let text = std::iter::repeat_n("word", 225).collect::<Vec<_>>().join(" ");
+        let planned = chunks(&tok, &text, Normalize::OFF, 50, 12.5).unwrap();
+        assert!(planned[0].tokens.len() > MAX_FIT_TOKENS);
+        let fitted = fit_or_error(planned, MAX_FIT_TOKENS, &tok, 12.5).unwrap();
+        assert!(fitted.iter().all(|chunk| chunk.tokens.len() <= MAX_FIT_TOKENS));
+
+        let single = chunks(&tok, "word", Normalize::OFF, 50, 12.5).unwrap();
+        let err = fit_or_error(single, 1, &tok, 12.5).unwrap_err();
+        assert!(matches!(err, Error::InvalidArgument(_)), "{err:?}");
     }
 
     #[test]
