@@ -198,6 +198,8 @@ Model sources are now required: use `--repo` or `--dir` in the Rust CLI, `config
 
 Every checkpoint must supply its own config and tokenizer JSON. Built-in configs, Pocket TTS presets, legacy filenames, and `ptts-model.json` support have been removed. The Rust manifest types and `TTSConfig::v202601()` and the browser's `POCKET_TTS_MODEL` export are no longer available. Move custom artifact paths and voice selection to the caller's options; manifest checksums are no longer checked by the runtime.
 
+`Quant::check_device` now rejects backends that were not compiled into the runtime as well as incompatible weight formats. Call it before acquiring model files to fail before downloading.
+
 For a SentencePiece-only checkpoint, [convert its tokenizer to JSON](scripts/convert-tokenizer.py) once before loading it. This is an explicit preparation tool; the runtime reads only the supplied tokenizer JSON.
 
 ## License

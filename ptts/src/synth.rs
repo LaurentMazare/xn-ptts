@@ -151,15 +151,23 @@ impl Quant {
                 self.as_str()
             )));
         }
-        let unavailable = match device {
-            DeviceKind::Cuda if !cfg!(feature = "cuda") => Some("cuda"),
-            DeviceKind::Vulkan if !cfg!(feature = "vulkan") => Some("vulkan"),
-            DeviceKind::Metal if !cfg!(feature = "metal") => Some("metal"),
-            _ => None,
-        };
-        if let Some(name) = unavailable {
+        let backends = [
+            (DeviceKind::Cuda, "cuda", cfg!(feature = "cuda")),
+            (DeviceKind::Vulkan, "vulkan", cfg!(feature = "vulkan")),
+            (DeviceKind::Metal, "metal", cfg!(feature = "metal")),
+        ];
+        if let Some((_, name, _)) =
+            backends.iter().find(|(kind, _, compiled)| *kind == device && !compiled)
+        {
+            let available: Vec<_> = backends
+                .iter()
+                .filter(|(_, _, compiled)| *compiled)
+                .map(|(_, name, _)| *name)
+                .chain(["cpu"])
+                .collect();
             return Err(Error::unsupported(format!(
-                "device '{name}' is not available in this build; rebuild with the '{name}' feature or use 'cpu'"
+                "device '{name}' is not available in this build; available devices: {}",
+                available.join(", ")
             )));
         }
         Ok(())
@@ -1403,6 +1411,8 @@ impl SynthBuilder {
         Ok(Synth(Box::new(synth)))
     }
 
+    // Feature-disabled stubs keep dispatch compilable. The shared check rejects these
+    // backends before dispatch; the stubs retain errors as a backstop.
     #[cfg(not(feature = "cuda"))]
     fn build_cuda(self) -> Result<Synth> {
         Err(Error::unsupported("this build has no CUDA support; rebuild with the `cuda` feature"))

@@ -88,12 +88,13 @@ def test_missing_model_source_never_selects_a_hub_repo(hub):
 def test_unavailable_device_is_rejected_before_hub_access(hub, device):
     if device in ptts.available_devices():
         pytest.skip("backend is included in this wheel")
-    with pytest.raises(NotImplementedError, match=f"device '{device}' is not available"):
+    with pytest.raises(NotImplementedError, match=f"device '{device}' is not available") as exc:
         ptts.TTS(config=hub.repo, revision=hub.revision, device=device, quant="f32", lang="en")
+    assert f"available devices: {', '.join(ptts.available_devices())}" in str(exc.value)
     assert hub.requests == []
 
 
 def test_quantized_gpu_is_rejected_before_hub_access(hub):
     with pytest.raises(NotImplementedError, match="CPU-only"):
-        ptts.TTS(config=hub.repo, device="cuda", quant="q8", lang="en")
+        ptts.TTS(config=hub.repo, revision=hub.revision, device="cuda", quant="q8", lang="en")
     assert hub.requests == []

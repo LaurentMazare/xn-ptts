@@ -157,6 +157,10 @@ fn unavailable_f32_backends_fail_before_reading_model_files() {
         assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
         assert!(err.to_string().contains(name), "{err}");
         assert!(err.to_string().contains("not available in this build"), "{err}");
+        let message = err.to_string();
+        let available = message.split("available devices: ").nth(1).unwrap();
+        assert!(available.split(", ").any(|d| d == "cpu"), "{message}");
+        assert!(!available.split(", ").any(|d| d == name), "{message}");
     }
 }
 
