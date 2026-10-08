@@ -5,16 +5,23 @@ transformer on the Apple Neural Engine, and audio streams as it is generated: on
 speech starts in under 40 ms and is produced 12 times faster than it plays.
 
 ```swift
+import Foundation
 import PhononTTS
 
-let models = try PhononModels.install(bundled: Bundle.main.url(forResource: "Models", withExtension: nil)!)
+guard let bundled = Bundle.main.url(forResource: "Models", withExtension: nil) else {
+    throw PhononError(description: "Add the exported model folder to your app as a folder reference named Models.")
+}
+let models = try PhononModels.install(bundled: bundled)
 let tts = try await Phonon.load(models: models, language: .english)
-try await PhononPlayer().play(tts.stream("Hello! This is running entirely on the phone."))
+let player = try PhononPlayer()
+try await player.play(tts.stream("Hello! This is running entirely on the phone."))
 ```
 
 It needs iOS 18 or macOS 15 on Apple silicon, Xcode 16, about 430 MB of disk for the models and
 about 95 MB of memory while speaking. The simulator works, but without a Neural Engine it is
 several times slower than a device.
+
+Keep `tts` and `player` in your app or view state while speech is playing. `play` returns when generation finishes; releasing the player stops any audio still scheduled.
 
 ## 1. Build the two pieces that are not in the source
 
@@ -61,9 +68,31 @@ models for the device, about 10 s on an iPhone 16 Pro; later loads take about 0.
 | `PhononPlayer` | Plays chunks as they arrive. `enqueue(_:)` and `stop()` work from any thread. |
 
 Audio is mono Float32 at 24 kHz. Every method can be called from any thread or task, and an
-instance speaks one utterance at a time. Cancelling the task that called `speak`, or ending a
-`stream`, stops generation at the next chunk. Long text is split into sentences and spoken with
-no gap.
+instance speaks one utterance at a time. Cancelling the task that called `speak` or consumes a
+`stream` stops generation at the next chunk. Breaking out of a stream loop alone does not reliably
+stop its producer; cancel the consuming task when interrupting speech. Long text is split into
+sentences and spoken with no gap.
+
+### Stop and speak again
+
+Keep the playback task so your Stop button can cancel it:
+
+```swift
+let playback = Task {
+    try await player.play(tts.stream("A longer piece of text."))
+}
+```
+
+In the Stop button handler, stop both generation and audio already scheduled:
+
+```swift
+playback.cancel()
+player.stop()
+```
+
+Use the same `tts` and `player` for the next request. The model serializes calls, so the next
+utterance waits for the cancelled generation to finish its current operation. `player.stop()`
+only clears scheduled playback; it does not cancel the task producing more audio.
 
 `language` is required: numbers and symbols are spelled out before speaking, and how depends on
 the language. `.none` speaks the text as written. `computeUnit: .cpu` is a slower fallback
