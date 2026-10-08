@@ -20,6 +20,10 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     addr: String,
 
+    /// Maximum open WebSocket sessions. Excess connections receive HTTP 429.
+    #[arg(long, default_value = "1", value_parser = parse_request_limit)]
+    max_concurrent_requests: std::num::NonZeroUsize,
+
     /// Required local model directory, config.json, or Hugging Face repo ID.
     #[arg(long, required = true)]
     config: std::path::PathBuf,
@@ -70,6 +74,14 @@ struct Args {
     /// not set take their defaults.
     #[arg(long = "condition", value_name = "NAME=VALUE")]
     conditions: Vec<String>,
+}
+
+fn parse_request_limit(value: &str) -> Result<std::num::NonZeroUsize, String> {
+    let limit: std::num::NonZeroUsize = value.parse().map_err(|e| format!("{e}"))?;
+    if limit.get() > tokio::sync::Semaphore::MAX_PERMITS {
+        return Err(format!("limit must be at most {}", tokio::sync::Semaphore::MAX_PERMITS));
+    }
+    Ok(limit)
 }
 
 fn init_tracing() {
@@ -150,6 +162,42 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         args.max_seq_len,
         normalize,
         &conditions,
+        args.max_concurrent_requests,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_limit_is_positive_and_defaults_to_one() {
+        assert!(parse_request_limit(&usize::MAX.to_string()).is_err());
+        let args = Args::try_parse_from(["server", "--config", "model", "--lang", "none"]).unwrap();
+        assert_eq!(args.max_concurrent_requests.get(), 1);
+        let args = Args::try_parse_from([
+            "server",
+            "--config",
+            "model",
+            "--lang",
+            "none",
+            "--max-concurrent-requests",
+            "3",
+        ])
+        .unwrap();
+        assert_eq!(args.max_concurrent_requests.get(), 3);
+        assert!(
+            Args::try_parse_from([
+                "server",
+                "--config",
+                "model",
+                "--lang",
+                "none",
+                "--max-concurrent-requests",
+                "0",
+            ])
+            .is_err()
+        );
+    }
 }

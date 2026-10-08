@@ -21,6 +21,7 @@ pub struct AppState(Arc<Inner>);
 
 pub struct Inner {
     pub synth: Synth,
+    pub requests: Arc<tokio::sync::Semaphore>,
     /// The checkpoint that loaded: its repo id, or for a local config the name of its folder.
     pub model_name: String,
     pub voices: Vec<String>,
@@ -96,7 +97,13 @@ pub async fn load_ptts(
     max_seq_len: usize,
     normalize: Normalize,
     conditions: &[(String, String)],
+    max_concurrent_requests: std::num::NonZeroUsize,
 ) -> Result<AppState> {
+    anyhow::ensure!(
+        max_concurrent_requests.get() <= tokio::sync::Semaphore::MAX_PERMITS,
+        "--max-concurrent-requests must be at most {}",
+        tokio::sync::Semaphore::MAX_PERMITS
+    );
     quant.check_device(device)?;
     let (m, model_name) = match config {
         path if is_local_source(path) => {
@@ -154,6 +161,7 @@ pub async fn load_ptts(
 
     Ok(AppState(Arc::new(Inner {
         synth,
+        requests: Arc::new(tokio::sync::Semaphore::new(max_concurrent_requests.get())),
         model_name,
         voices,
         default_voice,
@@ -195,6 +203,7 @@ mod checkpoint_tests {
             1024,
             Normalize::OFF,
             &[],
+            std::num::NonZeroUsize::new(1).unwrap(),
         )
         .await;
         std::fs::remove_dir_all(extra_dir).unwrap();
