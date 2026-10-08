@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 
 pub use ptts::checkpoint::{Checkpoint, POCKET_TTS_REPO as REPO_ID};
 use ptts::checkpoint::{
-    POCKET_TTS_VOICES, ResolveOptions, TOKENIZER_CANDIDATES, read_config, weight_candidates,
+    POCKET_TTS_NO_CLONING_REPO, POCKET_TTS_VOICES, ResolveOptions, TOKENIZER_CANDIDATES,
+    read_config, weight_candidates,
 };
 pub use ptts::loader::{is_unused_by_tts_model, load_voice_emb, load_weights, remap_key};
 use ptts::synth::Quant;
@@ -35,7 +36,7 @@ pub fn locate(source: Source<'_>, weights: Option<&str>, quant: Quant) -> Result
     }
 }
 
-/// Blocking legacy Hub transport. Manifest-aware Hub sources are the next release work item.
+/// Blocking Hub transport for checkpoints with standard artifact names.
 pub fn from_hub(
     repo_id: &str,
     revision: Option<&str>,
@@ -50,7 +51,8 @@ pub fn from_hub(
     );
     let config = match repo.get_optional("config.json") {
         Some(path) => read_config(&path)?,
-        None => TTSConfig::v202601(),
+        None if matches!(repo_id, REPO_ID | POCKET_TTS_NO_CLONING_REPO) => TTSConfig::v202601(),
+        None => read_config(repo.get("config.json")?)?,
     };
     let weights = match weights {
         Some(name) => repo.get(name)?,

@@ -17,8 +17,8 @@
 
 use numpy::{PyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use ptts::checkpoint::{
-    Checkpoint, POCKET_TTS_REPO as DEFAULT_REPO_ID, POCKET_TTS_VOICES, ResolveOptions,
-    is_local_source, read_config, weight_candidates,
+    Checkpoint, POCKET_TTS_NO_CLONING_REPO, POCKET_TTS_REPO as DEFAULT_REPO_ID, POCKET_TTS_VOICES,
+    ResolveOptions, is_local_source, read_config, weight_candidates,
 };
 use ptts::loader::{DEFAULT_VOICE_FILE, VOICE_DIRS};
 use ptts::preprocess::{Normalize, Rules};
@@ -80,7 +80,7 @@ fn resolve(config: Option<&str>, revision: Option<&str>, quant: Quant) -> ptts::
     }
 }
 
-/// A Hub repo: `config.json` (optional, as the Pocket TTS repo has none), weights, a
+/// A Hub repo: its own `config.json` (with a legacy Pocket TTS fallback), weights, a
 /// tokenizer, and voices under `voices/` or `embeddings/` plus an optional
 /// `default-voice.safetensors`. Only the files that are used get downloaded.
 fn resolve_hub(
@@ -127,7 +127,10 @@ fn resolve_hub(
 
     let cfg = match get_optional("config.json")? {
         Some(path) => read_config(&path)?,
-        None => TTSConfig::v202601(),
+        None if matches!(repo_id, DEFAULT_REPO_ID | POCKET_TTS_NO_CLONING_REPO) => {
+            TTSConfig::v202601()
+        }
+        None => read_config(hub_get(repo, "config.json", revision)?)?,
     };
     let candidates = weight_candidates(quant);
     let mut model_path = None;

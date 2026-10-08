@@ -315,3 +315,33 @@ fn private_checkpoint_synthesizes_through_the_public_api() {
         assert_eq!(synth.default_voice(), manifest.default_voice);
     }
 }
+
+#[test]
+fn phonon_directories_require_their_own_config() {
+    for name in ["model.safetensors", "model.q8.gguf"] {
+        let f = Fixture::new();
+        std::fs::remove_file(f.0.join("config.json")).unwrap();
+        f.write(name, b"weights");
+        let err = f.q8(&f.0).unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)));
+        assert!(err.to_string().contains("require config.json"), "{err}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_config_and_manifest_keep_the_snapshot_directory() {
+    let f = Fixture::new();
+    let cache = Fixture::new();
+    f.save_manifest(&f.manifest());
+    for name in ["config.json", MANIFEST_FILE] {
+        cache.write(name, &std::fs::read(f.0.join(name)).unwrap());
+        std::fs::remove_file(f.0.join(name)).unwrap();
+        std::os::unix::fs::symlink(cache.0.join(name), f.0.join(name)).unwrap();
+    }
+    for input in [&f.0, &f.0.join("config.json"), &f.0.join(MANIFEST_FILE)] {
+        let ck = f.q8(input).unwrap();
+        assert_eq!(ck.weights, f.0.join("weights/model.q8.gguf"));
+        assert_eq!(ck.manifest.unwrap().model_id, "test-candidate");
+    }
+}

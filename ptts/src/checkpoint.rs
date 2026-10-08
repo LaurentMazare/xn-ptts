@@ -204,19 +204,22 @@ impl Checkpoint {
             _ => Error::Io(e),
         })?;
         let (dir, config_override) = if path.is_dir() {
-            (path.as_path(), None)
+            (path.clone(), None)
         } else {
-            let dir =
-                path.parent().ok_or_else(|| Error::NotFound("checkpoint has no parent".into()))?;
+            // A cached file may link to a blob outside its snapshot. Locate its neighbors
+            // through the supplied path's parent, while comparing config targets canonically.
+            let parent =
+                input.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            let dir = std::fs::canonicalize(parent)?;
             let config =
-                (path.file_name().is_none_or(|n| n != MANIFEST_FILE)).then_some(path.as_path());
+                (input.file_name().is_none_or(|n| n != MANIFEST_FILE)).then_some(path.as_path());
             (dir, config)
         };
         let manifest_path = dir.join(MANIFEST_FILE);
         if manifest_path.try_exists()? {
-            Self::from_manifest(dir, &manifest_path, config_override, options)
+            Self::from_manifest(&dir, &manifest_path, config_override, options)
         } else {
-            Self::from_legacy(dir, config_override, options)
+            Self::from_legacy(&dir, config_override, options)
         }
     }
 
@@ -301,9 +304,14 @@ impl Checkpoint {
             config_override.map(Path::to_path_buf).unwrap_or_else(|| dir.join("config.json"));
         let config = if config_path.try_exists()? {
             read_config(&config_path)?
-        } else {
-            tracing::info!(?dir, "no config.json, using the legacy Pocket TTS config");
+        } else if dir.join(POCKET_TTS_WEIGHTS).is_file() {
+            tracing::info!(?dir, "using the legacy Pocket TTS config");
             TTSConfig::v202601()
+        } else {
+            return Err(Error::NotFound(format!(
+                "Phonon checkpoints require config.json: {}",
+                config_path.display()
+            )));
         };
         let weights = match options.weights {
             Some(name) => {
