@@ -56,7 +56,11 @@ const speech = tts.stream(text, { signal: controller.signal });
 stopButton.onclick = () => controller.abort();
 ```
 
-`speech.done` resolves with timing stats (frames, time to first audio, per-frame time) once generation ends.
+Cancellation discards unread stream chunks. Stop any audio already scheduled in your player separately, for example by closing its `AudioContext`. Wait for `speech.done` to finish cancellation before reusing playback resources; the next request on the same model is queued automatically.
+
+`speech.done` resolves with timing stats (frames, time to first audio, per-frame time) once generation ends. `stats.cancelled` reports whether the worker stopped before generation finished; it can be false if cancellation arrived after the worker finished.
+
+**Migration note:** `cancel()` now discards unread chunks even when generation has already finished. To keep all generated audio, drain the stream without cancelling it.
 
 ## API
 
