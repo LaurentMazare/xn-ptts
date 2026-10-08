@@ -33,6 +33,7 @@
 //! | Module | Role |
 //! |---|---|
 //! | [`synth`] | The one-call API: load, prime, generate, decode. Start here. |
+//! | [`checkpoint`] | Resolving local directories and validating model manifests. |
 //! | [`loader`] | Reading weights and voice files, and the checkpoint key mapping. |
 //! | [`error`] | [`Error`], what those two return. |
 //! | [`plan`] | Frame and KV budgets, the end-of-speech policy. |
@@ -51,9 +52,8 @@
 //! compiling. The variants are failure classes, so a binding maps them onto its host language's
 //! exceptions in one match.
 //!
-//! Which files a checkpoint ships, and what they are called, is the caller's to
-//! know: `ptts` reads the config, weights, tokenizer and voice files it is
-//! handed, and never guesses at names or downloads anything itself.
+//! [`checkpoint`] resolves local directories and declared model manifests for native callers.
+//! The lower-level builder still accepts explicit files. The library never downloads weights.
 //!
 //! Text is normalized before it is tokenized — see [`preprocess`]. Which
 //! language, or [`preprocess::Normalize::OFF`], is a required argument to
@@ -74,6 +74,8 @@
 
 #[cfg(feature = "audio")]
 pub mod audio;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod checkpoint;
 pub mod comp;
 mod conditioners;
 mod conv;

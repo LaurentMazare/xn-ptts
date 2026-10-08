@@ -59,8 +59,7 @@ struct Args {
 
     /// Weights file to load from the repo or directory, e.g. `model.q8.gguf` for
     /// a checkpoint that ships both f32 and quantized weights. Defaults to the
-    /// first of model.safetensors, model.q8.gguf or tts_b6369a24.safetensors
-    /// that exists.
+    /// manifest entry or legacy weights matching --quant, then f32 weights.
     #[arg(long)]
     weights: Option<String>,
 
@@ -126,13 +125,13 @@ fn main() -> Result<()> {
         xn::with_f16c()
     );
 
-    // Which files the checkpoint ships, and what they are called, is this
-    // example's business rather than the library's.
     let source = match args.dir.as_deref() {
         Some(dir) => model_helpers::Source::Dir(dir),
         None => model_helpers::Source::Hub(&args.repo),
     };
-    let checkpoint = model_helpers::Checkpoint::locate(source, args.weights.as_deref())?;
+    let quant = args.quant.as_deref().unwrap_or("f32").parse::<Quant>()?;
+    quant.check_device(args.device.parse::<DeviceKind>()?)?;
+    let checkpoint = model_helpers::locate(source, args.weights.as_deref(), quant)?;
     let mut builder = checkpoint
         .builder(normalize)
         .device(args.device.parse::<DeviceKind>()?)
@@ -140,9 +139,6 @@ fn main() -> Result<()> {
         .seed(args.seed);
     if let Some(tokenizer) = args.tokenizer.as_deref() {
         builder = builder.tokenizer_file(tokenizer);
-    }
-    if let Some(quant) = args.quant.as_deref() {
-        builder = builder.quant(quant.parse::<Quant>()?);
     }
     if let Some(cfg_coef) = args.cfg_coef {
         builder = builder.cfg_coef(cfg_coef);

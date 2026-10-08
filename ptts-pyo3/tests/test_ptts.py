@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
 import sys
 from importlib import metadata
 from pathlib import Path
@@ -217,7 +218,10 @@ def test_nothing_is_downloaded_before_the_arguments_are_checked():
 
 @pytest.fixture(scope="module")
 def tts() -> ptts.TTS:
-    return ptts.TTS(lang="en")
+    # Private rehearsals use the installed wheel and a local directory or Hub repo ID.
+    # With no override, the legacy public/default checkpoint tests still work.
+    model = os.environ.get("PTTS_TEST_MODEL")
+    return ptts.TTS(config=model, lang="en", device="cpu", quant="q8")
 
 
 @pytest.mark.checkpoint
@@ -264,4 +268,10 @@ def test_the_same_seed_gives_the_same_audio(tts):
 
     a = tts.synth("Reproducible.", seed=7)
     b = tts.synth("Reproducible.", seed=7)
-    assert np.array_equal(a, b)
+    # The decoder drains available latents in batches, whose sizes depend on scheduling.
+    # Different GEMM shapes can change rounding even for identical sampled latents.
+    # This absolute tolerance is below one 16-bit PCM step; duration must still match.
+    assert a.shape == b.shape
+    np.testing.assert_allclose(a, b, rtol=0, atol=1e-6)
+    c = tts.synth("Reproducible.", seed=8)
+    assert a.shape != c.shape or not np.allclose(a, c, rtol=0, atol=1e-6)

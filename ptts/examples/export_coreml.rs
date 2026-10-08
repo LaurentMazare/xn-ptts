@@ -18,7 +18,7 @@ mod model_helpers;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use model_helpers::{Checkpoint, Source};
+use model_helpers::Source;
 use ptts_coreml::Weights;
 use ptts_coreml::package::write_mlpackage_with_weights;
 use ptts_coreml::phonon::{flow_lm as fl, mimi};
@@ -40,6 +40,9 @@ struct Args {
     /// Weights file inside the repo or directory, when it has several.
     #[arg(long)]
     weights: Option<String>,
+    /// Source weight format to select, e.g. f32 or q8. The exported graph sets its own precision.
+    #[arg(long, default_value = "f32")]
+    quant: String,
     /// A directory of voice `.safetensors` files, instead of the checkpoint's own.
     #[arg(long)]
     voices: Option<PathBuf>,
@@ -72,7 +75,7 @@ fn main() -> Result<()> {
         Some(dir) => Source::Dir(dir),
         None => Source::Hub(&args.repo),
     };
-    let ck = Checkpoint::locate(source, args.weights.as_deref())?;
+    let ck = model_helpers::locate(source, args.weights.as_deref(), args.quant.parse()?)?;
     let cfg = &ck.config;
     let f = &cfg.flow_lm;
     let dims = fl::Dims {

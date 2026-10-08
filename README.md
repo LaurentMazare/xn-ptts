@@ -2,17 +2,21 @@
 
 Phonon is Gradium's on-device text-to-speech runtime, written in Rust, with Python bindings. It builds on [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), developed by Kyutai. This preview pairs the code in this repository with a model package supplied by Gradium; the model is not in this repository.
 
+Gradium's Phonon checkpoints are the primary integration target and use their own model config, weights, tokenizer, and voices. Kyutai's Pocket TTS is also supported as a compatibility option. The release will make the selected Phonon checkpoint the default.
+
 [![Rust CI](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml)
 
 ## 1. Set up
 
 You need [Rust](https://rustup.rs) for every path, and [uv](https://docs.astral.sh/uv/) for Python.
 
-Point `MODEL_DIR` at the model folder, the one holding `config.json`, `model.q8.gguf`, `tokenizer.json` and `voices/`:
+Point `MODEL_DIR` at the model folder, the one holding `config.json`, `model.q8.gguf`, `tokenizer.json` and its voice assets:
 
 ```bash
 export MODEL_DIR=/path/to/model
 ```
+
+Rust examples, Python, and both servers share the [checkpoint resolver and optional `ptts-model.json` manifest](ptts/src/checkpoint.rs). The manifest defines exact files, hashes, and a default voice; existing model directories continue to work without one.
 
 ## 2. Run it
 
@@ -27,12 +31,12 @@ With Python, from the repository root (the first run builds the package, a few m
 
 ```bash
 uv run --project ptts-pyo3 --locked ptts --lang en \
-  --model "$MODEL_DIR/config.json" --quant q8 "Hello world" -o out.wav
+  --model "$MODEL_DIR" --quant q8 "Hello world" -o out.wav
 ```
 
-`--quant q8` runs the model in q8, the format `model.q8.gguf` is stored in. Without it the weights are expanded to f32, which is slower and uses more memory; the Rust and Python examples below set q8 too. `--lang` is required. It picks how numbers, symbols and abbreviations are spelled out before synthesis: `en`, `fr`, `de`, `es` or `pt`, or `none` to use the text as written.
+`--quant q8` runs the model in q8, the format `model.q8.gguf` is stored in. The Rust and Python examples below set q8 too. A manifest with only q8 weights rejects a request for f32; legacy directories can still expand those weights to f32, which is slower and uses more memory. `--lang` is required. It picks how numbers, symbols and abbreviations are spelled out before synthesis: `en`, `fr`, `de`, `es` or `pt`, or `none` to use the text as written.
 
-When no voice is specified, the Rust, Python and Swift frontends select the first voice by name, `Freya` in this package. For a fixed choice, pass `--voice Freya` to either CLI, `voice="Freya"` to Python, or call `tts.setVoice("Freya")` in Swift.
+When no voice is specified, native integrations use the manifest's default voice if declared, otherwise `default`, then the first registered voice by name. Swift uses its exported bundle's voice selection. For a fixed choice, pass `--voice Freya` to either CLI, `voice="Freya"` to Python, or call `tts.setVoice("Freya")` in Swift.
 
 ## 3. Use it from Rust
 
@@ -41,23 +45,20 @@ Add the crate from your checkout as a path dependency:
 ```toml
 [dependencies]
 ptts = { path = "/path/to/xn-ptts/ptts", features = ["hf"] }
-serde_json = "1"
 ```
 
 ```rust
-use std::{env, fs, path::PathBuf};
+use ptts::checkpoint::{Checkpoint, ResolveOptions};
 use ptts::preprocess::Lang;
-use ptts::synth::{Quant, Synth};
-use ptts::tts_model::TTSConfig;
+use ptts::synth::{DeviceKind, Quant};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = PathBuf::from(env::var("MODEL_DIR")?);
-    let config: TTSConfig = serde_json::from_slice(&fs::read(dir.join("config.json"))?)?;
-    let tts = Synth::builder(config, dir.join("model.q8.gguf"), Lang::En)
-        .tokenizer_file(dir.join("tokenizer.json"))
-        .quant(Quant::Q80)
-        .add_voice("Freya", dir.join("voices/Freya.safetensors"))
-        .build()?;
+    let checkpoint = Checkpoint::resolve(
+        std::env::var("MODEL_DIR")?,
+        ResolveOptions { quant: Quant::Q80, weights: None },
+    )?;
+    let mut tts = checkpoint.builder(Lang::En).device(DeviceKind::Cpu).build()?;
+    checkpoint.register_voices(&mut tts);
 
     let pcm = tts.say("Hello world")?;
     ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate())?;
@@ -65,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Load the model once and reuse it. `tts.say` returns the whole waveform as mono `f32` samples at `tts.sample_rate()`. `tts.stream(text)?` is an iterator of `Result<Vec<f32>>` chunks, yielded as they are generated, for playback that starts before the sentence is finished. Replace `Freya` with another supplied voice name and filename to select it. Build with `--release`: a debug build is far too slow for realtime.
+Load the model once and reuse it. `tts.say` returns the whole waveform as mono `f32` samples at `tts.sample_rate()`. `tts.stream(text)?` is an iterator of `Result<Vec<f32>>` chunks, yielded as they are generated, for playback that starts before the sentence is finished. Select a registered voice through `SpeechOptions::voice`; the checkpoint resolver discovers its file. Build with `--release`: a debug build is far too slow for realtime.
 
 ## 4. Use it from Python
 
@@ -80,7 +81,7 @@ import os
 import ptts
 
 model = os.environ["MODEL_DIR"]
-tts = ptts.TTS(lang="en", config=f"{model}/config.json", quant="q8")
+tts = ptts.TTS(lang="en", config=model, quant="q8")
 
 tts.save("out.wav", "Hello world")    # write a 16-bit WAV
 pcm = tts.synth("Hello world")        # float32 NumPy array at tts.sample_rate
