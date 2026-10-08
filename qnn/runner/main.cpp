@@ -81,6 +81,10 @@ int main(int argc, char** argv) {
     std::printf("prefill %.1f ms, step %.2f ms/frame, first audio after %.1f ms, total %.1f ms (%.1fx real time)\n",
                 stats.prefill_ms / std::max(stats.chunks, 1), stats.step_ms / std::max(stats.frames, 1),
                 stats.first_audio_ms, stats.total_ms, seconds * 1000 / stats.total_ms);
+    if (stats.step_npu_ms > 0)
+      std::printf("on the NPU: prefill %.2f ms/call, step %.2f ms/call (%d calls)\n",
+                  stats.prefill_npu_ms / std::max(stats.prefill_calls, 1), stats.step_npu_ms / stats.step_calls,
+                  stats.step_calls);
   } catch (const std::exception& e) {
     std::cerr << "error: " << e.what() << "\n";
     return 1;

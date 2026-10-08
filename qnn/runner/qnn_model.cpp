@@ -13,6 +13,9 @@
 #include "f16.hpp"
 #include "HTP/QnnHtpDevice.h"
 #include "HTP/QnnHtpPerfInfrastructure.h"
+#include "HTP/QnnHtpProfile.h"
+#include "QnnMem.h"
+#include "QnnProfile.h"
 
 namespace phonon {
 namespace {
@@ -143,13 +146,30 @@ QnnModel::QnnModel(const std::string& backend_lib, const std::string& system_lib
   if (is_htp_) {
     if (model_files.size() != 1) throw std::runtime_error("HTP takes one context binary");
     load_context_binary(model_files[0].second);
+    // Shared memory for zero-copy buffers; without it alloc() falls back to ordinary memory.
+    cdsprpc_ = dlopen("libcdsprpc.so", RTLD_NOW | RTLD_LOCAL);
+    if (cdsprpc_) {
+      rpcmem_alloc_ = reinterpret_cast<decltype(rpcmem_alloc_)>(dlsym(cdsprpc_, "rpcmem_alloc"));
+      rpcmem_free_ = reinterpret_cast<decltype(rpcmem_free_)>(dlsym(cdsprpc_, "rpcmem_free"));
+      rpcmem_to_fd_ = reinterpret_cast<decltype(rpcmem_to_fd_)>(dlsym(cdsprpc_, "rpcmem_to_fd"));
+      if (!rpcmem_alloc_ || !rpcmem_free_ || !rpcmem_to_fd_) rpcmem_alloc_ = nullptr;
+    }
   } else {
     load_dlcs(model_files);
   }
+  const char* profile = std::getenv("PHONON_QNN_PROFILE");
+  if (profile && std::string(profile) == "1" && qnn_.profileCreate)
+    check(qnn_.profileCreate(backend_, QNN_PROFILE_LEVEL_BASIC, &profile_), "profileCreate");
 }
 
 QnnModel::~QnnModel() {
   set_performance_mode(false);
+  for (auto& [ptr, shared] : shared_) {
+    qnn_.memDeRegister(&shared.handle, 1);
+    rpcmem_free_(ptr);
+  }
+  for (void* ptr : plain_) std::free(ptr);
+  if (profile_) qnn_.profileFree(profile_);
   if (context_) qnn_.contextFree(context_, nullptr);
   if (device_ && qnn_.deviceFree) qnn_.deviceFree(device_);
   if (backend_) qnn_.backendFree(backend_);
@@ -261,6 +281,58 @@ const Graph& QnnModel::graph(const std::string& name) const {
   return it->second;
 }
 
+void* QnnModel::alloc(const TensorInfo& info) {
+  const Qnn_DataType_t type = v1(info.tensor).dataType;
+  const bool is_float = type == QNN_DATATYPE_FLOAT_16 || type == QNN_DATATYPE_FLOAT_32;
+  const size_t bytes = is_float ? info.count * sizeof(f16) : info.bytes;
+  // Shared memory only when the host's layout is the tensor's: an fp32 tensor
+  // (CPU DLCs) goes through execute()'s conversion instead.
+  if (rpcmem_alloc_ && (!is_float || type == QNN_DATATYPE_FLOAT_16)) {
+    void* ptr = rpcmem_alloc_(25 /* RPCMEM_HEAP_ID_SYSTEM */, 1 /* RPCMEM_DEFAULT_FLAGS */, int(bytes));
+    if (ptr) {
+      Qnn_MemDescriptor_t desc;
+      std::memset(&desc, 0, sizeof(desc));
+      desc.memShape = {v1(info.tensor).rank, v1(info.tensor).dimensions, nullptr};
+      desc.dataType = type;
+      desc.memType = QNN_MEM_TYPE_ION;
+      desc.ionInfo.fd = rpcmem_to_fd_(ptr);
+      Qnn_MemHandle_t handle = nullptr;
+      if (desc.ionInfo.fd >= 0 && qnn_.memRegister(context_, &desc, 1, &handle) == QNN_SUCCESS) {
+        std::memset(ptr, 0, bytes);
+        shared_[ptr] = {handle, bytes};
+        return ptr;
+      }
+      rpcmem_free_(ptr);
+    }
+  }
+  void* ptr = std::calloc(1, bytes);
+  if (!ptr) throw std::bad_alloc();
+  plain_.push_back(ptr);
+  return ptr;
+}
+
+void QnnModel::collect_profile(const std::string& graph) {
+  const QnnProfile_EventId_t* events = nullptr;
+  uint32_t n = 0;
+  if (qnn_.profileGetEvents(profile_, &events, &n) != QNN_SUCCESS) return;
+  Timing& t = timing_[graph];
+  t.calls++;
+  auto take = [&](QnnProfile_EventId_t id) {
+    QnnProfile_EventData_t data;
+    if (qnn_.profileGetEventData(id, &data) != QNN_SUCCESS) return;
+    if (data.type == QNN_HTP_PROFILE_EVENTTYPE_GRAPH_EXECUTE_ACCEL_TIME_MICROSEC) t.npu_us += double(data.value);
+    if (data.type == QNN_HTP_PROFILE_EVENTTYPE_GRAPH_EXECUTE_HOST_RPC_TIME_MICROSEC) t.host_rpc_us += double(data.value);
+    if (data.type == QNN_HTP_PROFILE_EVENTTYPE_GRAPH_EXECUTE_HTP_RPC_TIME_MICROSEC) t.htp_rpc_us += double(data.value);
+  };
+  for (uint32_t i = 0; i < n; i++) {
+    take(events[i]);
+    const QnnProfile_EventId_t* sub = nullptr;
+    uint32_t m = 0;
+    if (qnn_.profileGetSubEvents(events[i], &sub, &m) == QNN_SUCCESS)
+      for (uint32_t j = 0; j < m; j++) take(sub[j]);
+  }
+}
+
 void QnnModel::execute(const Graph& g, const std::map<std::string, const void*>& inputs,
                        const std::map<std::string, void*>& outputs) {
   // fp32 tensors get a staging buffer, filled from or copied back to the caller's fp16.
@@ -272,6 +344,14 @@ void QnnModel::execute(const Graph& g, const std::map<std::string, const void*>&
       auto it = buffers.find(info.name);
       if (it == buffers.end()) throw std::runtime_error(std::string("missing ") + kind + " " + info.name);
       void* data = const_cast<void*>(static_cast<const void*>(it->second));
+      auto shared = shared_.find(data);
+      if (shared != shared_.end()) {
+        Qnn_Tensor_t t = info.tensor;
+        v1(t).memType = QNN_TENSORMEMTYPE_MEMHANDLE;
+        v1(t).memHandle = shared->second.handle;
+        tensors.push_back(t);
+        continue;
+      }
       if (v1(info.tensor).dataType == QNN_DATATYPE_FLOAT_32) {
         auto& buf = staging.emplace_back(info.count);
         auto* host = static_cast<f16*>(data);
@@ -290,8 +370,9 @@ void QnnModel::execute(const Graph& g, const std::map<std::string, const void*>&
   staging.reserve(g.inputs.size() + g.outputs.size());  // the bound pointers must not move
   std::vector<Qnn_Tensor_t> in = bind(g.inputs, inputs, "input", false);
   std::vector<Qnn_Tensor_t> out = bind(g.outputs, outputs, "output", true);
-  check(qnn_.graphExecute(g.handle, in.data(), in.size(), out.data(), out.size(), nullptr, nullptr),
+  check(qnn_.graphExecute(g.handle, in.data(), in.size(), out.data(), out.size(), profile_, nullptr),
         ("graphExecute " + g.name).c_str());
+  if (profile_) collect_profile(g.name);
   for (auto& [buf, host] : copy_back)
     for (size_t i = 0; i < buf->size(); i++) host[i] = f16((*buf)[i]);
 }
@@ -328,7 +409,16 @@ void QnnModel::set_performance_mode(bool burst) {
   d.busVoltageCornerMin = d.busVoltageCornerTarget = d.busVoltageCornerMax = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
   d.setCoreParams = 1;
   d.coreVoltageCornerMin = d.coreVoltageCornerTarget = d.coreVoltageCornerMax = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-  const QnnHtpPerfInfrastructure_PowerConfig_t* cfgs[] = {&cfg, nullptr};
+  // Poll for results instead of sleeping, and keep the RPC wake-up latency low:
+  // the loop makes one short call per 80 ms frame.
+  QnnHtpPerfInfrastructure_PowerConfig_t latency, polling;
+  std::memset(&latency, 0, sizeof(latency));
+  std::memset(&polling, 0, sizeof(polling));
+  latency.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_RPC_CONTROL_LATENCY;
+  latency.rpcControlLatencyConfig = 100;  // microseconds
+  polling.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_RPC_POLLING_TIME;
+  polling.rpcPollingTimeConfig = 9999;  // microseconds, the maximum
+  const QnnHtpPerfInfrastructure_PowerConfig_t* cfgs[] = {&cfg, &latency, &polling, nullptr};
   perf.setPowerConfig(power_config_id_, cfgs);
 }
 

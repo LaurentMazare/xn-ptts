@@ -30,6 +30,9 @@ struct Stats {
   double step_ms = 0;
   double first_audio_ms = -1;
   double total_ms = 0;
+  // With PHONON_QNN_PROFILE=1 on the HTP: time on the NPU, summed over the calls.
+  int prefill_calls = 0, step_calls = 0;
+  double prefill_npu_ms = 0, step_npu_ms = 0;
 };
 
 class Phonon {
@@ -56,6 +59,27 @@ class Phonon {
   void generate_chunk(const Chunk& chunk, const Voice& voice,
                       const std::function<void(const float*, size_t)>& on_audio, std::vector<float>& out,
                       Stats& stats, std::chrono::steady_clock::time_point start);
+
+  // Every graph buffer, allocated once from the model (shared with the NPU on the
+  // HTP) and reused. What step feeds back to itself has two copies that swap.
+  struct Buffers {
+    f16* kv = nullptr;  // the flow LM cache, [2L, H, slots, D]
+    int32_t* tokens = nullptr;
+    int32_t* pos = nullptr;
+    int32_t* frame = nullptr;
+    f16* prefill_kv = nullptr;  // prefill's new keys and values
+    f16* emb[2] = {nullptr, nullptr};
+    f16* noise = nullptr;
+    f16* audio = nullptr;
+    f16* eos = nullptr;
+    f16* step_kv = nullptr;  // step's new keys and values
+    f16* latent = nullptr;
+    std::vector<f16*> states[2];
+    size_t kv_count = 0, emb_count = 0, noise_count = 0, audio_count = 0;
+    std::vector<size_t> state_counts;
+  };
+  void alloc_buffers();
+  Buffers buf_;
 
   std::unique_ptr<QnnModel> model_;
   std::unique_ptr<PttsText> text_;

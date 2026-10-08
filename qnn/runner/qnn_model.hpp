@@ -43,15 +43,31 @@ class QnnModel {
 
   const Graph& graph(const std::string& name) const;
 
+  // A buffer for `tensor`, owned by the model: fp16 for a float tensor, else the
+  // tensor's own type. On the HTP it is shared memory registered with QNN, so
+  // execute() hands it to the NPU without copying it; elsewhere it is ordinary
+  // memory. It may also be bound to any other tensor of the same shape and type.
+  void* alloc(const TensorInfo& tensor);
+
   // Binds buffers by tensor name; every input and output must be given. Float
   // buffers are fp16; a tensor the graph declares fp32 is converted on the way
-  // in and out. Other buffers are exactly the graph's size.
+  // in and out. Other buffers are exactly the graph's size. Buffers from alloc()
+  // are passed to the backend as they are.
   void execute(const Graph& graph, const std::map<std::string, const void*>& inputs,
                const std::map<std::string, void*>& outputs);
 
-  // HTP only: hold the NPU at its highest clock, rather than letting it ramp up
-  // on each call. A no-op on other backends.
+  // HTP only: hold the NPU at its highest clock and poll for results, rather than
+  // letting it ramp up and sleep between calls. A no-op on other backends.
   void set_performance_mode(bool burst);
+
+  // With PHONON_QNN_PROFILE=1 in the environment, the HTP's own timing of each
+  // call, summed per graph: time on the NPU, and the RPC time around it.
+  struct Timing {
+    int calls = 0;
+    double npu_us = 0, host_rpc_us = 0, htp_rpc_us = 0;
+  };
+  const std::map<std::string, Timing>& timing() const { return timing_; }
+  bool profiling() const { return profile_ != nullptr; }
 
  private:
   void load_context_binary(const std::string& path);
@@ -72,6 +88,22 @@ class QnnModel {
   std::map<std::string, Graph> graphs_;
   uint32_t power_config_id_ = 0;
   bool has_power_config_ = false;
+
+  // Shared memory (rpcmem from libcdsprpc), HTP only.
+  struct Shared {
+    Qnn_MemHandle_t handle = nullptr;
+    size_t bytes = 0;
+  };
+  void* cdsprpc_ = nullptr;
+  void* (*rpcmem_alloc_)(int, uint32_t, int) = nullptr;
+  void (*rpcmem_free_)(void*) = nullptr;
+  int (*rpcmem_to_fd_)(void*) = nullptr;
+  std::map<void*, Shared> shared_;
+  std::vector<void*> plain_;  // alloc()'s ordinary buffers
+
+  Qnn_ProfileHandle_t profile_ = nullptr;
+  std::map<std::string, Timing> timing_;
+  void collect_profile(const std::string& graph);
 };
 
 }  // namespace phonon

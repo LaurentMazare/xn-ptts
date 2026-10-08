@@ -2,7 +2,9 @@
 
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 #include <cstring>
+#include <map>
 #include <fstream>
 #include <stdexcept>
 
@@ -97,6 +99,41 @@ Phonon::Phonon(const Options& o) : rng_(o.seed) {
     throw std::runtime_error("unknown backend " + o.backend + " (htp, cpu or gpu)");
   }
   model_ = std::make_unique<QnnModel>(lib(o, backend_lib), lib(o, "libQnnSystem.so"), files);
+  alloc_buffers();
+}
+
+void Phonon::alloc_buffers() {
+  const Graph& prefill = model_->graph("prefill");
+  const Graph& step = model_->graph("step");
+  auto f = [&](const TensorInfo& t) { return static_cast<f16*>(model_->alloc(t)); };
+  auto i = [&](const TensorInfo& t) { return static_cast<int32_t*>(model_->alloc(t)); };
+  buf_.kv = f(prefill.input("kv_cache"));  // step's kv_cache has the same shape
+  buf_.kv_count = prefill.input("kv_cache").count;
+  buf_.tokens = i(prefill.input("tokens"));
+  buf_.pos = i(prefill.input("pos"));
+  buf_.frame = i(step.input("frame"));
+  buf_.prefill_kv = f(prefill.output("output_0"));
+  // Step's outputs, in order: audio, EOS logit, next emb, new keys/values, latent, Mimi states.
+  buf_.emb[0] = f(step.input("emb"));
+  buf_.emb[1] = f(step.output("output_2"));
+  buf_.emb_count = step.input("emb").count;
+  buf_.noise = f(step.input("noise"));
+  buf_.noise_count = step.input("noise").count;
+  buf_.audio = f(step.output("output_0"));
+  buf_.audio_count = step.output("output_0").count;
+  buf_.eos = f(step.output("output_1"));
+  buf_.step_kv = f(step.output("output_3"));
+  buf_.latent = f(step.output("output_4"));
+  for (int k = 0;; k++) {
+    std::string name = "mimi_states_" + std::to_string(k);
+    bool found = false;
+    for (const auto& t : step.inputs) found |= t.name == name;
+    if (!found) break;
+    buf_.states[0].push_back(f(step.input(name)));
+    buf_.states[1].push_back(f(step.output("output_" + std::to_string(5 + k))));
+    buf_.state_counts.push_back(step.input(name).count);
+  }
+  if (bos_.size() != buf_.emb_count) throw std::runtime_error("bos.bin does not match step's emb input");
 }
 
 std::vector<std::string> Phonon::voices() const {
@@ -130,6 +167,12 @@ std::vector<float> Phonon::synthesize(const std::string& text, const std::string
   }
   model_->set_performance_mode(false);
   stats.total_ms = ms_since(t0);
+  if (model_->profiling()) {
+    for (const auto& [graph, t] : model_->timing()) {
+      if (graph == "prefill") stats.prefill_calls = t.calls, stats.prefill_npu_ms = t.npu_us / 1000;
+      if (graph == "step") stats.step_calls = t.calls, stats.step_npu_ms = t.npu_us / 1000;
+    }
+  }
   if (stats_out) *stats_out = stats;
   return out;
 }
@@ -151,13 +194,14 @@ void Phonon::generate_chunk(const Chunk& chunk, const Voice& voice,
   // from the voice again, as ptts does.
   const size_t row = size_t(head_dim_);
   const size_t plane = size_t(cache_slots_) * row;  // one (layer, k/v, head)
-  std::vector<f16> kv(size_t(layers2_) * heads_ * plane, f16(0));
+  f16* kv = buf_.kv;
+  std::fill(kv, kv + buf_.kv_count, f16(0));
   for (int lh = 0; lh < layers2_ * heads_; lh++)
     std::memcpy(&kv[lh * plane], &voice.kv[size_t(lh) * voice.length * row], voice.length * row * sizeof(f16));
   int pos = voice.length;
 
   // Writes a [2L, H, s, D] block's first `count` positions into the cache at `at`.
-  auto write_kv = [&](const std::vector<f16>& block, int s, int count, int at) {
+  auto write_kv = [&](const f16* block, int s, int count, int at) {
     for (int lh = 0; lh < layers2_ * heads_; lh++)
       std::memcpy(&kv[lh * plane + size_t(at) * row], &block[size_t(lh) * s * row], count * row * sizeof(f16));
   };
@@ -167,68 +211,56 @@ void Phonon::generate_chunk(const Chunk& chunk, const Voice& voice,
 
   {
     auto t = Clock::now();
-    std::vector<f16> kv_new(prefill.output("output_0").count);
     for (int first = 0; first < n; first += prefill_tokens_) {
       const int count = std::min(prefill_tokens_, n - first);
-      std::vector<int32_t> tokens(prefill_tokens_, 0);
-      std::copy(ids.begin() + first, ids.begin() + first + count, tokens.begin());
-      int32_t pos32 = pos;
-      model_->execute(prefill, {{"tokens", tokens.data()}, {"kv_cache", kv.data()}, {"pos", &pos32}},
-                      {{"output_0", kv_new.data()}});
-      write_kv(kv_new, prefill_tokens_, count, pos);
+      std::fill(buf_.tokens, buf_.tokens + prefill_tokens_, 0);
+      std::copy(ids.begin() + first, ids.begin() + first + count, buf_.tokens);
+      *buf_.pos = pos;
+      model_->execute(prefill, {{"tokens", buf_.tokens}, {"kv_cache", kv}, {"pos", buf_.pos}},
+                      {{"output_0", buf_.prefill_kv}});
+      write_kv(buf_.prefill_kv, prefill_tokens_, count, pos);
       pos += count;
     }
     stats.prefill_ms += ms_since(t);
   }
 
-  // Step's buffers. Mimi states go in as mimi_states_i and come back as output_(5 + i).
-  std::vector<f16> emb = bos_;
-  std::vector<f16> noise(step.input("noise").count);
-  std::vector<f16> audio(step.output("output_0").count);
-  f16 eos = 0;
-  std::vector<f16> next_emb(emb.size());
-  std::vector<f16> kv_new(step.output("output_3").count);
-  std::vector<f16> latent(step.output("output_4").count);
-  std::vector<std::vector<f16>> states, next_states;
-  for (int i = 0;; i++) {
-    std::string name = "mimi_states_" + std::to_string(i);
-    bool found = false;
-    for (const auto& t : step.inputs) found |= t.name == name;
-    if (!found) break;
-    states.emplace_back(step.input(name).count, f16(0));
-  }
-  next_states = states;
+  // Step reads emb and the Mimi states from set `cur` and writes the next ones
+  // into the other set; the two swap after every frame.
+  int cur = 0;
+  std::copy(bos_.begin(), bos_.end(), buf_.emb[0]);
+  for (size_t k = 0; k < buf_.states[0].size(); k++)
+    std::fill(buf_.states[0][k], buf_.states[0][k] + buf_.state_counts[k], f16(0));
   std::normal_distribution<float> normal(0.0f, noise_std_);
 
   int eos_frame = -1;
   for (int frame = 0; frame < max_frames; frame++) {
     auto t = Clock::now();
-    for (auto& x : noise) x = f16(normal(rng_));
-    int32_t pos32 = pos, frame32 = frame;
-    std::map<std::string, const void*> in = {{"emb", emb.data()},   {"noise", noise.data()},  {"kv_cache", kv.data()},
-                                             {"pos", &pos32},       {"frame", &frame32}};
-    std::map<std::string, void*> outs = {{"output_0", audio.data()}, {"output_1", &eos},
-                                         {"output_2", next_emb.data()}, {"output_3", kv_new.data()},
-                                         {"output_4", latent.data()}};
-    for (size_t i = 0; i < states.size(); i++) {
-      in["mimi_states_" + std::to_string(i)] = states[i].data();
-      outs["output_" + std::to_string(5 + i)] = next_states[i].data();
+    for (size_t k = 0; k < buf_.noise_count; k++) buf_.noise[k] = f16(normal(rng_));
+    *buf_.pos = pos;
+    *buf_.frame = frame;
+    std::map<std::string, const void*> in = {{"emb", buf_.emb[cur]}, {"noise", buf_.noise}, {"kv_cache", kv},
+                                             {"pos", buf_.pos},       {"frame", buf_.frame}};
+    std::map<std::string, void*> outs = {{"output_0", buf_.audio},       {"output_1", buf_.eos},
+                                         {"output_2", buf_.emb[1 - cur]}, {"output_3", buf_.step_kv},
+                                         {"output_4", buf_.latent}};
+    for (size_t k = 0; k < buf_.states[0].size(); k++) {
+      in["mimi_states_" + std::to_string(k)] = buf_.states[cur][k];
+      outs["output_" + std::to_string(5 + k)] = buf_.states[1 - cur][k];
     }
     model_->execute(step, in, outs);
     stats.step_ms += ms_since(t);
-    write_kv(kv_new, 1, 1, pos);
+    write_kv(buf_.step_kv, 1, 1, pos);
     pos++;
-    emb.swap(next_emb);
-    states.swap(next_states);
+    cur = 1 - cur;
 
-    if (eos_frame < 0 && frame >= min_frames_before_eos_ && float(eos) > eos_threshold_) eos_frame = frame;
+    if (eos_frame < 0 && frame >= min_frames_before_eos_ && float(*buf_.eos) > eos_threshold_) eos_frame = frame;
     if (eos_frame >= 0 && frame >= eos_frame + frames_after_eos) break;
 
     size_t first = out.size();
-    for (f16 s : audio) out.push_back(float(s));
+    for (size_t k = 0; k < buf_.audio_count; k++) out.push_back(float(buf_.audio[k]));
     stats.frames++;
     if (stats.first_audio_ms < 0) stats.first_audio_ms = ms_since(start);
-    if (on_audio) on_audio(out.data() + first, audio.size());
+    if (on_audio) on_audio(out.data() + first, buf_.audio_count);
   }
 }
 
