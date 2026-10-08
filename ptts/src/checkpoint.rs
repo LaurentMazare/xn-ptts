@@ -362,10 +362,11 @@ impl Checkpoint {
 }
 
 /// Classify a user-supplied source before choosing local resolution or a Hub transport.
-/// Nonexistent absolute, dot-prefixed, or JSON paths are local errors, not repo IDs.
+/// Nonexistent rooted, dot-prefixed, or JSON paths are local errors, not repo IDs.
 pub fn is_local_source(path: &Path) -> bool {
     path.exists()
-        || path.is_absolute()
+        // Windows paths rooted on the current drive have a root but are not absolute.
+        || path.has_root()
         || path.starts_with(".")
         || path.components().next().is_some_and(|c| c.as_os_str() == "..")
         || path.extension().is_some_and(|ext| ext == "json")

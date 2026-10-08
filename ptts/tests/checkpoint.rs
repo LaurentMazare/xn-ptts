@@ -275,7 +275,22 @@ fn missing_local_paths_are_not_mistaken_for_hub_ids() {
         assert!(is_local_source(Path::new(path)), "{path}");
         assert!(matches!(Checkpoint::open(path), Err(Error::NotFound(_))), "{path}");
     }
+    let f = Fixture::new();
+    let missing = f.0.join("missing");
+    assert!(missing.is_absolute());
+    assert!(is_local_source(&missing));
+    assert!(matches!(Checkpoint::open(&missing), Err(Error::NotFound(_))));
     assert!(!is_local_source(Path::new("owner/private-model")));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_drive_rooted_paths_are_local_sources() {
+    let path = Path::new(r"\missing\checkpoint");
+    assert!(path.has_root());
+    assert!(!path.is_absolute());
+    assert!(is_local_source(path));
+    assert!(matches!(Checkpoint::open(path), Err(Error::NotFound(_))));
 }
 
 #[cfg(feature = "hf")]
