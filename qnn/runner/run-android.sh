@@ -30,8 +30,9 @@ print(v)' "$BUNDLE/metadata.json" "$@"
 }
 
 push() {  # push FILE (a bundle-relative path) to the same place under $DEV/bundle
-  adb shell mkdir -p "$DEV/bundle/$(dirname "$1")"
-  adb push "$BUNDLE/$1" "$DEV/bundle/$1" >/dev/null
+  # adb reads stdin; </dev/null keeps it from eating the voice list piped to the loop below.
+  adb shell mkdir -p "$DEV/bundle/$(dirname "$1")" </dev/null
+  adb push "$BUNDLE/$1" "$DEV/bundle/$1" </dev/null >/dev/null
 }
 
 adb shell mkdir -p $DEV/lib $DEV/dsp
