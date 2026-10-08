@@ -2,13 +2,13 @@
 //! folder as the other frontends read it.
 //!
 //! The folder holds `tokenizer.json`, the weights (q8_0 GGUF or f32 safetensors, named as in
-//! [`WEIGHTS`]), an optional `config.json` (without one, the default config) and its voices
+//! [`WEIGHTS`]), its own `config.json` and its voices
 //! in `voices/` or `embeddings/`, or as `default-voice.safetensors`.
 
 use crate::{PTTS_UNIT_CPU, PttsResult};
+use ptts::checkpoint::read_config;
 use ptts::preprocess::Normalize;
 use ptts::synth::{DeviceKind, Quant, SpeechOptions, Synth, SynthBuilder};
-use ptts::tts_model::TTSConfig;
 use std::path::Path;
 
 /// Weight files tried in order, with the format each loads as.
@@ -30,12 +30,7 @@ impl Engine {
         }
         let normalize = lang.parse::<Normalize>().map_err(|e| e.to_string())?;
         let config = dir.join("config.json");
-        let cfg: TTSConfig = if config.is_file() {
-            let text = std::fs::read_to_string(&config).map_err(|e| format!("config.json: {e}"))?;
-            serde_json::from_str(&text).map_err(|e| format!("config.json: {e}"))?
-        } else {
-            TTSConfig::v202601()
-        };
+        let cfg = read_config(&config).map_err(|e| e.to_string())?;
         let (weights, quant) =
             WEIGHTS.iter().map(|&(name, q)| (dir.join(name), q)).find(|(p, _)| p.is_file()).ok_or(
                 format!(
@@ -114,6 +109,6 @@ mod tests {
     fn open_refuses_before_loading() {
         assert!(open_error(PTTS_UNIT_ANE, "en").contains("Apple only"));
         assert!(!open_error(PTTS_UNIT_CPU, "klingon").contains("no weights"));
-        assert!(open_error(PTTS_UNIT_CPU, "en").contains("no weights in no-such-checkpoint"));
+        assert!(open_error(PTTS_UNIT_CPU, "en").contains("config.json"));
     }
 }

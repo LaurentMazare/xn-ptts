@@ -10,8 +10,8 @@ export interface ModelSpec {
   weights: Partial<Record<Quant, string | URL>>;
   /** The checkpoint's `tokenizer.json`. */
   tokenizer: string | URL;
-  /** Its `config.json`, or `null` for the original Pocket TTS architecture. */
-  config?: string | URL | null;
+  /** Required URL of this checkpoint's `config.json`. */
+  config: string | URL;
   /**
    * Voice name to voice `.safetensors` file. Fetched on first use. A model without any can
    * still be loaded, but every request then needs a voice added with `addVoice` first.
@@ -57,7 +57,7 @@ export interface LoadOptions {
   quant?: Quant;
   /**
    * Required. Where the checkpoint's files are. There is no default: pass the model you
-   * mean, or {@link POCKET_TTS_MODEL} for Kyutai's published Pocket TTS checkpoint.
+   * mean.
    */
   model: ModelSpec;
   /** Voices to fetch up front. Default: just the default voice; others load on first use. */
@@ -174,9 +174,6 @@ export declare class PhononTTS {
   /** Stop the worker and free the model. Pending requests fail. */
   dispose(): void;
 }
-
-/** Kyutai's published Pocket TTS checkpoint, on Hugging Face. Pass it as `model` to use it. */
-export declare const POCKET_TTS_MODEL: Readonly<ModelSpec>;
 
 /** Delete every file this package has cached. Resolves to whether there was anything. */
 export declare function clearCache(): Promise<boolean>;

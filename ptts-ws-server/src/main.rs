@@ -20,9 +20,9 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     addr: String,
 
-    /// Local model directory, config.json, ptts-model.json, or Hugging Face repo ID.
-    #[arg(long)]
-    config: Option<std::path::PathBuf>,
+    /// Required local model directory, config.json, or Hugging Face repo ID.
+    #[arg(long, required = true)]
+    config: std::path::PathBuf,
 
     /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.
     #[arg(long)]
@@ -140,7 +140,7 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         );
     }
     model::load_ptts(
-        args.config.as_ref(),
+        &args.config,
         args.revision.as_deref(),
         args.voice_dir.as_ref(),
         device,

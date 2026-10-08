@@ -1,4 +1,5 @@
 use anyhow::{Context as _, Result};
+use futures_util::TryStreamExt as _;
 use hf_hub::HFClient;
 use hf_hub::repository::{HFRepository, RepoTypeModel};
 use std::path::PathBuf;
@@ -22,7 +23,7 @@ pub struct HfRepo {
 }
 
 impl HfRepo {
-    /// Open the model repo `repo_id` (e.g. `"kyutai/pocket-tts"`) on the Hub.
+    /// Open the model repo `repo_id` on the Hub.
     /// The client reads `HF_TOKEN`, `HF_ENDPOINT` and the cache location from
     /// the environment.
     pub fn model(repo_id: &str, revision: Option<&str>) -> Result<Self> {
@@ -47,5 +48,24 @@ impl HfRepo {
             .with_context(|| {
                 format!("failed to fetch `{filename}` from model repo `{}`", self.repo_id)
             })
+    }
+    /// Voice files listed by this explicitly selected checkpoint revision.
+    pub async fn voice_files(&self) -> Result<Vec<(String, String)>> {
+        let entries = self
+            .repo
+            .list_tree()
+            .maybe_revision(self.revision.clone())
+            .recursive(true)
+            .send()
+            .with_context(|| format!("cannot list voice files in {}", self.repo_id))?;
+        let entries: Vec<_> = entries
+            .try_collect()
+            .await
+            .with_context(|| format!("cannot list voice files in {}", self.repo_id))?;
+        let files = entries.into_iter().filter_map(|entry| match entry {
+            hf_hub::repository::files::RepoTreeEntry::File { path, .. } => Some(path),
+            _ => None,
+        });
+        Ok(ptts::loader::voice_paths(files))
     }
 }

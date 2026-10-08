@@ -5,7 +5,7 @@ The browser build of [Phonon](../ptts/), published to npm as [`phonon-tts`](http
 ## Layout
 
 - `src/lib.rs`: the raw `wasm-bindgen` surface. It takes bytes that are already fetched and generates a few 80 ms frames per call, because the worker it runs in must yield to its event loop between calls to hear a cancel. One engine, generic over the device, serves the CPU and, with the `webgpu` feature, WebGPU: loading, voices, normalization, chunking and the end-of-speech rule are shared, and only reading a result back differs. A call makes one frame on the CPU and eight on WebGPU, which reads them back in one round trip. With the `threads` feature it also exports `init_thread_pool` and `start_cpu_pool`, which split the work inside a frame across Web Workers. Text is normalized, split into sentence-aligned chunks and tokenized in Rust, with the same rules as `ptts::synth`. Voices can be `emb` embeddings, which are run through the model once when they are added, or the precomputed KV caches of `embeddings_v2/`.
-- `js/`: the package's public API. `index.js` exports `PhononTTS`, which runs the model in a worker (`worker.js`), downloads and caches its files (`fetch.js`, via the Cache API), and turns requests into async iterators. The worker loads the threaded build on a cross-origin isolated page and the single-threaded one elsewhere, and `threads.js` picks how many threads. `models.js` holds the pinned URLs of Kyutai's published Pocket TTS checkpoint. `index.d.ts` holds the types. `test/` holds node tests for the wrapper's own logic.
+- `js/`: the package's public API. `index.js` exports `PhononTTS`, which runs the model in a worker (`worker.js`), downloads and caches its files (`fetch.js`, via the Cache API), and turns requests into async iterators. The worker loads the threaded build on a cross-origin isolated page and the single-threaded one elsewhere, and `threads.js` picks how many threads. `index.d.ts` holds the types. `test/` holds node tests for the wrapper's own logic.
 - `scripts/pack.mjs`: assembles the npm package around the two wasm-pack outputs, `pkg/wasm/` and `pkg/wasm-threads/`. It also patches `wasm-bindgen-rayon`'s worker helper, whose bare `'../../..'` import resolves for neither a bundler nor a browser here.
 - `scripts/serve.mjs`: serves the demo with the headers that make it cross-origin isolated.
 - `www/index.html`: the demo page, built on the package the way a consumer would use it.
@@ -61,7 +61,7 @@ The package version is not in `js/package.json`. `pack.mjs` stamps it from `work
 
 That has to be enabled once for `phonon-tts` on npmjs.com, pointed at this repository and at `npm-publish.yml`. npm only offers the setting for a package that is already on the registry; `phonon-tts` is, as a placeholder, so it can be set up before the first real release. Until it is, a `v*` tag publishes the wheels and fails here, leaving PyPI and npm on different versions.
 
-Check the checkpoint URLs in `js/models.js`. They are pinned to Hugging Face revisions, and the files are cached by URL, so changing a revision makes every user of them download again.
+Supply the checkpoint URLs through `ModelSpec`. Use pinned HF revisions or versioned local paths because files are cached by URL. Every checkpoint must supply its config and tokenizer JSON.
 
 ## Known limits
 

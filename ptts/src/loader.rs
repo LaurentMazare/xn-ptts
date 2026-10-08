@@ -69,6 +69,31 @@ pub fn load_weights<Q: BackendQ>(path: &std::path::Path, dev: &Q::B) -> Result<P
 /// The directories a checkpoint keeps its voices in. Both layouts are in circulation.
 pub const VOICE_DIRS: [&str; 2] = ["voices", "embeddings"];
 
+/// Directory and voice name of a safetensors file relative to a checkpoint.
+/// Only files directly inside `voices/` or `embeddings/` are voice assets.
+pub fn voice_file_name(path: &str) -> Option<(&str, &str)> {
+    let (dir, file) = path.split_once('/')?;
+    let name = file.strip_suffix(".safetensors")?;
+    (VOICE_DIRS.contains(&dir) && !name.is_empty() && !name.contains('/')).then_some((dir, name))
+}
+
+/// Select voices from paths listed by a checkpoint transport.
+/// `voices/` takes precedence over `embeddings/` for the same voice name.
+pub fn voice_paths(paths: impl IntoIterator<Item = String>) -> Vec<(String, String)> {
+    let files: Vec<_> = paths.into_iter().collect();
+    let mut voices = std::collections::BTreeMap::new();
+    for dir in VOICE_DIRS {
+        for file in &files {
+            if let Some((voice_dir, name)) = voice_file_name(file)
+                && dir == voice_dir
+            {
+                voices.entry(name.to_string()).or_insert_with(|| file.clone());
+            }
+        }
+    }
+    voices.into_iter().collect()
+}
+
 /// A checkpoint's own voice, which [`checkpoint_voices`] registers as `default`.
 pub const DEFAULT_VOICE_FILE: &str = "default-voice.safetensors";
 

@@ -9,12 +9,12 @@
 //! ```no_run
 //! # fn main() -> ptts::Result<()> {
 //! use ptts::synth::Synth;
-//! use ptts::tts_model::TTSConfig;
+//! use ptts::checkpoint::read_config;
 //!
 //! use ptts::preprocess::Lang;
 //!
 //! let tts = Synth::builder(
-//!     TTSConfig::v202601(),
+//!     read_config("model/config.json")?,
 //!     "model/model.safetensors",
 //!     Lang::En,
 //! )
@@ -32,7 +32,7 @@
 //!
 //! ```no_run
 //! # fn main() -> ptts::Result<()> {
-//! # let cfg = ptts::tts_model::TTSConfig::v202601();
+//! # let cfg = ptts::checkpoint::read_config("model/config.json")?;
 //! # let norm = ptts::preprocess::Lang::En;
 //! # let tts = ptts::synth::Synth::builder(cfg, "model/model.safetensors", norm)
 //! #     .tokenizer_file("model/tokenizer.json")
@@ -1206,14 +1206,14 @@ impl SynthBuilder {
     /// # fn main() -> ptts::Result<()> {
     /// use ptts::preprocess::Lang;
     /// use ptts::synth::SynthBuilder;
-    /// use ptts::tts_model::TTSConfig;
+    /// use ptts::checkpoint::read_config;
     ///
     /// let tts = SynthBuilder::new(
-    ///     TTSConfig::v202601(),
+    ///     read_config("model/config.json")?,
     ///     "model/model.safetensors",
     ///     Lang::De,
     /// )
-    /// .tokenizer_file("model/tokenizer.model")
+    /// .tokenizer_file("model/tokenizer.json")
     /// .build()?;
     /// # Ok(())
     /// # }
@@ -1853,7 +1853,7 @@ mod tests {
     #[test]
     fn the_builder_keeps_the_policy_it_was_given() {
         for norm in [Normalize::for_lang(Lang::En), Normalize::for_lang(Lang::De), Normalize::OFF] {
-            let b = SynthBuilder::new(TTSConfig::v202601(), "model.safetensors", norm);
+            let b = SynthBuilder::new(crate::test_config(), "model.safetensors", norm);
             assert_eq!(b.normalize, norm);
         }
     }

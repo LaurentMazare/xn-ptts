@@ -39,7 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "-m",
         "--model",
-        help="Hugging Face repo id or local model directory, config.json, or ptts-model.json",
+        help="required: Hugging Face repo ID or local model directory/config.json",
     )
     p.add_argument(
         "-d", "--device", help=f"one of {', '.join(['auto', *available_devices()])} (default: auto)"
@@ -78,6 +78,9 @@ def main(argv: list[str] | None = None) -> int:
         # Text is normalized before it is tokenized, and the spoken forms of `@`, `+` and `=`
         # differ per language, so there is nothing safe to guess on the caller's behalf.
         parser.error("--lang is required: one of en, fr, de, es, pt, or none to skip it")
+
+    if args.model is None:
+        parser.error("--model is required: a local model directory or Hugging Face repo ID")
 
     if args.threads is not None:
         # After the arguments are checked, before the model loads: this sizes a global pool

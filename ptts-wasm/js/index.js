@@ -6,7 +6,6 @@
 
 import { concatPcm, encodeWav } from './wav.js';
 
-export { POCKET_TTS_MODEL } from './models.js';
 export { clearCache } from './fetch.js';
 export { encodeWav, concatPcm } from './wav.js';
 
@@ -86,7 +85,7 @@ export class PhononTTS {
     }
     // Required too. A default checkpoint would be one particular model's files, and loading
     // a model other than the one the caller has in mind gives plausible speech with nothing
-    // to say it is the wrong model. `POCKET_TTS_MODEL` is there for whoever wants that one.
+    // to say it is the wrong model.
     if (typeof model !== 'object' || model === null || Array.isArray(model)) {
       throw new TypeError(
         "model is required: where the checkpoint's files are, e.g. " +
@@ -96,6 +95,9 @@ export class PhononTTS {
     }
     if (!isUrl(model.tokenizer)) {
       throw new TypeError("model.tokenizer is required: the URL of the checkpoint's tokenizer.json");
+    }
+    if (!isUrl(model.config) || String(model.config).length === 0) {
+      throw new TypeError("model.config is required: the URL of the checkpoint's config.json");
     }
     // Checked before the worker starts, for the same reason as `rewrites` below.
     if (!isUrl(model.weights?.[quant])) {
@@ -409,7 +411,7 @@ function resolveModel({ weights, tokenizer, config, voices }) {
   return {
     weights: map(weights),
     tokenizer: resolveUrl(tokenizer),
-    config: config ? resolveUrl(config) : null,
+    config: resolveUrl(config),
     voices: map(voices ?? {}),
   };
 }

@@ -23,7 +23,6 @@
     "index.d.ts",
     "worker.js",
     "fetch.js",
-    "models.js",
     "wav.js",
     "threads.js",
     "device.js",

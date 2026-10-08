@@ -67,7 +67,7 @@ globalThis.Worker = FakeWorker;
 
 const { PhononTTS } = await import('../index.js');
 
-const MODEL = { weights: { q8: 'w' }, tokenizer: 't', voices: { alba: 'a', marius: 'm' } };
+const MODEL = { weights: { q8: 'w' }, tokenizer: 't', config: 'c', voices: { alba: 'a', marius: 'm' } };
 const load = () => PhononTTS.load({ lang: 'en', model: MODEL, workerUrl: 'worker.js' });
 
 test('device is checked before the worker starts, handed to it, and reported back', async () => {
@@ -120,6 +120,7 @@ test('model files may be URL objects, as workerUrl and wasmUrl may', async () =>
   const model = {
     weights: { q8: new URL('https://example.com/m/model.q8.gguf') },
     tokenizer: new URL('https://example.com/m/tokenizer.json'),
+    config: new URL('https://example.com/m/config.json'),
     voices: { v: new URL('https://example.com/m/v.safetensors') },
   };
   await PhononTTS.load({ lang: 'en', model, workerUrl: 'worker.js' });
@@ -290,4 +291,13 @@ test('after a worker crash, later requests fail with the crash', async () => {
   FakeWorker.last.onerror({ message: 'out of memory' });
   await assert.rejects(tts.synth('After.'), /out of memory/);
   await assert.rejects(tts.addVoice('x', 'https://x/v'), /out of memory/);
+});
+
+
+test('config is required before a worker or download starts', async () => {
+  FakeWorker.last = null;
+  for (const config of [undefined, null, '', 1]) {
+    await assert.rejects(PhononTTS.load({ lang: 'en', model: { ...MODEL, config } }), /model.config is required/);
+  }
+  assert.equal(FakeWorker.last, null);
 });

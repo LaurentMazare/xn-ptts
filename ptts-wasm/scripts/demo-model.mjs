@@ -11,8 +11,8 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 const dir = process.argv[2];
-if (!dir || !existsSync(join(dir, 'tokenizer.json'))) {
-  console.error('usage: demo-model.mjs <model folder holding tokenizer.json>');
+if (!dir || !existsSync(join(dir, 'tokenizer.json')) || !existsSync(join(dir, 'config.json'))) {
+  console.error('usage: demo-model.mjs <model folder holding config.json and tokenizer.json>');
   process.exit(1);
 }
 const prefix = basename(dir);
@@ -44,7 +44,7 @@ if (existsSync(join(dir, 'default-voice.safetensors'))) voices.default ??= url('
 const model = {
   weights,
   tokenizer: url('tokenizer.json'),
-  config: existsSync(join(dir, 'config.json')) ? url('config.json') : null,
+  config: url('config.json'),
   voices,
   ...('default' in voices ? { defaultVoice: 'default' } : {}),
 };

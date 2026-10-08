@@ -12,10 +12,10 @@
 //! # fn main() -> ptts::Result<()> {
 //! use ptts::preprocess::Lang;
 //! use ptts::synth::Synth;
-//! use ptts::tts_model::TTSConfig;
+//! use ptts::checkpoint::read_config;
 //!
 //! let tts = Synth::builder(
-//!     TTSConfig::v202601(),
+//!     read_config("model/config.json")?,
 //!     "model/model.safetensors",
 //!     Lang::En,
 //! )
@@ -33,7 +33,7 @@
 //! | Module | Role |
 //! |---|---|
 //! | [`synth`] | The one-call API: load, prime, generate, decode. Start here. |
-//! | [`checkpoint`] | Resolving local directories and validating model manifests. |
+//! | [`checkpoint`] | Resolving explicitly supplied local model directories. |
 //! | [`loader`] | Reading weights and voice files, and the checkpoint key mapping. |
 //! | [`error`] | [`Error`], what those two return. |
 //! | [`plan`] | Frame and KV budgets, the end-of-speech policy. |
@@ -52,7 +52,7 @@
 //! compiling. The variants are failure classes, so a binding maps them onto its host language's
 //! exceptions in one match.
 //!
-//! [`checkpoint`] resolves local directories and declared model manifests for native callers.
+//! [`checkpoint`] resolves explicitly supplied local model directories for native callers.
 //! The lower-level builder still accepts explicit files. The library never downloads weights.
 //!
 //! Text is normalized before it is tokenized — see [`preprocess`]. Which
@@ -112,4 +112,9 @@ pub use error::{Error, Result};
 pub trait Tokenizer {
     fn encode(&self, text: &str) -> xn::Result<Vec<u32>>;
     fn decode(&self, tokens: &[u32]) -> xn::Result<String>;
+}
+
+#[cfg(test)]
+fn test_config() -> tts_model::TTSConfig {
+    serde_json::from_str(include_str!("../tests/fixtures/config.json")).unwrap()
 }
