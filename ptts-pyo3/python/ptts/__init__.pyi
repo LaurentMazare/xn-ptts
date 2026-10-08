@@ -117,7 +117,11 @@ class TTS:
         seed: int | None = None,
         cfg_coef: float | None = None,
     ) -> AudioStream:
-        """Synthesize `text`, yielding float32 chunks as the decoder produces them."""
+        """Synthesize `text`, yielding float32 chunks as the decoder produces them.
+
+        Generation pauses once its bounded buffers fill if the stream is unread, and
+        resumes as chunks are consumed. Closing or dropping it stops its workers.
+        """
 
     def add_voice(self, name: str, path: str | PathLike[str]) -> None:
         """Register a voice from a precomputed embedding file."""
@@ -151,8 +155,9 @@ class TTS:
 class AudioStream(Iterator[NDArray[np.float32]]):
     """An in-progress generation. Iterate it for float32 chunks.
 
-    Usable as a context manager; leaving the block stops the generation and releases the
-    worker threads.
+    Unread streams pause generation once their bounded buffers fill. Consuming chunks
+    lets generation resume. Leaving a context manager block stops generation and waits
+    for the worker threads to finish.
     """
 
     @property

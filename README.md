@@ -192,9 +192,11 @@ curl http://localhost:8880/v1/audio/speech -H "Content-Type: application/json" \
 
 The image contains no model weights. Supply a mounted model folder or an HF repo through `PTTS_CONFIG`. The [server README](ptts-openai-server/README.md) covers running it without Docker, the API, and setup for clients such as Open WebUI and Home Assistant. For streaming text in and audio out over one WebSocket connection, there is `ptts-ws-server`.
 
-Both servers keep fixed audio queues through generation and encoding, so a slow reader applies backpressure. Disconnecting stops generation and releases its workers. WebSocket sessions accept up to 4096 pending text characters between flushes, 64 KiB per message, and 16 queued requests. A socket write or request queue stalled for 30 seconds closes the session.
+Both servers keep fixed audio queues through generation and encoding, so a slow reader applies backpressure. Disconnecting stops generation and releases its workers. WebSocket sessions accept up to 4096 pending text characters between flushes and 64 KiB per message. Once 16 requests are queued, the server pauses reading until generation catches up. A socket write stalled for 30 seconds closes the session.
 
 ## Updating from earlier builds
+
+Streaming generation now uses bounded buffers across the Rust API and native bindings. Leaving a stream unread pauses generation once its buffers fill; it resumes when you consume audio.
 
 Model sources are now required: use `--repo` or `--dir` in the Rust CLI, `config=` in Python, `--config` or `PTTS_CONFIG` for servers, and an explicit `ModelSpec` in the browser. The Docker image contains no model weights.
 

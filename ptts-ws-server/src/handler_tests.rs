@@ -134,3 +134,66 @@ fn pending_text_is_limited_in_characters_and_a_rejected_append_preserves_it() {
     buffer.clear();
     assert!(append_text(&mut buffer, "Hello."));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_full_request_queue_waits_without_cancelling_a_healthy_client() {
+    use futures_util::StreamExt;
+
+    let queued = Arc::new(tokio::sync::Notify::new());
+    let observed = Arc::new(AtomicUsize::new(0));
+    let observed_reader = observed.clone();
+    let queued_reader = queued.clone();
+    let socket = futures_util::stream::iter(
+        (0..REQUEST_QUEUE + 2)
+            .map(|i| Ok::<_, std::io::Error>(Message::Text(i.to_string().into()))),
+    )
+    .inspect(move |_| {
+        if observed_reader.fetch_add(1, Ordering::SeqCst) == REQUEST_QUEUE {
+            queued_reader.notify_one();
+        }
+    });
+    let (tx, mut rx) = mpsc::channel(REQUEST_QUEUE);
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let reader = tokio::spawn(read_requests(socket, tx, cancel_tx));
+    tokio::time::timeout(Duration::from_secs(1), queued.notified()).await.unwrap();
+    assert_eq!(rx.len(), REQUEST_QUEUE);
+    assert_eq!(observed.load(Ordering::SeqCst), REQUEST_QUEUE + 1);
+
+    // Healthy clients can queue text while an earlier flush takes longer than a write timeout.
+    tokio::time::advance(SEND_TIMEOUT + Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+    assert!(!reader.is_finished());
+    assert!(!*cancel_rx.borrow());
+    assert_eq!(observed.load(Ordering::SeqCst), REQUEST_QUEUE + 1);
+
+    for i in 0..REQUEST_QUEUE + 2 {
+        let Message::Text(text) = rx.recv().await.unwrap() else { panic!("expected text") };
+        assert_eq!(text.as_str(), i.to_string());
+    }
+    reader.await.unwrap();
+    assert!(*cancel_rx.borrow(), "EOF still cancels the session");
+}
+
+#[tokio::test]
+async fn closing_a_full_request_queue_releases_the_reader() {
+    use futures_util::StreamExt;
+
+    let full = Arc::new(tokio::sync::Notify::new());
+    let signal = full.clone();
+    let observed = AtomicUsize::new(0);
+    let socket = futures_util::stream::iter(
+        (0..REQUEST_QUEUE + 1).map(|_| Ok::<_, std::io::Error>(Message::Text("text".into()))),
+    )
+    .inspect(move |_| {
+        if observed.fetch_add(1, Ordering::SeqCst) == REQUEST_QUEUE {
+            signal.notify_one();
+        }
+    });
+    let (tx, rx) = mpsc::channel(REQUEST_QUEUE);
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let reader = tokio::spawn(read_requests(socket, tx, cancel_tx));
+    tokio::time::timeout(Duration::from_secs(2), full.notified()).await.unwrap();
+    drop(rx);
+    tokio::time::timeout(Duration::from_secs(2), reader).await.unwrap().unwrap();
+    assert!(*cancel_rx.borrow());
+}

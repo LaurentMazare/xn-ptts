@@ -433,7 +433,9 @@ impl Tts {
 
     /// Synthesize `text`, yielding float32 chunks as the decoder produces them.
     ///
-    /// The returned object is an iterator; dropping it stops the generation.
+    /// The returned object is an iterator. Generation pauses once its bounded buffers
+    /// fill if it is unread, and resumes as chunks are consumed. Closing or dropping it
+    /// stops generation and waits for its worker threads to finish.
     #[pyo3(signature = (text, *, voice=None, temperature=None, seed=None, cfg_coef=None))]
     fn stream(
         &self,

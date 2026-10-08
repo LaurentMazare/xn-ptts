@@ -34,7 +34,7 @@ with tts.stream("A longer sentence.", voice=voice) as audio:
         print(chunk.shape)  # process each PCM chunk as it arrives
 ```
 
-`tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early.
+`tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early and waits for its workers to finish. Streaming keeps bounded audio and latent buffers: leaving a stream unread pauses generation once they fill, and consuming chunks lets it resume.
 
 `tts.voices` lists the voices that were found. When no voice is given, the checkpoint's configured default is used, then `default` if present, then the first by name. Pass `voice="name"` to any speech method to select one.
 

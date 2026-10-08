@@ -51,30 +51,12 @@ pub async fn ws_handler(
 
 async fn serve(socket: WebSocket, app: AppState) -> Result<()> {
     use futures_util::StreamExt;
-    let (tx, mut rx) = socket.split();
+    let (tx, rx) = socket.split();
     let (reply_tx, reply_rx) = mpsc::channel(REPLY_QUEUE);
     let (request_tx, mut request_rx) = mpsc::channel(REQUEST_QUEUE);
     let (cancel_tx, mut cancel_rx) = watch::channel(false);
-    let reader_cancel = cancel_tx.clone();
-    // Keep reading independently of generation so a peer Close cancels a running stream.
-    let reader = tokio::spawn(async move {
-        while let Some(msg) = rx.next().await {
-            match msg {
-                Ok(Message::Close(_)) | Err(_) => break,
-                Ok(Message::Ping(_) | Message::Pong(_) | Message::Binary(_)) => continue,
-                Ok(msg) => {
-                    // A full request queue cannot hide a disconnect indefinitely.
-                    if !tokio::time::timeout(SEND_TIMEOUT, request_tx.send(msg))
-                        .await
-                        .is_ok_and(|sent| sent.is_ok())
-                    {
-                        break;
-                    }
-                }
-            }
-        }
-        let _ = reader_cancel.send(true);
-    });
+    // Read independently so a peer Close cancels generation while the request queue has room.
+    let reader = tokio::spawn(read_requests(rx, request_tx, cancel_tx.clone()));
     let forwarder = tokio::spawn(forward_replies(tx, reply_rx, cancel_rx.clone(), SEND_TIMEOUT));
 
     let outcome = run_session(app, &mut request_rx, &reply_tx, &mut cancel_rx).await;
@@ -86,6 +68,30 @@ async fn serve(socket: WebSocket, app: AppState) -> Result<()> {
     drop(cancel_tx);
     tracing::info!("websocket session ended");
     outcome.and(forwarded)
+}
+
+async fn read_requests<S, E>(
+    mut socket: S,
+    requests: mpsc::Sender<Message>,
+    cancel: watch::Sender<bool>,
+) where
+    S: futures_util::Stream<Item = std::result::Result<Message, E>> + Unpin,
+{
+    use futures_util::StreamExt;
+    while let Some(msg) = socket.next().await {
+        match msg {
+            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(Message::Ping(_) | Message::Pong(_) | Message::Binary(_)) => continue,
+            Ok(msg) => {
+                // A full queue pauses reading until generation catches up. A stalled socket
+                // writer still times out and closes the reply channel, stopping the session.
+                if requests.send(msg).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    let _ = cancel.send(true);
 }
 
 async fn cancelled(cancel: &mut watch::Receiver<bool>) {

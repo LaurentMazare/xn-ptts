@@ -1104,6 +1104,11 @@ fn run_backbone<Q: BackendQ>(
 /// worth, or several when the decoder finds more than one frame already queued
 /// and decodes them together. The iterator ends when generation finishes; an
 /// `Err` item is terminal.
+///
+/// Generation runs ahead only while its fixed audio and latent buffers have room.
+/// Leaving the stream unread pauses generation once they fill; consuming audio
+/// lets it resume. Iteration and cleanup block, including waiting for the current
+/// model operation on cancellation or error. Use a blocking thread in async code.
 pub struct SpeechStream {
     /// `Option` so [`Drop`] can release it before joining: closing this receiver
     /// wakes a decoder blocked on output, which closes the latent receiver
@@ -1599,6 +1604,9 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
     fn say_with(&self, text: &str, opts: &SpeechOptions) -> Result<Vec<f32>>;
 
     /// Start generating `text`, yielding PCM as the decoder produces it.
+    ///
+    /// Generation pauses once the bounded buffers fill if the stream is unread.
+    /// Consuming audio lets it resume; dropping the stream stops and joins its workers.
     fn stream(&self, text: &str) -> Result<SpeechStream>;
 
     /// Prime a voice once and keep it, for callers that generate repeatedly.
@@ -1641,9 +1649,10 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
 
     /// Start generating `text` with per-request overrides.
     ///
-    /// Generation runs on two background threads — one for the flow-LM, one for
-    /// the Mimi decoder — so decoding overlaps the next backbone step. Dropping
-    /// the returned [`SpeechStream`] stops both.
+    /// Generation runs on two background threads: one for the flow-LM, one for
+    /// the Mimi decoder, so decoding overlaps the next backbone step. Generation
+    /// pauses once the bounded buffers fill if the stream is unread, and resumes
+    /// as audio is consumed. Dropping the returned [`SpeechStream`] stops and joins both.
     fn stream_with(&self, text: &str, opts: &SpeechOptions) -> Result<SpeechStream>;
 
     /// As [`Self::stream_with`], but with an explicit noise source.
@@ -1683,6 +1692,9 @@ pub trait SessionApi: sealed::Sealed + Send + Sync {
     fn say(&self, text: &str) -> Result<Vec<f32>>;
 
     /// Synthesize `text`, yielding PCM as the decoder produces it.
+    ///
+    /// Generation pauses once the bounded buffers fill if the stream is unread.
+    /// Consuming audio lets it resume; dropping the stream stops and joins its workers.
     fn stream(&self, text: &str) -> Result<SpeechStream>;
 
     /// As [`Self::stream`], with an explicit seed for this request.
@@ -1700,6 +1712,8 @@ pub trait SessionApi: sealed::Sealed + Send + Sync {
     fn tokenize(&self, text: &str) -> Result<Vec<u32>>;
 
     /// Synthesize from tokens produced elsewhere, as one chunk.
+    ///
+    /// Generation uses the bounded buffers and cleanup described on [`SpeechStream`].
     ///
     /// `frames_after_eos` is the tail [`crate::tts_model::prepare_text_prompt`] would have
     /// chosen: 3 for a very short prompt, 1 otherwise.
