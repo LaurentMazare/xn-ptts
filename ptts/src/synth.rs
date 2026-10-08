@@ -671,6 +671,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
             text,
             settings.max_tokens_per_chunk,
             self.normalize,
+            None,
         )?;
         // A one-shot call is a session sized to this text and dropped afterwards,
         // so there is one generation path rather than two. The voice prompt gets its
@@ -697,7 +698,8 @@ fn grow<Q: BackendQ>(prefix: &TTSState<Q>, seq_budget: usize) -> Result<TTSState
     Ok(TTSState { flow_lm_state: crate::flow_lm::FlowLMState { transformer_state, conditions } })
 }
 
-/// Split `text` into chunks and work out the budgets for each.
+/// Split `text` into chunks and work out the budgets for each, cutting any chunk of more than
+/// `fit_to` tokens with [`plan::fit`].
 ///
 /// Free rather than a method because both [`Synth`] and [`Session`] need
 /// it, and it depends only on the tokenizer inside the model and the codec's
@@ -708,6 +710,7 @@ fn plan_chunks<Q: BackendQ>(
     text: &str,
     max_tokens_per_chunk: usize,
     normalize: Normalize,
+    fit_to: Option<usize>,
 ) -> Result<Vec<Chunk>> {
     let tokenizer = match model.flow_lm.conditioner.tokenizer.as_ref() {
         Some(tokenizer) => tokenizer.as_ref(),
@@ -719,7 +722,11 @@ fn plan_chunks<Q: BackendQ>(
             ));
         }
     };
-    plan::chunks(tokenizer, text, normalize, max_tokens_per_chunk, frame_rate)
+    let chunks = plan::chunks(tokenizer, text, normalize, max_tokens_per_chunk, frame_rate)?;
+    match fit_to {
+        Some(max) => plan::fit(chunks, max, tokenizer, frame_rate),
+        None => Ok(chunks),
+    }
 }
 
 /// The generic session behind [`Session`], whose docs cover its concurrency rules.
@@ -751,12 +758,17 @@ impl<Q: BackendQ> SessionOf<Q> {
         text: &str,
         rng: Box<dyn crate::flow_lm::Rng + Send>,
     ) -> Result<SpeechStream> {
+        // The budget is fixed, so a sentence too long for it is cut rather than refused, and
+        // never left longer than the model speaks well.
+        let room = self.seq_budget.saturating_sub(self.prompt_len);
+        let fit_to = plan::max_tokens_for(room, self.frame_rate).min(plan::MAX_FIT_TOKENS);
         let chunks = plan_chunks(
             &self.model,
             self.frame_rate,
             text,
             self.max_tokens_per_chunk,
             self.normalize,
+            Some(fit_to),
         )?;
         self.stream_chunks(chunks, rng)
     }
@@ -1577,8 +1589,9 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
     /// session is dropped. At 12.5 Hz a full [`MAX_TOKENS_PER_CHUNK`]-token
     /// chunk needs 796, so 1024 covers any
     /// single chunk; longer text is split into chunks of that size rather than
-    /// needing more. Text that would need more is rejected rather than silently
-    /// re-primed.
+    /// needing more. A single sentence too long for the budget, or longer than
+    /// [`plan::MAX_FIT_TOKENS`], is cut with [`plan::fit`]; only a single word
+    /// too long for the budget is rejected.
     fn session(&self, opts: &SpeechOptions, max_seq_len: usize) -> Result<Session>;
 
     /// Start generating `text` with per-request overrides.

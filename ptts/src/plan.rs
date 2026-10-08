@@ -24,6 +24,13 @@ use crate::{Error, Result};
 /// plus slack.
 pub const PROMPT_SEQ_HEADROOM: usize = 512;
 
+/// The most text tokens a chunk may have when [`fit`] cuts for a fixed budget, whatever room
+/// the budget leaves.
+///
+/// A chunk much longer than this outruns the length of speech the model learnt to say in one
+/// go: it stops near that length anyway and skips words to get there.
+pub const MAX_FIT_TOKENS: usize = 200;
+
 /// Frames of audio to generate for a text prompt of `num_tokens` tokens.
 ///
 /// Roughly three tokens per second of speech, plus two seconds of slack,
@@ -141,6 +148,75 @@ pub fn chunks(
     Ok(chunks)
 }
 
+/// Cut every chunk of more than `max` tokens until each piece fits, keeping their order.
+///
+/// [`chunks`] never cuts inside a sentence. A caller with a fixed KV budget, or a fixed number of
+/// prompt rows, cuts what is left over with this, and should keep `max` at or under
+/// [`MAX_FIT_TOKENS`].
+///
+/// A sentence is cut after the comma, semicolon or colon nearest its middle, as long as each side
+/// keeps a quarter of `max`: a piece of a few words reads badly. The piece before the cut keeps
+/// that mark, so [`prepare_text_prompt`] does not end it with a full stop, and the model does not
+/// read it as a finished sentence. A sentence with no such mark is cut at the word nearest its
+/// middle, and that piece does get the full stop. Every piece starts with a capital letter, but
+/// otherwise holds the same words the sentence did. A single word longer than `max` cannot be
+/// cut and is left as it is, for the caller to refuse.
+pub fn fit(
+    chunks: Vec<Chunk>,
+    max: usize,
+    tokenizer: &dyn Tokenizer,
+    frame_rate: f64,
+) -> Result<Vec<Chunk>> {
+    let mut fitted = Vec::with_capacity(chunks.len());
+    let mut todo: Vec<Chunk> = chunks.into_iter().rev().collect();
+    while let Some(chunk) = todo.pop() {
+        let words: Vec<&str> = chunk.text.split_whitespace().collect();
+        if chunk.tokens.len() <= max || words.len() < 2 {
+            fitted.push(chunk);
+            continue;
+        }
+        let (a, b) = words.split_at(cut(&words, max.div_ceil(4), tokenizer)?);
+        for half in [b, a] {
+            todo.push(Chunk::new(half.join(" "), tokenizer, frame_rate)?);
+        }
+    }
+    Ok(fitted)
+}
+
+/// Where to cut `words`, as the number of words before the cut: after the clause mark nearest
+/// the middle in tokens that leaves `min_side` tokens on each side, else after the word nearest
+/// the middle. Takes at least two words, and always leaves at least one on each side.
+fn cut(words: &[&str], min_side: usize, tokenizer: &dyn Tokenizer) -> Result<usize> {
+    // `ends[i]` is the number of tokens in `words[..=i]`.
+    let mut ends = Vec::with_capacity(words.len());
+    let mut total = 0;
+    for word in words {
+        total += tokenizer.encode(word)?.len();
+        ends.push(total);
+    }
+    let inner = || ends[..words.len() - 1].iter().copied().enumerate();
+    let imbalance = |&(_, end): &(usize, usize)| end.abs_diff(total - end);
+    // A clause mark can sit inside closing quotes or brackets: `"yes,"`, `“yes,”`, `oui,»`.
+    let closers = ['"', '\'', ')', ']', '”', '’', '»'];
+    let clause = inner()
+        .filter(|&(i, end)| {
+            words[i].trim_end_matches(closers).ends_with([',', ';', ':'])
+                && end >= min_side
+                && total - end >= min_side
+        })
+        .min_by_key(imbalance);
+    let (i, _) = clause
+        .or_else(|| inner().min_by_key(imbalance))
+        .ok_or_else(|| Error::invalid_argument("nothing to cut: fewer than two words"))?;
+    Ok(i + 1)
+}
+
+/// The most text tokens one chunk can have when `room` KV slots are left after the voice prompt:
+/// the largest `n` with `n + frame_budget(n, frame_rate) <= room`.
+pub fn max_tokens_for(room: usize, frame_rate: f64) -> usize {
+    (0..=room).rev().find(|&n| n + frame_budget(n, frame_rate) <= room).unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +313,70 @@ mod tests {
     fn empty_text_is_an_error() {
         let err = chunks(&Words::default(), "   ", Normalize::OFF, 50, 12.5).unwrap_err();
         assert!(matches!(err, Error::InvalidArgument(_)), "{err:?}");
+    }
+
+    fn fit_text(text: &str, max: usize) -> Vec<Chunk> {
+        let tok = Words::default();
+        let chunk = Chunk::new(text.to_string(), &tok, 12.5).unwrap();
+        fit(vec![chunk], max, &tok, 12.5).unwrap()
+    }
+
+    /// The pieces as the model reads them.
+    fn prompts(chunks: &[Chunk]) -> Vec<String> {
+        chunks.iter().map(|c| prepare_text_prompt(&c.text).0).collect()
+    }
+
+    #[test]
+    fn fit_cuts_after_the_middle_comma_without_a_full_stop() {
+        let chunks = fit_text("one two three four five, six seven eight nine ten eleven twelve", 8);
+        assert_eq!(
+            prompts(&chunks),
+            ["One two three four five,", "Six seven eight nine ten eleven twelve."]
+        );
+    }
+
+    #[test]
+    fn fit_passes_over_a_comma_that_would_leave_a_tiny_piece() {
+        let chunks = fit_text("one, two three four five six seven eight", 5);
+        assert_eq!(prompts(&chunks), ["One, two three four.", "Five six seven eight."]);
+    }
+
+    #[test]
+    fn fit_counts_a_comma_inside_closing_quotes() {
+        let text = "one two three four \"five,\" six seven eight nine ten eleven twelve";
+        assert_eq!(
+            prompts(&fit_text(text, 8)),
+            ["One two three four \"five,\"", "Six seven eight nine ten eleven twelve."]
+        );
+    }
+
+    #[test]
+    fn fit_keeps_the_words_in_order_and_every_piece_fits() {
+        let words: Vec<String> =
+            (0..60).map(|i| if i % 7 == 6 { format!("w{i},") } else { format!("w{i}") }).collect();
+        let text = words.join(" ");
+        let chunks = fit_text(&text, 6);
+        assert!(chunks.iter().all(|c| c.tokens.len() <= 6));
+        assert_eq!(chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join(" "), text);
+    }
+
+    #[test]
+    fn fit_leaves_chunks_that_fit_and_single_words_alone() {
+        let tok = Words::default();
+        let planned = chunks(&tok, "one two. three four.", Normalize::OFF, 3, 12.5).unwrap();
+        let texts_before: Vec<String> = planned.iter().map(|c| c.text.clone()).collect();
+        assert_eq!(texts(&fit(planned, 3, &tok, 12.5).unwrap()), texts_before);
+        assert_eq!(texts(&fit_text("one", 0)), ["one"]);
+    }
+
+    #[test]
+    fn max_tokens_for_is_the_largest_chunk_that_fits() {
+        assert_eq!(max_tokens_for(0, 12.5), 0);
+        for room in [30usize, 100, 796, 3971] {
+            let n = max_tokens_for(room, 12.5);
+            assert!(n + frame_budget(n, 12.5) <= room, "room = {room}");
+            assert!(n + 1 + frame_budget(n + 1, 12.5) > room, "room = {room}");
+        }
     }
 
     #[test]

@@ -133,8 +133,8 @@ async fn flush_buffer(
     let text = std::mem::take(text_buffer);
     if let Err(e) = generate_one(app, session, &text, stream_id_now, encoder, reply_tx).await {
         tracing::warn!(error = %e, stream_id = stream_id_now, "generation failed");
-        // A single sentence too long for the session's KV budget is the request's
-        // fault, not the server's.
+        // Text the session's KV budget cannot hold even once cut, such as one
+        // enormous word, is the request's fault, not the server's.
         let code = match e.downcast_ref::<ptts::Error>() {
             Some(ptts::Error::SeqBudgetExceeded { .. }) => error_codes::BAD_REQUEST,
             _ => error_codes::INTERNAL,
@@ -250,8 +250,9 @@ async fn generate_one(
 
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
     // One request is one stream id, but it is spoken in sentence chunks as the
-    // other frontends speak it: as a single chunk, a long request would need
-    // more KV slots than the session holds.
+    // other frontends speak it, and a sentence too long for the session is cut:
+    // as a single chunk, a long request would need more KV slots than the
+    // session holds.
     let stream = session.stream_seeded(text, seed)?;
     // The generation threads are `Synth`'s; this one just moves chunks onto the
     // tokio channel so the socket writer stays async.
