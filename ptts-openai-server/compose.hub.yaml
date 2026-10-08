@@ -9,7 +9,8 @@ services:
       PTTS_REVISION: "${PTTS_REVISION:-main}"
       PTTS_LANG: "${PTTS_LANG:?Set PTTS_LANG to a supported normalization language}"
       PTTS_QUANT: q8
-      HF_TOKEN: "${HF_TOKEN:-}"
+      # Pass through authentication only when it is set on the host.
+      HF_TOKEN:
       HF_HOME: /home/phonon/.cache/huggingface
     volumes:
       - model-cache:/home/phonon/.cache/huggingface

@@ -24,7 +24,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libmp3lame0 libopus0 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 phonon \
-    && install -d -o phonon -g phonon /home/phonon/.cache/huggingface
+    && install -d -o phonon -g phonon /home/phonon/.cache /home/phonon/.cache/huggingface
 COPY --from=build /usr/local/bin/ptts-openai-server /usr/local/bin/
 LABEL org.opencontainers.image.source="https://github.com/gradium-ai/xn-ptts" \
       org.opencontainers.image.description="OpenAI-compatible text-to-speech server for Phonon"

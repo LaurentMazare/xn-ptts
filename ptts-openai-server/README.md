@@ -14,7 +14,7 @@ docker run -p 8880:8880 -v "$MODEL_DIR:/models:ro" \
 
 The image contains the server and no model weights. It is built for `linux/amd64` (an x86 CPU with AVX2) and `linux/arm64`. Every model supplies its own `config.json` and `tokenizer.json`.
 
-To download from HF instead, set `PTTS_CONFIG=OWNER/MODEL` and `PTTS_REVISION` to the desired revision. Set `HF_TOKEN` for a private repo. The image uses `/home/phonon/.cache/huggingface` as its writable `HF_HOME`. The Hub Compose file mounts a named volume there, so downloads survive container replacement:
+To download from HF instead, set `PTTS_CONFIG=OWNER/MODEL` and `PTTS_REVISION` to the desired revision. Set `HF_TOKEN` for a private repo. The image uses `/home/phonon/.cache/huggingface` as its writable `HF_HOME`. The Hub Compose file mounts a named volume there, so downloads survive container replacement.
 
 Replace `OWNER/MODEL` and `COMMIT_SHA` with the repo and revision you want to run.
 
@@ -24,6 +24,8 @@ export PTTS_REVISION=COMMIT_SHA
 # For a private repo, also set HF_TOKEN in your environment.
 docker compose -f ptts-openai-server/compose.hub.yaml up
 ```
+
+The Hub Compose file requires an image release that includes this writable cache directory; earlier images may create a cache mount owned by root. `PTTS_REVISION` defaults to `main`, so the cache retains files but does not freeze the checkpoint version. Set a commit revision for a fixed checkpoint.
 
 The cache remains after `docker compose down`; `down --volumes` deletes it. Use `PTTS_IMAGE=ghcr.io/gradium-ai/ptts-openai-server:<version>` to select a release in either Compose file. First startup downloads and loads the checkpoint; follow progress with `docker compose -f ptts-openai-server/compose.hub.yaml logs -f`.
 
