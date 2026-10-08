@@ -68,6 +68,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Load the model once and reuse it. `tts.say` returns the whole waveform as mono `f32` samples at `tts.sample_rate()`. `tts.stream(text)?` is an iterator of `Result<Vec<f32>>` chunks, yielded as they are generated, for playback that starts before the sentence is finished. Select a registered voice through `SpeechOptions::voice`; the checkpoint resolver discovers its file. Build with `--release`: a debug build is far too slow for realtime.
 
+Long text is grouped at sentence boundaries, usually aiming for 50 text tokens per chunk. A single sentence may exceed that target. Sentences over 200 tokens are split at a sentence or clause mark when possible, otherwise at a word boundary. An indivisible piece over 200 tokens returns an input error before the KV cache is allocated. Each spoken piece starts again from the selected voice prompt.
+
+For repeated requests in one voice, `tts.session_default(&SpeechOptions::default())?` keeps a primed session with a budget calculated from that voice and the configured chunk target. Use `tts.session(&options, max_seq_len)?` when you need to set the KV budget yourself.
+
 ## 4. Use it from Python
 
 Install the package from your checkout into your project. This compiles the Rust code, so it needs Rust installed:

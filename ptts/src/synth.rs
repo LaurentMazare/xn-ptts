@@ -652,6 +652,19 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
         Ok(Session(Box::new(self.session_at(&resolve(&self.defaults, opts)?, max_seq_len)?)))
     }
 
+    fn session_default(&self, opts: &SpeechOptions) -> Result<Session> {
+        let settings = resolve(&self.defaults, opts)?;
+        let tokens = settings.max_tokens_per_chunk.min(plan::MAX_FIT_TOKENS);
+        let prompt = match self.voice_for(settings.voice.as_deref())? {
+            Some((_, voice)) => voice.emb.dim(1usize)?,
+            None => 0,
+        };
+        let seq_budget = prompt.max(plan::PROMPT_SEQ_HEADROOM)
+            + tokens
+            + plan::frame_budget(tokens, self.cfg.mimi.frame_rate);
+        Ok(Session(Box::new(self.session_at(&settings, seq_budget)?)))
+    }
+
     fn stream_with(&self, text: &str, opts: &SpeechOptions) -> Result<SpeechStream> {
         let settings = resolve(&self.defaults, opts)?;
         let rng = Box::new(NormalRng::new(settings.temperature, settings.seed)?);
@@ -671,6 +684,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
             text,
             settings.max_tokens_per_chunk,
             self.normalize,
+            Some(plan::MAX_FIT_TOKENS),
         )?;
         // A one-shot call is a session sized to this text and dropped afterwards,
         // so there is one generation path rather than two. The voice prompt gets its
@@ -697,7 +711,8 @@ fn grow<Q: BackendQ>(prefix: &TTSState<Q>, seq_budget: usize) -> Result<TTSState
     Ok(TTSState { flow_lm_state: crate::flow_lm::FlowLMState { transformer_state, conditions } })
 }
 
-/// Split `text` into chunks and work out the budgets for each.
+/// Split `text` into chunks and work out the budgets for each, cutting any chunk of more than
+/// `fit_to` tokens with [`plan::fit`].
 ///
 /// Free rather than a method because both [`Synth`] and [`Session`] need
 /// it, and it depends only on the tokenizer inside the model and the codec's
@@ -708,6 +723,7 @@ fn plan_chunks<Q: BackendQ>(
     text: &str,
     max_tokens_per_chunk: usize,
     normalize: Normalize,
+    fit_to: Option<usize>,
 ) -> Result<Vec<Chunk>> {
     let tokenizer = match model.flow_lm.conditioner.tokenizer.as_ref() {
         Some(tokenizer) => tokenizer.as_ref(),
@@ -719,7 +735,11 @@ fn plan_chunks<Q: BackendQ>(
             ));
         }
     };
-    plan::chunks(tokenizer, text, normalize, max_tokens_per_chunk, frame_rate)
+    let chunks = plan::chunks(tokenizer, text, normalize, max_tokens_per_chunk, frame_rate)?;
+    match fit_to {
+        Some(max) => plan::fit_or_error(chunks, max, tokenizer, frame_rate),
+        None => Ok(chunks),
+    }
 }
 
 /// The generic session behind [`Session`], whose docs cover its concurrency rules.
@@ -751,12 +771,20 @@ impl<Q: BackendQ> SessionOf<Q> {
         text: &str,
         rng: Box<dyn crate::flow_lm::Rng + Send>,
     ) -> Result<SpeechStream> {
+        // The budget is fixed, so a sentence too long for it is cut rather than refused, and
+        // never left longer than the model speaks well.
+        let room = self.seq_budget.saturating_sub(self.prompt_len);
+        let fit_to = plan::max_tokens_for(room, self.frame_rate).min(plan::MAX_FIT_TOKENS);
+        // With no room for even an empty chunk, cutting cannot help: skip it, so the budget
+        // check reports what the text actually needs.
+        let fit_to = (fit_to > 0).then_some(fit_to);
         let chunks = plan_chunks(
             &self.model,
             self.frame_rate,
             text,
             self.max_tokens_per_chunk,
             self.normalize,
+            fit_to,
         )?;
         self.stream_chunks(chunks, rng)
     }
@@ -1562,6 +1590,23 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
 
     /// Prime a voice once and keep it, for callers that generate repeatedly.
     ///
+    /// The budget covers the configured token target, the selected voice prompt and the
+    /// corresponding frame limit. At the default 50-token target and 12.5 Hz, it reserves at
+    /// least 796 KV positions. Longer sentences are cut to fit the session's budget.
+    /// Use [`Self::session`] to choose a fixed budget explicitly.
+    ///
+    /// ```no_run
+    /// # fn main() -> ptts::Result<()> {
+    /// # let tts: ptts::synth::Synth = todo!();
+    /// let session = tts.session_default(&ptts::synth::SpeechOptions::default())?;
+    /// let pcm = session.say("Hello world")?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn session_default(&self, opts: &SpeechOptions) -> Result<Session>;
+
+    /// Prime a voice with an explicit KV budget, for callers that generate repeatedly.
+    ///
     /// ```no_run
     /// # fn main() -> ptts::Result<()> {
     /// # let tts: ptts::synth::Synth = todo!();
@@ -1575,10 +1620,10 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
     ///
     /// `max_seq_len` is the KV budget, allocated up front and held until the
     /// session is dropped. At 12.5 Hz a full [`MAX_TOKENS_PER_CHUNK`]-token
-    /// chunk needs 796, so 1024 covers any
-    /// single chunk; longer text is split into chunks of that size rather than
-    /// needing more. Text that would need more is rejected rather than silently
-    /// re-primed.
+    /// chunk needs 796, so 1024 covers the usual target. Further sentences use
+    /// the same cache. A single sentence too long for the budget, or longer than
+    /// [`plan::MAX_FIT_TOKENS`], is cut with [`plan::fit`]; an indivisible chunk
+    /// that still exceeds either limit is rejected.
     fn session(&self, opts: &SpeechOptions, max_seq_len: usize) -> Result<Session>;
 
     /// Start generating `text` with per-request overrides.

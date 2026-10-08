@@ -286,7 +286,8 @@ where
             xn::bail!("this model was loaded without a tokenizer")
         };
         let frame_rate = cfg.mimi.frame_rate;
-        Ok(plan::chunks(tokenizer, text, normalize, MAX_TOKENS_PER_CHUNK, frame_rate)?)
+        let chunks = plan::chunks(tokenizer, text, normalize, MAX_TOKENS_PER_CHUNK, frame_rate)?;
+        Ok(plan::fit_or_error(chunks, plan::MAX_FIT_TOKENS, tokenizer, frame_rate)?)
     }
 
     fn next_chunk(&mut self) -> Result<Option<usize>> {

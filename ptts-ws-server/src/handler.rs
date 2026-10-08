@@ -133,7 +133,15 @@ async fn flush_buffer(
     let text = std::mem::take(text_buffer);
     if let Err(e) = generate_one(app, session, &text, stream_id_now, encoder, reply_tx).await {
         tracing::warn!(error = %e, stream_id = stream_id_now, "generation failed");
-        send_error(reply_tx, error_codes::INTERNAL, format!("generation failed: {e}"))?;
+        // Text the session cannot speak, such as one enormous word its KV budget
+        // cannot hold even once cut, is the request's fault, not the server's.
+        let code = match e.downcast_ref::<ptts::Error>() {
+            Some(ptts::Error::SeqBudgetExceeded { .. } | ptts::Error::InvalidArgument(_)) => {
+                error_codes::BAD_REQUEST
+            }
+            _ => error_codes::INTERNAL,
+        };
+        send_error(reply_tx, code, format!("generation failed: {e}"))?;
     }
     Ok(())
 }
@@ -186,7 +194,12 @@ async fn handle_setup(
     tracing::info!(?voice_name, "starting new TTS session");
     // Conditioning on the voice happens once here, not per request: every
     // generation below clones this primed state.
-    let opts = SpeechOptions::default().voice(voice_name.clone());
+    // Sentences are grouped up to the most a session speaks in one chunk, not
+    // the usual few dozen tokens: every chunk boundary adds a pause, and a
+    // request that fits in one chunk should be spoken as one.
+    let opts = SpeechOptions::default()
+        .voice(voice_name.clone())
+        .max_tokens_per_chunk(ptts::plan::MAX_FIT_TOKENS);
     let session = match app.synth.session(&opts, app.max_seq_len) {
         Ok(session) => session,
         Err(e) => {
@@ -233,25 +246,21 @@ async fn generate_one(
 ) -> Result<()> {
     use base64::Engine;
 
-    // One request is one utterance: prepare and tokenize it here rather than
-    // letting `Session::stream` split it on sentence boundaries, which is what
-    // this server did before and what its stream ids assume. Normalization is
-    // the session's, and runs before `prepare_text_prompt`.
-    let text = session.normalization().apply(text);
     // Normalization drops whole classes of characters, so a buffer that was
     // non-empty when it was flushed can be empty here: emoji or quotes on their
-    // own. There is nothing to say, and an empty token list would come back to
-    // the client as an INTERNAL error rather than as silence.
-    if text.trim().is_empty() {
+    // own. There is nothing to say, and empty text would come back to the
+    // client as an INTERNAL error rather than as silence.
+    if session.normalization().apply(text).trim().is_empty() {
         return Ok(());
     }
-    let (prepared, frames_after_eos) = ptts::tts_model::prepare_text_prompt(&text);
-    let tokens = session.tokenize(&prepared)?;
     let seed = app.seed_base ^ (stream_id as u64).wrapping_mul(0x9E3779B97F4A7C15);
-    let rng = Box::new(ptts::flow_lm::NormalRng::new(app.temperature, seed)?);
 
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
-    let stream = session.stream_tokens(tokens, frames_after_eos, rng)?;
+    // One request is one stream id, but it is spoken in sentence chunks as the
+    // other frontends speak it, and a sentence too long for the session is cut:
+    // as a single chunk, a long request would need more KV slots than the
+    // session holds.
+    let stream = session.stream_seeded(text, seed)?;
     // The generation threads are `Synth`'s; this one just moves chunks onto the
     // tokio channel so the socket writer stays async.
     let join = tokio::task::spawn_blocking(move || -> Result<()> {

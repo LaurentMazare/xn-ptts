@@ -96,35 +96,26 @@ impl Engine {
     /// Split `text` into chunks the prefill graph takes.
     ///
     /// The chunks every frontend makes, from [`ptts::plan::chunks`], with one addition the graph
-    /// forces: it has a fixed number of rows, so a single sentence longer than that is split
-    /// again at its middle word. The tokenizer's ids per word do not depend on the words around
-    /// them, so that loses nothing but the prosody across the cut.
+    /// forces: it has a fixed number of rows, so a single sentence longer than that is cut by
+    /// [`ptts::plan::fit`].
     fn plan(&self, text: &str) -> Result<Vec<Chunk>, String> {
         let max = self.phonon.max_tokens();
+        // A bundle exported with a large `--max-tokens` would otherwise let through pieces
+        // longer than the model says in one go.
+        let fit_max = max.min(ptts::plan::MAX_FIT_TOKENS);
         let planned = ptts::plan::chunks(&self.tokenizer, text, self.normalize, max, FRAME_RATE)
+            .and_then(|chunks| ptts::plan::fit(chunks, fit_max, &self.tokenizer, FRAME_RATE))
             .map_err(|e| e.to_string())?;
         let mut chunks = Vec::new();
-        let mut todo: Vec<Chunk> = planned.into_iter().rev().collect();
-        while let Some(chunk) = todo.pop() {
-            if chunk.tokens.is_empty() {
-                continue;
-            }
-            if chunk.tokens.len() <= max {
-                chunks.push(chunk);
-                continue;
-            }
-            let words: Vec<&str> = chunk.text.split_whitespace().collect();
-            if words.len() < 2 {
+        for chunk in planned.into_iter().filter(|c| !c.tokens.is_empty()) {
+            // Only a single word that is too long is left uncut.
+            if chunk.tokens.len() > max {
                 return Err(format!(
                     "one word is {} tokens, over the {max} the model takes",
                     chunk.tokens.len()
                 ));
             }
-            let (a, b) = words.split_at(words.len() / 2);
-            for half in [b, a] {
-                let half = Chunk::new(half.join(" "), &self.tokenizer, FRAME_RATE);
-                todo.push(half.map_err(|e| e.to_string())?);
-            }
+            chunks.push(chunk);
         }
         Ok(chunks)
     }
