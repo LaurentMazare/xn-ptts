@@ -195,7 +195,9 @@ jobs:
           cat ./*.sha256 SHA256SUMS-apple > SHA256SUMS
           sha256sum --check SHA256SUMS
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --draft --title "$TAG" \
+            release_args=()
+            case "$TAG" in *-*) release_args=(--prerelease) ;; esac
+            gh release create "$TAG" --verify-tag --draft "${release_args[@]}" --title "$TAG" \
               --notes 'Release artifacts are being prepared. Review the release notes before publishing.'
           fi
           python ../scripts/homebrew-cli.py .

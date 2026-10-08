@@ -1,11 +1,15 @@
 # ptts for Python
 
-Python bindings for the [Phonon Rust runtime](../README.md). For this preview, the package is built from this repository and reads the model package supplied by Gradium.
-
-Set `MODEL_DIR` as described in the [root README](../README.md#1-set-up). Then, from the repository root:
+Python bindings for the [Phonon Rust runtime](https://github.com/gradium-ai/xn-ptts). Install the runtime preview:
 
 ```bash
-uv run --project ptts-pyo3 --locked python - <<'PY'
+pip install ptts==0.4.0rc1
+```
+
+Model weights are supplied separately. Set `MODEL_DIR` to a local checkpoint directory containing `config.json`, `tokenizer.json`, weights, and voice files. Then:
+
+```bash
+MODEL_DIR=/path/to/model python - <<'PY'
 import os
 import ptts
 
@@ -15,9 +19,9 @@ tts.save("out.wav", "Hello world")
 PY
 ```
 
-To use it from your own project, install it with `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Either one compiles the Rust code, so it needs Rust installed.
+For a source install, use `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Source builds need Rust installed; supported CPython wheels do not.
 
-`config` must name a local directory, a `config.json`, or a Hugging Face repo ID. There is no default model. Local paths download nothing. Rust examples, Python, and both servers use the [shared checkpoint resolver](../ptts/src/checkpoint.rs). Every checkpoint supplies its own `config.json` and `tokenizer.json`. q8 prefers `model.q8.gguf`; other formats prefer `model.safetensors`. Voices come from `voices/` or `embeddings/`, plus `default-voice.safetensors` as `default`. Hub downloads use the supplied `revision` for all files.
+`config` must name a local directory, a `config.json`, or a Hugging Face repo ID. There is no default model. Local paths download nothing. Rust examples, Python, and both servers use the [shared checkpoint resolver](https://github.com/gradium-ai/xn-ptts/blob/main/ptts/src/checkpoint.rs). Every checkpoint supplies its own `config.json` and `tokenizer.json`. q8 prefers `model.q8.gguf`; other formats prefer `model.safetensors`. Voices come from `voices/` or `embeddings/`, plus `default-voice.safetensors` as `default`. Hub downloads use the supplied `revision` for all files.
 
 `lang` is required: `en`, `fr`, `de`, `es` or `pt` picks how numbers, symbols and abbreviations are spelled out; `none` uses the text as written.
 
@@ -40,10 +44,10 @@ with tts.stream("A longer sentence.", voice=voice) as audio:
 
 ## Command line
 
-The package also provides the `ptts` command. From the repository root:
+The package also provides the `ptts` command:
 
 ```bash
-uv run --project ptts-pyo3 --locked ptts --lang en --quant q8 \
+python -m ptts --lang en --quant q8 \
   --model "$MODEL_DIR" "Hello world" -o out.wav
 ```
 
