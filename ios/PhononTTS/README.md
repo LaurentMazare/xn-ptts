@@ -25,7 +25,7 @@ Keep `tts` and `player` in your app or view state while speech is playing. `play
 
 ## Prepared release package
 
-The Swift package is named `ptts`; its module remains `PhononTTS`. The release workflow produces `ptts-swift-<version>.zip`, a package with a versioned framework URL and its exact checksum, plus `PhononCore.xcframework.zip`. Neither contains model weights.
+The Swift package is named `ptts`; its module remains `PhononTTS`. Existing consumers selecting `.product(name: "PhononTTS", package: ...)` must select `ptts` as the product name; their `import PhononTTS` stays the same. The release workflow produces `ptts-swift-<version>.zip`, a package with a versioned framework URL and its exact checksum, plus `PhononCore.xcframework.zip`. Neither contains model weights.
 
 Once those assets are published on the matching [GitHub Release](https://github.com/gradium-ai/xn-ptts/releases), download and extract the Swift package ZIP and add that folder to Xcode as a local package. Select the `ptts` library product. Swift Package Manager downloads the matching compiled core automatically. Rust and the repository checkout are not needed.
 
@@ -51,7 +51,7 @@ given take their defaults.
 ## 2. Add the package and the models
 
 In Xcode, choose *File, Add Package Dependencies, Add Local*, select `ios/PhononTTS`, and add the
-`PhononTTS` library to your app target. Then add the `phonon-coreml` folder to the target as a
+`ptts` library (module `PhononTTS`) to your app target. Then add the `phonon-coreml` folder to the target as a
 folder reference (a blue folder, not a group) named `Models`.
 
 Core ML compiles each model beside itself, so the models have to be copied out of the read-only

@@ -27,7 +27,7 @@ The Swift download consists of:
 - `PhononCore.xcframework.zip`, the compiled core for iPhone, simulator, and Apple silicon Mac.
 - `ptts-swift-<version>.zip`, the Swift wrapper package with that version's framework URL and exact SHA-256 checksum.
 
-The framework contains code, not model weights. Extract the Swift package and add it to Xcode as a local package, selecting the `ptts` product. Its module is `PhononTTS`. After the framework asset is publicly available, verify a clean consumer can download it and build. A repository-based Swift installation additionally needs the generated release manifest committed at the package root with the correct source path. Do that as a release change using the already-published framework archive, rather than guessing the checksum of a future build.
+The framework contains code, not model weights. Extract the Swift package and add it to Xcode as a local package, selecting the `ptts` product. Its module is `PhononTTS`. Include the library-product rename from `PhononTTS` to `ptts` in the release notes; existing manifest dependencies must select the new product name. After the framework asset is publicly available, verify a clean consumer can download it and build. A repository-based Swift installation additionally needs the generated release manifest committed at the package root with the correct source path. Do that as a release change using the already-published framework archive, rather than guessing the checksum of a future build.
 
 Publish the prepared Core ML model bundle separately with the selected model, its provenance, and license. App developers should be able to download or bundle it without running the exporter.
 

@@ -119,6 +119,9 @@ jobs:
     name: Swift release package
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+      IPHONEOS_DEPLOYMENT_TARGET: '18.0'
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
