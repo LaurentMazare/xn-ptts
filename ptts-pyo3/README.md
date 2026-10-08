@@ -1,6 +1,16 @@
 # ptts for Python
 
-Python bindings for the [Phonon Rust runtime](https://github.com/gradium-ai/xn-ptts). Install the package:
+Python bindings for the [Phonon Rust runtime](https://github.com/gradium-ai/xn-ptts).
+
+To try a q8 checkpoint with [uv](https://docs.astral.sh/uv/), run:
+
+```bash
+uvx ptts --model /path/to/model --lang en --quant q8 "Hello world" -o out.wav
+```
+
+`uvx` handles the isolated Python environment and package dependencies. Model files are supplied separately; `--model` accepts a local checkpoint directory or a Hugging Face repo ID.
+
+To use the Python API in your own environment, install the package:
 
 ```bash
 pip install ptts
