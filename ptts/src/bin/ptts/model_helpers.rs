@@ -1,7 +1,7 @@
-//! Download transport for the native examples.
+//! Download transport for the CLI and native examples.
 //!
 //! Local checkpoint resolution lives in `ptts::checkpoint`.
-//! The library does not download; these examples keep their blocking Hub transport.
+//! The library does not download; these callers keep their blocking Hub transport.
 #![allow(dead_code, unused_imports)]
 
 use anyhow::{Context, Result};
@@ -18,7 +18,7 @@ pub use ptts::tok::Tok;
 pub const LOG_DIRECTIVES: &str =
     "info,xet=warn,xet_client=warn,xet_data=warn,xet_runtime=warn,xet_core_structures=warn";
 
-/// Where the example obtains its checkpoint files.
+/// Where the caller obtains its checkpoint files.
 #[derive(Clone, Copy, Debug)]
 pub enum Source<'a> {
     Dir(&'a Path),

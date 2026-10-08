@@ -1,4 +1,4 @@
-#[path = "model_helpers.rs"]
+#[path = "../src/bin/ptts/model_helpers.rs"]
 mod model_helpers;
 
 use anyhow::{Context, Result};

@@ -9,7 +9,7 @@
 //! up in one call. `--breakdown` instead runs both on this thread, one frame at a time, which
 //! is slower overall but times each stage on its own.
 
-#[path = "model_helpers.rs"]
+#[path = "../src/bin/ptts/model_helpers.rs"]
 mod model_helpers;
 
 use std::time::{Duration, Instant};

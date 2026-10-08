@@ -13,7 +13,7 @@
 //! host keeps. `--max-tokens` is the longest sentence the prefill graph takes; longer text is
 //! split into sentences at run time. Mimi stays f32 and runs on the CPU.
 
-#[path = "model_helpers.rs"]
+#[path = "../src/bin/ptts/model_helpers.rs"]
 mod model_helpers;
 
 use anyhow::{Context, Result};

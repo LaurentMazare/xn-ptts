@@ -8,7 +8,7 @@ Gradium's Phonon checkpoints are the primary integration target and use their ow
 
 ## 1. Set up
 
-You need [Rust](https://rustup.rs) for every path, and [uv](https://docs.astral.sh/uv/) for Python.
+For the source installation below, you need [Rust](https://rustup.rs), and [uv](https://docs.astral.sh/uv/) for Python.
 
 Point `MODEL_DIR` at the model folder, the one holding `config.json`, `model.q8.gguf`, `tokenizer.json` and its voice assets:
 
@@ -16,15 +16,15 @@ Point `MODEL_DIR` at the model folder, the one holding `config.json`, `model.q8.
 export MODEL_DIR=/path/to/model
 ```
 
-Rust examples, Python, and both servers share the [checkpoint resolver](ptts/src/checkpoint.rs). Supply a local model directory or an HF repo explicitly. Each model supplies its own `config.json`, `tokenizer.json`, weights, and voice assets. No model or model config is selected automatically.
+The CLI, Rust examples, Python, and both servers share the [checkpoint resolver](ptts/src/checkpoint.rs). Supply a local model directory or an HF repo explicitly. Each model supplies its own `config.json`, `tokenizer.json`, weights, and voice assets. No model or model config is selected automatically.
 
 ## 2. Run it
 
-With Rust, from the repository root (the first build takes a few minutes):
+Install the `ptts` command from the repository root (the first build takes a few minutes):
 
 ```bash
-cargo run --release -p ptts --example ptts --features hf,audio -- \
-  --lang en --dir "$MODEL_DIR" --quant q8 "Hello world" -o out.wav
+cargo install --path ptts --locked --features cli
+ptts --lang en --dir "$MODEL_DIR" --quant q8 "Hello world" -o out.wav
 ```
 
 With Python, from the repository root (the first run builds the package, a few minutes):
@@ -35,6 +35,8 @@ uv run --project ptts-pyo3 --locked ptts --lang en \
 ```
 
 `--quant q8` runs the model in q8, the format `model.q8.gguf` is stored in. The Rust and Python examples below set q8 too. Loading q8 weights as f32 expands them, which is slower and uses more memory. `--lang` is required. It picks how numbers, symbols and abbreviations are spelled out before synthesis: `en`, `fr`, `de`, `es` or `pt`, or `none` to use the text as written.
+
+The Rust CLI also accepts `--repo <owner/model>` and an optional `--revision <commit>` instead of `--dir`. For a private repo, set `HF_TOKEN` or log in with the Hugging Face CLI. Run `ptts --help` for voice, device, and generation options.
 
 When no voice is specified, native integrations use the checkpoint's configured default, then `default`, then the first registered voice by name. Swift uses its exported bundle's voice selection. For a fixed choice, pass `--voice Freya` to either CLI, `voice="Freya"` to Python, or call `tts.setVoice("Freya")` in Swift.
 
