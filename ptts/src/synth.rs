@@ -762,13 +762,16 @@ impl<Q: BackendQ> SessionOf<Q> {
         // never left longer than the model speaks well.
         let room = self.seq_budget.saturating_sub(self.prompt_len);
         let fit_to = plan::max_tokens_for(room, self.frame_rate).min(plan::MAX_FIT_TOKENS);
+        // With no room for even an empty chunk, cutting cannot help: skip it, so the budget
+        // check reports what the text actually needs.
+        let fit_to = (fit_to > 0).then_some(fit_to);
         let chunks = plan_chunks(
             &self.model,
             self.frame_rate,
             text,
             self.max_tokens_per_chunk,
             self.normalize,
-            Some(fit_to),
+            fit_to,
         )?;
         self.stream_chunks(chunks, rng)
     }

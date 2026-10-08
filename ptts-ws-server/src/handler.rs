@@ -133,10 +133,12 @@ async fn flush_buffer(
     let text = std::mem::take(text_buffer);
     if let Err(e) = generate_one(app, session, &text, stream_id_now, encoder, reply_tx).await {
         tracing::warn!(error = %e, stream_id = stream_id_now, "generation failed");
-        // Text the session's KV budget cannot hold even once cut, such as one
-        // enormous word, is the request's fault, not the server's.
+        // Text the session cannot speak, such as one enormous word its KV budget
+        // cannot hold even once cut, is the request's fault, not the server's.
         let code = match e.downcast_ref::<ptts::Error>() {
-            Some(ptts::Error::SeqBudgetExceeded { .. }) => error_codes::BAD_REQUEST,
+            Some(ptts::Error::SeqBudgetExceeded { .. } | ptts::Error::InvalidArgument(_)) => {
+                error_codes::BAD_REQUEST
+            }
             _ => error_codes::INTERNAL,
         };
         send_error(reply_tx, code, format!("generation failed: {e}"))?;
