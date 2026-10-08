@@ -30,7 +30,8 @@ class TTS:
 
     `config` is a local directory, `config.json`, `ptts-model.json`, a Hugging Face repo id,
     or `None` for the legacy Pocket TTS default. Local paths never download anything;
-    Hub files are downloaded on first use and cached.
+    Hub files are downloaded on first use and cached. `revision` selects a branch, tag,
+    or commit for every Hub file and is only accepted with a Hub source.
 
     `lang` is required and keyword-only: text is normalized before it is tokenized, and the
     spoken forms of `@`, `+` and `=` differ per language, so there is nothing safe to default
@@ -55,6 +56,7 @@ class TTS:
         lang: str | None,
         rewrites: str | None = None,
         conditions: dict[str, str | float] | None = None,
+        revision: str | None = None,
     ) -> None: ...
     @property
     def sample_rate(self) -> int:

@@ -25,20 +25,29 @@ pub const LOG_DIRECTIVES: &str =
 #[derive(Clone, Copy, Debug)]
 pub enum Source<'a> {
     Dir(&'a Path),
-    Hub(&'a str),
+    Hub { repo: &'a str, revision: Option<&'a str> },
 }
 
 pub fn locate(source: Source<'_>, weights: Option<&str>, quant: Quant) -> Result<Checkpoint> {
     match source {
         Source::Dir(dir) => Ok(Checkpoint::resolve(dir, ResolveOptions { quant, weights })?),
-        Source::Hub(repo) => from_hub(repo, weights, quant),
+        Source::Hub { repo, revision } => from_hub(repo, revision, weights, quant),
     }
 }
 
 /// Blocking legacy Hub transport. Manifest-aware Hub sources are the next release work item.
-pub fn from_hub(repo_id: &str, weights: Option<&str>, quant: Quant) -> Result<Checkpoint> {
-    let repo = HubRepo::open(repo_id)?;
-    tracing::info!(?repo_id, "resolving checkpoint on the Hugging Face Hub");
+pub fn from_hub(
+    repo_id: &str,
+    revision: Option<&str>,
+    weights: Option<&str>,
+    quant: Quant,
+) -> Result<Checkpoint> {
+    let repo = HubRepo::open(repo_id, revision)?;
+    tracing::info!(
+        repo_id,
+        revision = revision.unwrap_or("main"),
+        "resolving checkpoint on the Hugging Face Hub"
+    );
     let config = match repo.get_optional("config.json") {
         Some(path) => read_config(&path)?,
         None => TTSConfig::v202601(),
@@ -76,32 +85,47 @@ pub fn from_hub(repo_id: &str, weights: Option<&str>, quant: Quant) -> Result<Ch
 pub struct HubRepo {
     repo: hf_hub::HFRepositorySync<hf_hub::repository::RepoTypeModel>,
     repo_id: String,
+    revision: Option<String>,
 }
 
 impl HubRepo {
     /// The client reads `HF_TOKEN`, `HF_ENDPOINT` and the cache location from the environment,
     /// falling back to the token `huggingface-cli login` stores.
-    pub fn open(repo_id: &str) -> Result<Self> {
+    pub fn open(repo_id: &str, revision: Option<&str>) -> Result<Self> {
         let client = hf_hub::HFClientSync::new().context("cannot reach the Hugging Face Hub")?;
         let (owner, name) = hf_hub::split_id(repo_id);
-        Ok(Self { repo: client.model(owner, name), repo_id: repo_id.to_string() })
+        Ok(Self {
+            repo: client.model(owner, name),
+            repo_id: repo_id.to_string(),
+            revision: revision.map(str::to_owned),
+        })
     }
 
     /// Download `filename`, or find it in the local cache.
     pub fn get(&self, filename: &str) -> Result<PathBuf> {
-        self.repo.download_file().filename(filename).send().map_err(|e| {
-            anyhow::anyhow!(
-                "failed to fetch `{filename}` from `{}`: {e}\n\
+        self.repo
+            .download_file()
+            .filename(filename)
+            .maybe_revision(self.revision.clone())
+            .send()
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to fetch `{filename}` from `{}`: {e}\n\
                  If the repo is gated, accept its terms on huggingface.co and run \
                  `huggingface-cli login` (or set HF_TOKEN).",
-                self.repo_id
-            )
-        })
+                    self.repo_id
+                )
+            })
     }
 
     /// Like [`Self::get`] but maps any failure to `None`, for files that may legitimately be
     /// absent from a given repo layout.
     fn get_optional(&self, filename: &str) -> Option<PathBuf> {
-        self.repo.download_file().filename(filename).send().ok()
+        self.repo
+            .download_file()
+            .filename(filename)
+            .maybe_revision(self.revision.clone())
+            .send()
+            .ok()
     }
 }
