@@ -1,15 +1,16 @@
 # ptts for Python
 
-Python bindings for the [Phonon Rust runtime](https://github.com/gradium-ai/xn-ptts). Install the runtime preview:
+Python bindings for the [Phonon Rust runtime](https://github.com/gradium-ai/xn-ptts). Install the package:
 
 ```bash
-pip install ptts==0.4.0rc1
+pip install ptts
 ```
 
 Model weights are supplied separately. Set `MODEL_DIR` to a local checkpoint directory containing `config.json`, `tokenizer.json`, weights, and voice files. Then:
 
 ```bash
-MODEL_DIR=/path/to/model python - <<'PY'
+export MODEL_DIR=/path/to/model
+python - <<'PY'
 import os
 import ptts
 
