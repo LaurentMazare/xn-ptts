@@ -855,8 +855,8 @@ impl<Q: BackendQ> SessionOf<Q> {
         let mimi_init = self.model.init_mimi_state(1)?;
         let mut post = Chain::from_modules(self.sample_rate(), &self.post_process);
 
-        let (pcm_tx, pcm_rx) = std::sync::mpsc::channel::<Result<Vec<f32>>>();
-        let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Frame<Q>>();
+        let (pcm_tx, pcm_rx) = std::sync::mpsc::sync_channel::<Result<Vec<f32>>>(PCM_QUEUE);
+        let (latent_tx, latent_rx) = std::sync::mpsc::sync_channel::<Frame<Q>>(LATENT_QUEUE);
         // The decoder says when the first frame's audio is out, and the flow-LM waits for it
         // before its second step. Run side by side, the two compete for the device and the
         // first decode, which is all the time to first audio waits on, comes out slower; held
@@ -888,7 +888,8 @@ impl<Q: BackendQ> SessionOf<Q> {
                 // held back for a batch to fill — the first one included.
                 let mut reset_after = false;
                 let mut batch = vec![first];
-                while let Ok(frame) = latent_rx.try_recv() {
+                while batch.len() < DECODE_BATCH {
+                    let Ok(frame) = latent_rx.try_recv() else { break };
                     match frame {
                         // Past a chunk boundary the codec state resets, so the
                         // batch has to stop here and resume on the next frame.
@@ -1049,6 +1050,11 @@ impl Drop for InFlight {
     }
 }
 
+// Fixed queues propagate slow-consumer backpressure through both generation workers.
+const PCM_QUEUE: usize = 4;
+const LATENT_QUEUE: usize = 16;
+const DECODE_BATCH: usize = LATENT_QUEUE;
+
 /// Messages from the flow-LM thread to the decoder thread.
 enum Frame<Q: BackendQ> {
     Latent(Tensor<Q::T, Q::B>),
@@ -1062,7 +1068,7 @@ fn run_backbone<Q: BackendQ>(
     base_state: TTSState<Q>,
     cfg_base: Option<(f32, TTSState<Q>)>,
     mut rng: Box<dyn crate::flow_lm::Rng + Send>,
-    latent_tx: &std::sync::mpsc::Sender<Frame<Q>>,
+    latent_tx: &std::sync::mpsc::SyncSender<Frame<Q>>,
     first_decoded: std::sync::mpsc::Receiver<()>,
 ) -> Result<()> {
     // Taken after the first frame: only the stream's first audio is worth the wait.
@@ -1118,10 +1124,15 @@ fn run_backbone<Q: BackendQ>(
 /// worth, or several when the decoder finds more than one frame already queued
 /// and decodes them together. The iterator ends when generation finishes; an
 /// `Err` item is terminal.
+///
+/// Generation runs ahead only while its fixed audio and latent buffers have room.
+/// Leaving the stream unread pauses generation once they fill; consuming audio
+/// lets it resume. Iteration and cleanup block, including waiting for the current
+/// model operation on cancellation or error. Use a blocking thread in async code.
 pub struct SpeechStream {
-    /// `Option` so [`Drop`] can release it *before* joining: the channel is
-    /// unbounded, so a worker only notices it should stop once the receiver is
-    /// gone, and fields drop after `Drop::drop` has run.
+    /// `Option` so [`Drop`] can release it before joining: closing this receiver
+    /// wakes a decoder blocked on output, which closes the latent receiver
+    /// and wakes the backbone in turn.
     rx: Option<std::sync::mpsc::Receiver<Result<Vec<f32>>>>,
     sample_rate: u32,
     failed: bool,
@@ -1134,6 +1145,16 @@ impl SpeechStream {
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
+
+    fn join_workers(&mut self) -> bool {
+        let mut died = false;
+        if let Some(workers) = self.workers.take() {
+            for worker in workers {
+                died |= worker.join().is_err();
+            }
+        }
+        died
+    }
 }
 
 /// Joining on drop is what makes a session's in-flight flag exact: dropping the
@@ -1145,11 +1166,7 @@ impl Drop for SpeechStream {
         // Releasing the receiver first is what stops the workers; joining
         // before that would wait for the whole generation.
         self.rx.take();
-        if let Some(workers) = self.workers.take() {
-            for worker in workers {
-                let _ = worker.join();
-            }
-        }
+        self.join_workers();
     }
 }
 
@@ -1163,15 +1180,16 @@ impl Iterator for SpeechStream {
         match self.rx.as_ref()?.recv() {
             Ok(Err(e)) => {
                 self.failed = true;
-                self.workers.take();
+                self.rx.take();
+                self.join_workers();
                 Some(Err(e))
             }
             Ok(ok) => Some(ok),
             // Every sender dropped: generation finished, or a worker died.
             Err(_) => {
                 self.failed = true;
-                let workers = self.workers.take()?;
-                let died = workers.into_iter().any(|h| h.join().is_err());
+                self.workers.as_ref()?;
+                let died = self.join_workers();
                 if died {
                     Some(Err(Error::Tensor(xn::Error::msg(
                         "a generation worker panicked; the audio is incomplete",
@@ -1608,6 +1626,9 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
     fn say_with(&self, text: &str, opts: &SpeechOptions) -> Result<Vec<f32>>;
 
     /// Start generating `text`, yielding PCM as the decoder produces it.
+    ///
+    /// Generation pauses once the bounded buffers fill if the stream is unread.
+    /// Consuming audio lets it resume; dropping the stream stops and joins its workers.
     fn stream(&self, text: &str) -> Result<SpeechStream>;
 
     /// Prime a voice once and keep it, for callers that generate repeatedly.
@@ -1650,9 +1671,10 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
 
     /// Start generating `text` with per-request overrides.
     ///
-    /// Generation runs on two background threads — one for the flow-LM, one for
-    /// the Mimi decoder — so decoding overlaps the next backbone step. Dropping
-    /// the returned [`SpeechStream`] stops both.
+    /// Generation runs on two background threads: one for the flow-LM, one for
+    /// the Mimi decoder, so decoding overlaps the next backbone step. Generation
+    /// pauses once the bounded buffers fill if the stream is unread, and resumes
+    /// as audio is consumed. Dropping the returned [`SpeechStream`] stops and joins both.
     fn stream_with(&self, text: &str, opts: &SpeechOptions) -> Result<SpeechStream>;
 
     /// As [`Self::stream_with`], but with an explicit noise source.
@@ -1692,6 +1714,9 @@ pub trait SessionApi: sealed::Sealed + Send + Sync {
     fn say(&self, text: &str) -> Result<Vec<f32>>;
 
     /// Synthesize `text`, yielding PCM as the decoder produces it.
+    ///
+    /// Generation pauses once the bounded buffers fill if the stream is unread.
+    /// Consuming audio lets it resume; dropping the stream stops and joins its workers.
     fn stream(&self, text: &str) -> Result<SpeechStream>;
 
     /// As [`Self::stream`], with an explicit seed for this request.
@@ -1709,6 +1734,8 @@ pub trait SessionApi: sealed::Sealed + Send + Sync {
     fn tokenize(&self, text: &str) -> Result<Vec<u32>>;
 
     /// Synthesize from tokens produced elsewhere, as one chunk.
+    ///
+    /// Generation uses the bounded buffers and cleanup described on [`SpeechStream`].
     ///
     /// `frames_after_eos` is the tail [`crate::tts_model::prepare_text_prompt`] would have
     /// chosen: 3 for a very short prompt, 1 otherwise.
@@ -1903,6 +1930,67 @@ mod tests {
             flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok(),
             "and the next generation must be able to claim it"
         );
+    }
+
+    #[test]
+    fn dropping_a_stream_unblocks_and_joins_both_workers() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (pcm_tx, pcm_rx) = mpsc::sync_channel(0);
+        let (latent_tx, latent_rx) = mpsc::sync_channel(1);
+        let (full_tx, full_rx) = mpsc::sync_channel(1);
+        let backbone = std::thread::spawn(move || {
+            latent_tx.send(()).unwrap();
+            latent_tx.send(()).unwrap();
+            full_tx.send(()).unwrap();
+            // The decoder is blocked on PCM output and the latent queue is full.
+            assert!(latent_tx.send(()).is_err());
+        });
+        let decoder = std::thread::spawn(move || {
+            while latent_rx.recv().is_ok() {
+                if pcm_tx.send(Ok(vec![0.1])).is_err() {
+                    return;
+                }
+            }
+        });
+        full_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let stream = SpeechStream {
+            rx: Some(pcm_rx),
+            sample_rate: 24000,
+            failed: false,
+            workers: Some([backbone, decoder]),
+        };
+        let (done_tx, done_rx) = mpsc::sync_channel(1);
+        let dropper = std::thread::spawn(move || {
+            drop(stream);
+            done_tx.send(()).unwrap();
+        });
+        done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        dropper.join().unwrap();
+    }
+
+    #[test]
+    fn a_terminal_stream_error_closes_output_and_joins_workers() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stopped = stopped.clone();
+        let worker = std::thread::spawn(move || {
+            tx.send(Err(Error::invalid_argument("failed"))).unwrap();
+            while tx.send(Ok(vec![0.1])).is_ok() {}
+            worker_stopped.store(true, Ordering::Release);
+        });
+        let other = std::thread::spawn(|| {});
+        let mut stream = SpeechStream {
+            rx: Some(rx),
+            sample_rate: 24000,
+            failed: false,
+            workers: Some([worker, other]),
+        };
+        assert!(stream.next().unwrap().is_err());
+        assert!(stopped.load(Ordering::Acquire));
+        assert!(stream.next().is_none());
     }
 
     #[test]
