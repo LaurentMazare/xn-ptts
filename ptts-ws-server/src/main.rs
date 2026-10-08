@@ -119,7 +119,7 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         None => Quant::F32,
         Some(name) => name.parse::<Quant>()?,
     };
-    // Both checks happen before `load_ptts` downloads anything: `SynthBuilder`
+    // Device and weight-format checks run before downloading: `SynthBuilder`
     // would catch them, but only after the checkpoint is on disk.
     quant.check_device(device)?;
     let normalize = args.lang.parse::<Normalize>()?.with_rules(args.rewrites.parse::<Rules>()?);
@@ -127,17 +127,6 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
     for condition in &args.conditions {
         let (name, value) = condition.split_once('=').context("--condition takes NAME=VALUE")?;
         conditions.push((name.to_string(), value.to_string()));
-    }
-    let unavailable = match device {
-        DeviceKind::Cuda if !cfg!(feature = "cuda") => Some("cuda"),
-        DeviceKind::Vulkan if !cfg!(feature = "vulkan") => Some("vulkan"),
-        DeviceKind::Metal if !cfg!(feature = "metal") => Some("metal"),
-        _ => None,
-    };
-    if let Some(name) = unavailable {
-        anyhow::bail!(
-            "--device {name} requested, but this binary was built without --features {name}"
-        );
     }
     model::load_ptts(
         &args.config,

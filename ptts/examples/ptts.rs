@@ -136,13 +136,11 @@ fn main() -> Result<()> {
         },
     };
     let quant = args.quant.as_deref().unwrap_or("f32").parse::<Quant>()?;
-    quant.check_device(args.device.parse::<DeviceKind>()?)?;
+    let device = args.device.parse::<DeviceKind>()?;
+    quant.check_device(device)?;
     let checkpoint = model_helpers::locate(source, args.weights.as_deref(), quant)?;
-    let mut builder = checkpoint
-        .builder(normalize)
-        .device(args.device.parse::<DeviceKind>()?)
-        .temperature(args.temperature)
-        .seed(args.seed);
+    let mut builder =
+        checkpoint.builder(normalize).device(device).temperature(args.temperature).seed(args.seed);
     if let Some(tokenizer) = args.tokenizer.as_deref() {
         builder = builder.tokenizer_file(tokenizer);
     }

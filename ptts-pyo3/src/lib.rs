@@ -308,21 +308,9 @@ impl Tts {
             None => Quant::F32,
             Some(name) => name.parse::<Quant>().py()?,
         };
-        // Both checks happen before resolve() downloads anything; `SynthBuilder`
+        // Device and weight-format checks run before downloading; `SynthBuilder`
         // would catch them, but only once the checkpoint is on disk.
         quant.check_device(device).py()?;
-        let unavailable = match device {
-            DeviceKind::Cuda if !cfg!(feature = "cuda") => Some("cuda"),
-            DeviceKind::Vulkan if !cfg!(feature = "vulkan") => Some("vulkan"),
-            DeviceKind::Metal if !cfg!(feature = "metal") => Some("metal"),
-            _ => None,
-        };
-        if let Some(name) = unavailable {
-            return Err(to_py_err(ptts::Error::Unsupported(format!(
-                "device '{name}' is not available in this build; available: {:?}",
-                available_devices()
-            ))));
-        }
         // Loading reads hundreds of megabytes and runs no Python.
         py.detach(move || {
             let artifacts = resolve(config.as_deref(), revision.as_deref(), quant).py()?;
