@@ -8,7 +8,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use ptts::synth::{SpeechOptions, SpeechStream};
+use ptts::synth::SpeechOptions;
 
 /// OpenAI's limit on `input`.
 const MAX_INPUT_CHARS: usize = 4096;
@@ -133,6 +133,9 @@ pub async fn speech(State(app): State<AppState>, body: Bytes) -> Response {
         // Keep the slot until encoding ends and SpeechStream joins its workers,
         // including when the client disconnects or model startup fails.
         let _permit = permit;
+        if started_tx.is_closed() || tx.is_closed() {
+            return;
+        }
         let stream = match app.synth.stream_with(&input, &opts) {
             Ok(stream) => stream,
             Err(e) => {
@@ -140,7 +143,10 @@ pub async fn speech(State(app): State<AppState>, body: Bytes) -> Response {
                 return;
             }
         };
-        let _ = started_tx.send(Ok(()));
+        if started_tx.send(Ok(())).is_err() {
+            // The handler was cancelled during setup. Dropping the stream joins its workers.
+            return;
+        }
         if let Err(e) = encode(stream, format, frame, sample_rate, &tx) {
             tracing::warn!(error = %e, "speech request failed after it started");
             let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
@@ -169,7 +175,7 @@ pub async fn speech(State(app): State<AppState>, body: Bytes) -> Response {
 /// Encode `stream` frame by frame onto `tx`. Returns early, without error, once the client has
 /// gone: dropping `stream` stops the generation workers.
 fn encode(
-    stream: SpeechStream,
+    stream: impl Iterator<Item = ptts::Result<Vec<f32>>>,
     format: Format,
     frame: usize,
     sample_rate: u32,
@@ -181,7 +187,9 @@ fn encode(
         return Ok(());
     }
     // A chunk can carry several frames, and the Opus encoder wants one at a time.
-    for chunk in stream {
+    let mut stream = stream;
+    while !tx.is_closed() {
+        let Some(chunk) = stream.next() else { break };
         for pcm in chunk?.chunks(frame) {
             if !send(encoder.encode(pcm)?) {
                 return Ok(());
@@ -359,6 +367,42 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let audio = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024).await.unwrap();
         assert!(!audio.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_slow_http_reader_pauses_encoding_and_drop_releases_the_stream() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        struct EndlessAudio(Arc<AtomicUsize>, Arc<AtomicBool>, Arc<tokio::sync::Notify>);
+        impl Iterator for EndlessAudio {
+            type Item = ptts::Result<Vec<f32>>;
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 16 {
+                    self.2.notify_one();
+                }
+                Some(Ok(vec![0.1; 480]))
+            }
+        }
+        impl Drop for EndlessAudio {
+            fn drop(&mut self) {
+                self.1.store(true, Ordering::SeqCst);
+            }
+        }
+        let produced = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let full = Arc::new(tokio::sync::Notify::new());
+        let stream = EndlessAudio(produced.clone(), dropped.clone(), full.clone());
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let producer =
+            tokio::task::spawn_blocking(move || encode(stream, Format::Pcm, 480, PCM_RATE, &tx));
+        tokio::time::timeout(Duration::from_secs(2), full.notified()).await.unwrap();
+        // Sixteen queued frames plus the one blocked on sending.
+        assert_eq!(produced.load(Ordering::SeqCst), 17);
+        drop(rx);
+        tokio::time::timeout(Duration::from_secs(2), producer).await.unwrap().unwrap().unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[test]

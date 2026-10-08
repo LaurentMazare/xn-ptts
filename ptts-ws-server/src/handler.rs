@@ -5,11 +5,25 @@ use anyhow::Result;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use ptts::synth::{Session, SpeechOptions};
+use std::time::Duration;
+use tokio::sync::{mpsc, watch};
+
+#[cfg(test)]
+#[path = "handler_tests.rs"]
+mod buffering_tests;
+
+const REPLY_QUEUE: usize = 16;
+const AUDIO_QUEUE: usize = 4;
+const REQUEST_QUEUE: usize = 16;
+const MAX_INPUT_CHARS: usize = 4096;
+const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn ws_handler(
     State(app): State<AppState>,
     ws: WebSocketUpgrade,
 ) -> axum::response::Response {
+    let ws = ws.max_message_size(MAX_MESSAGE_BYTES);
     use axum::response::IntoResponse;
     let permit = match app.requests.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -36,26 +50,87 @@ pub async fn ws_handler(
 }
 
 async fn serve(socket: WebSocket, app: AppState) -> Result<()> {
-    use futures_util::{SinkExt, StreamExt};
-    let (mut tx, mut rx) = socket.split();
-    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    let forwarder = tokio::spawn(async move {
-        while let Some(reply) = reply_rx.recv().await {
-            let json = serde_json::to_string(&reply)?;
-            if tx.send(Message::Text(json.into())).await.is_err() {
-                break;
+    use futures_util::StreamExt;
+    let (tx, mut rx) = socket.split();
+    let (reply_tx, reply_rx) = mpsc::channel(REPLY_QUEUE);
+    let (request_tx, mut request_rx) = mpsc::channel(REQUEST_QUEUE);
+    let (cancel_tx, mut cancel_rx) = watch::channel(false);
+    let reader_cancel = cancel_tx.clone();
+    // Keep reading independently of generation so a peer Close cancels a running stream.
+    let reader = tokio::spawn(async move {
+        while let Some(msg) = rx.next().await {
+            match msg {
+                Ok(Message::Close(_)) | Err(_) => break,
+                Ok(Message::Ping(_) | Message::Pong(_) | Message::Binary(_)) => continue,
+                Ok(msg) => {
+                    // A full request queue cannot hide a disconnect indefinitely.
+                    if !tokio::time::timeout(SEND_TIMEOUT, request_tx.send(msg))
+                        .await
+                        .is_ok_and(|sent| sent.is_ok())
+                    {
+                        break;
+                    }
+                }
             }
         }
-        let _ = tx.close().await;
-        Ok::<_, anyhow::Error>(())
+        let _ = reader_cancel.send(true);
     });
+    let forwarder = tokio::spawn(forward_replies(tx, reply_rx, cancel_rx.clone(), SEND_TIMEOUT));
 
-    let outcome = run_session(app, &mut rx, &reply_tx).await;
+    let outcome = run_session(app, &mut request_rx, &reply_tx, &mut cancel_rx).await;
+    // run_session has joined any generation before it returns. Normal EOS still drains replies.
+    reader.abort();
+    let _ = reader.await;
     drop(reply_tx);
-    let _ = forwarder.await;
+    let forwarded = forwarder.await?;
+    drop(cancel_tx);
     tracing::info!("websocket session ended");
-    outcome
+    outcome.and(forwarded)
+}
+
+async fn cancelled(cancel: &mut watch::Receiver<bool>) {
+    while !*cancel.borrow_and_update() {
+        if cancel.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+async fn forward_replies<S>(
+    mut socket: S,
+    mut replies: mpsc::Receiver<TtsReply>,
+    mut cancel: watch::Receiver<bool>,
+    timeout: Duration,
+) -> Result<()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    use futures_util::SinkExt;
+    loop {
+        let reply = tokio::select! {
+            biased;
+            _ = cancelled(&mut cancel) => return Ok(()),
+            reply = replies.recv() => match reply {
+                Some(reply) => reply,
+                None => break,
+            },
+        };
+        let json = serde_json::to_string(&reply)?;
+        tokio::select! {
+            biased;
+            _ = cancelled(&mut cancel) => return Ok(()),
+            sent = tokio::time::timeout(timeout, socket.send(Message::Text(json.into()))) => {
+                match sent {
+                    Ok(Ok(())) => {},
+                    Ok(Err(e)) => anyhow::bail!("websocket send failed: {e}"),
+                    Err(_) => anyhow::bail!("websocket client stopped reading for {} seconds", timeout.as_secs()),
+                }
+            }
+        }
+    }
+    let _ = tokio::time::timeout(timeout, socket.close()).await;
+    Ok(())
 }
 
 enum SessionState {
@@ -65,14 +140,22 @@ enum SessionState {
 
 async fn run_session(
     app: AppState,
-    stream: &mut futures_util::stream::SplitStream<WebSocket>,
-    reply_tx: &tokio::sync::mpsc::UnboundedSender<TtsReply>,
+    stream: &mut mpsc::Receiver<Message>,
+    reply_tx: &mpsc::Sender<TtsReply>,
+    cancel: &mut watch::Receiver<bool>,
 ) -> Result<()> {
-    use futures_util::StreamExt;
     let mut sess: SessionState = SessionState::Awaiting;
 
-    while let Some(msg) = stream.next().await {
-        let msg = msg?;
+    loop {
+        let msg = tokio::select! {
+            biased;
+            _ = cancelled(cancel) => return Ok(()),
+            _ = reply_tx.closed() => return Ok(()),
+            msg = stream.recv() => match msg {
+                Some(msg) => msg,
+                None => break,
+            },
+        };
         let text = match msg {
             Message::Text(t) => t,
             Message::Close(_) => return Ok(()),
@@ -81,7 +164,8 @@ async fn run_session(
         let req: TtsRequest = match serde_json::from_str(text.as_str()) {
             Ok(r) => r,
             Err(e) => {
-                send_error(reply_tx, error_codes::BAD_REQUEST, format!("invalid request: {e}"))?;
+                send_error(reply_tx, error_codes::BAD_REQUEST, format!("invalid request: {e}"))
+                    .await?;
                 continue;
             }
         };
@@ -100,31 +184,41 @@ async fn run_session(
                     reply_tx,
                     error_codes::BAD_REQUEST,
                     "expected setup as first message".into(),
-                )?;
+                )
+                .await?;
             }
             (SessionState::Ready { .. }, TtsRequest::Setup { .. }) => {
                 send_error(
                     reply_tx,
                     error_codes::BAD_REQUEST,
                     "session already initialized".into(),
-                )?;
+                )
+                .await?;
             }
             (SessionState::Ready { text_buffer, .. }, TtsRequest::Text { text }) => {
-                text_buffer.push_str(&text);
+                if !append_text(text_buffer, &text) {
+                    send_error(
+                        reply_tx,
+                        error_codes::BAD_REQUEST,
+                        format!("pending text exceeds the {MAX_INPUT_CHARS} character limit; flush first"),
+                    ).await?;
+                }
             }
             (
                 SessionState::Ready { session, text_buffer, stream_id, encoder },
                 TtsRequest::Flush { flush_id },
             ) => {
-                flush_buffer(&app, session, text_buffer, stream_id, encoder, reply_tx).await?;
-                let _ = reply_tx.send(TtsReply::Flushed { flush_id });
+                flush_buffer(&app, session, text_buffer, stream_id, encoder, reply_tx, cancel)
+                    .await?;
+                let _ = reply_tx.send(TtsReply::Flushed { flush_id }).await;
             }
             (
                 SessionState::Ready { session, text_buffer, stream_id, encoder },
                 TtsRequest::EndOfStream,
             ) => {
-                flush_buffer(&app, session, text_buffer, stream_id, encoder, reply_tx).await?;
-                let _ = reply_tx.send(TtsReply::EndOfStream);
+                flush_buffer(&app, session, text_buffer, stream_id, encoder, reply_tx, cancel)
+                    .await?;
+                let _ = reply_tx.send(TtsReply::EndOfStream).await;
                 tracing::info!("websocket stream closed by client (end of stream)");
                 return Ok(());
             }
@@ -140,7 +234,8 @@ async fn flush_buffer(
     text_buffer: &mut String,
     stream_id: &mut u32,
     encoder: &mut Encoder,
-    reply_tx: &tokio::sync::mpsc::UnboundedSender<TtsReply>,
+    reply_tx: &mpsc::Sender<TtsReply>,
+    cancel: &mut watch::Receiver<bool>,
 ) -> Result<()> {
     if text_buffer.is_empty() {
         return Ok(());
@@ -148,7 +243,9 @@ async fn flush_buffer(
     let stream_id_now = *stream_id;
     *stream_id = stream_id.saturating_add(1);
     let text = std::mem::take(text_buffer);
-    if let Err(e) = generate_one(app, session, &text, stream_id_now, encoder, reply_tx).await {
+    if let Err(e) =
+        generate_one(app, session, &text, stream_id_now, encoder, reply_tx, cancel).await
+    {
         tracing::warn!(error = %e, stream_id = stream_id_now, "generation failed");
         // Text the session cannot speak, such as one enormous word its KV budget
         // cannot hold even once cut, is the request's fault, not the server's.
@@ -158,7 +255,7 @@ async fn flush_buffer(
             }
             _ => error_codes::INTERNAL,
         };
-        send_error(reply_tx, code, format!("generation failed: {e}"))?;
+        send_error(reply_tx, code, format!("generation failed: {e}")).await?;
     }
     Ok(())
 }
@@ -169,20 +266,21 @@ async fn handle_setup(
     voice: Option<String>,
     voice_id: Option<String>,
     voice_emb: Option<String>,
-    reply_tx: &tokio::sync::mpsc::UnboundedSender<TtsReply>,
+    reply_tx: &mpsc::Sender<TtsReply>,
 ) -> Result<Option<SessionState>> {
     if voice_emb.as_deref().is_some_and(|s| !s.is_empty()) {
         send_error(
             reply_tx,
             error_codes::NOT_IMPLEMENTED,
             "voice_emb prompts are not yet supported".into(),
-        )?;
+        )
+        .await?;
         return Ok(None);
     }
     let format = match output_format.parse::<Format>() {
         Ok(f) => f,
         Err(e) => {
-            send_error(reply_tx, error_codes::BAD_REQUEST, format!("{e}"))?;
+            send_error(reply_tx, error_codes::BAD_REQUEST, format!("{e}")).await?;
             return Ok(None);
         }
     };
@@ -193,7 +291,8 @@ async fn handle_setup(
                 reply_tx,
                 error_codes::INTERNAL,
                 format!("failed to create audio encoder: {e}"),
-            )?;
+            )
+            .await?;
             return Ok(None);
         }
     };
@@ -205,7 +304,8 @@ async fn handle_setup(
     let voice_name =
         if voice_name == "default" { &app.default_voice } else { voice_name }.to_string();
     if !app.voices.contains(&voice_name) {
-        send_error(reply_tx, error_codes::NOT_FOUND, format!("unknown voice '{voice_name}'"))?;
+        send_error(reply_tx, error_codes::NOT_FOUND, format!("unknown voice '{voice_name}'"))
+            .await?;
         return Ok(None);
     }
     tracing::info!(?voice_name, "starting new TTS session");
@@ -220,7 +320,8 @@ async fn handle_setup(
     let session = match app.synth.session(&opts, app.max_seq_len) {
         Ok(session) => session,
         Err(e) => {
-            send_error(reply_tx, error_codes::INTERNAL, format!("failed to prime voice: {e}"))?;
+            send_error(reply_tx, error_codes::INTERNAL, format!("failed to prime voice: {e}"))
+                .await?;
             return Ok(None);
         }
     };
@@ -234,14 +335,14 @@ async fn handle_setup(
         text_stream_names: vec![],
         request_id,
     };
-    if reply_tx.send(ready).is_err() {
+    if reply_tx.send(ready).await.is_err() {
         anyhow::bail!("reply channel closed before ready");
     }
     if let Some(header) = encoder.header() {
         use base64::Engine;
         let audio = base64::engine::general_purpose::STANDARD.encode(header);
         let header_reply = TtsReply::Audio { audio, start_s: 0.0, stop_s: 0.0, stream_id: 0 };
-        if reply_tx.send(header_reply).is_err() {
+        if reply_tx.send(header_reply).await.is_err() {
             anyhow::bail!("reply channel closed before header");
         }
     }
@@ -259,10 +360,9 @@ async fn generate_one(
     text: &str,
     stream_id: u32,
     encoder: &mut Encoder,
-    reply_tx: &tokio::sync::mpsc::UnboundedSender<TtsReply>,
+    reply_tx: &mpsc::Sender<TtsReply>,
+    cancel: &mut watch::Receiver<bool>,
 ) -> Result<()> {
-    use base64::Engine;
-
     // Normalization drops whole classes of characters, so a buffer that was
     // non-empty when it was flushed can be empty here: emoji or quotes on their
     // own. There is nothing to say, and empty text would come back to the
@@ -272,31 +372,53 @@ async fn generate_one(
     }
     let seed = app.seed_base ^ (stream_id as u64).wrapping_mul(0x9E3779B97F4A7C15);
 
-    let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
-    // One request is one stream id, but it is spoken in sentence chunks as the
-    // other frontends speak it, and a sentence too long for the session is cut:
-    // as a single chunk, a long request would need more KV slots than the
-    // session holds.
+    let (audio_tx, mut audio_rx) = mpsc::channel(AUDIO_QUEUE);
+    // One stream id may contain several sentence chunks, each fitting this session's KV budget.
     let stream = session.stream_seeded(text, seed)?;
-    // The generation threads are `Synth`'s; this one just moves chunks onto the
-    // tokio channel so the socket writer stays async.
-    let join = tokio::task::spawn_blocking(move || -> Result<()> {
-        for chunk in stream {
-            // A send failure means the client went away; dropping `stream`
-            // stops the workers.
-            if audio_tx.send(chunk?).is_err() {
-                break;
-            }
-        }
-        Ok(())
-    });
+    let join = tokio::task::spawn_blocking(move || drain_audio(stream, audio_tx));
+    let outcome =
+        forward_audio(&mut audio_rx, app.frame_size as usize, stream_id, encoder, reply_tx, cancel)
+            .await;
+    // Close before joining: a slow socket can leave the producer blocked on its bounded queue.
+    drop(audio_rx);
+    let generated = join.await?;
+    outcome.and(generated)
+}
 
-    // `SpeechStream` decodes every queued latent in one call, so a chunk can
-    // carry several Mimi frames. The resampled formats build their
-    // `FftFixedInOut` for exactly one `frame_size`, so feed it a frame at a
-    // time rather than whatever the batch happened to be.
-    let frame = app.frame_size as usize;
-    'send: while let Some(pcm) = audio_rx.recv().await {
+fn drain_audio(
+    mut stream: impl Iterator<Item = ptts::Result<Vec<f32>>>,
+    tx: mpsc::Sender<Vec<f32>>,
+) -> Result<()> {
+    while !tx.is_closed() {
+        let Some(chunk) = stream.next() else { break };
+        if tx.blocking_send(chunk?).is_err() {
+            break;
+        }
+    }
+    // Dropping SpeechStream joins both model workers before this task completes.
+    Ok(())
+}
+
+async fn forward_audio(
+    audio_rx: &mut mpsc::Receiver<Vec<f32>>,
+    frame: usize,
+    stream_id: u32,
+    encoder: &mut Encoder,
+    reply_tx: &mpsc::Sender<TtsReply>,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    use base64::Engine;
+    loop {
+        let pcm = tokio::select! {
+            biased;
+            _ = cancelled(cancel) => return Ok(()),
+            _ = reply_tx.closed() => return Ok(()),
+            pcm = audio_rx.recv() => match pcm {
+                Some(pcm) => pcm,
+                None => return Ok(()),
+            },
+        };
+        // A decoded chunk can contain several frames; resampled encoders need one at a time.
         for pcm in pcm.chunks(frame) {
             let encoded = encoder.encode(pcm)?;
             let audio = base64::engine::general_purpose::STANDARD.encode(&encoded.data);
@@ -307,24 +429,26 @@ async fn generate_one(
                     stop_s: encoded.stop_s,
                     stream_id,
                 })
+                .await
                 .is_err()
             {
-                // The client is gone; stop draining entirely, not just this batch.
-                break 'send;
+                return Ok(());
             }
         }
     }
-    drop(audio_rx);
-    join.await??;
-    Ok(())
 }
 
-fn send_error(
-    tx: &tokio::sync::mpsc::UnboundedSender<TtsReply>,
-    code: u32,
-    message: String,
-) -> Result<()> {
+fn append_text(buffer: &mut String, text: &str) -> bool {
+    if buffer.chars().count() + text.chars().count() > MAX_INPUT_CHARS {
+        return false;
+    }
+    buffer.push_str(text);
+    true
+}
+
+async fn send_error(tx: &mpsc::Sender<TtsReply>, code: u32, message: String) -> Result<()> {
     tx.send(TtsReply::Error { message, code })
+        .await
         .map_err(|_| anyhow::anyhow!("reply channel closed"))?;
     Ok(())
 }

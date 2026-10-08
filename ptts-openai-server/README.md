@@ -67,7 +67,7 @@ client.audio.speech.create(model="tts-1", voice="default", input="Hello.").write
 | `speed` | Only `1.0`: the model has no rate control yet, so other values are a 400. |
 | `model`, `instructions`, `stream_format` | Accepted and ignored. The reply is always the audio bytes, streamed as they are generated. |
 
-Errors use OpenAI's shape, `{"error": {"message", "type", "param", "code"}}`, so client SDKs report them as usual. `GET /v1/models` names the loaded checkpoint and `GET /health` answers `{"status": "ok"}`. There is no authentication: an `Authorization` header is ignored. A failure after the audio has started can only cut the response short. A streamed `wav` has no length in its header, which a few strict parsers reject; `mp3` or `pcm` suit those.
+Errors use OpenAI's shape, `{"error": {"message", "type", "param", "code"}}`, so client SDKs report them as usual. `GET /v1/models` names the loaded checkpoint and `GET /health` answers `{"status": "ok"}`. There is no authentication: an `Authorization` header is ignored. A failure after the audio has started can only cut the response short. Audio buffering is bounded through the model workers and HTTP response. A slow reader pauses generation; closing the response cancels generation and releases its workers. A streamed `wav` has no length in its header, which a few strict parsers reject; `mp3` or `pcm` suit those.
 
 ## Clients
 
