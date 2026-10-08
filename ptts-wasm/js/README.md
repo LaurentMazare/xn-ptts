@@ -1,13 +1,13 @@
-# phonon-tts
+# ptts
 
 Text-to-speech that runs in the browser, on the user's device. No server, no API key. It streams speech from an explicitly supplied Phonon checkpoint, compiled to WebAssembly from the [Rust runtime](https://github.com/gradium-ai/xn-ptts).
 
 ```bash
-npm install phonon-tts
+npm install ptts
 ```
 
 ```js
-import { PhononTTS } from 'phonon-tts';
+import { PhononTTS } from 'ptts';
 
 const tts = await PhononTTS.load({
   lang: 'en',

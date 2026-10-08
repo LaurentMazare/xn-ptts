@@ -128,7 +128,7 @@ The [package README](ios/PhononTTS/README.md) covers downloading the models inst
 
 ## 6. Use it in the browser
 
-The `phonon-tts` JavaScript package runs the model in the page, compiled to WebAssembly, in a Web Worker: on the CPU by default, or on the GPU through WebGPU when asked with `device: 'webgpu'` or `'auto'`. Build it from the repository, which needs Rust with the `wasm32-unknown-unknown` target, [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/), Node 22.7 or later, [binaryen](https://github.com/WebAssembly/binaryen/releases) 124 or later, and a pinned nightly toolchain for the package's multithreaded build, which `make threads-toolchain` installs:
+The `ptts` JavaScript package runs the model in the page, compiled to WebAssembly, in a Web Worker: on the CPU by default, or on the GPU through WebGPU when asked with `device: 'webgpu'` or `'auto'`. Build it from the repository, which needs Rust with the `wasm32-unknown-unknown` target, [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/), Node 22.7 or later, [binaryen](https://github.com/WebAssembly/binaryen/releases) 124 or later, and a pinned nightly toolchain for the package's multithreaded build, which `make threads-toolchain` installs:
 
 ```bash
 rustup target add wasm32-unknown-unknown
@@ -138,19 +138,19 @@ brew install binaryen           # or a release from GitHub: distribution package
 cd ptts-wasm
 make threads-toolchain          # once
 make build                      # the package, in ptts-wasm/pkg
-cd pkg && npm pack              # and as a tarball, phonon-tts-<version>.tgz
+cd pkg && npm pack              # and as a tarball, ptts-<version>.tgz
 ```
 
 Install the tarball into your web app, and serve the model folder with the app's static files, here under `/model/`:
 
 ```bash
-npm install /path/to/xn-ptts/ptts-wasm/pkg/phonon-tts-*.tgz
+npm install /path/to/xn-ptts/ptts-wasm/pkg/ptts-*.tgz
 ```
 
 Install the tarball rather than the `pkg` folder: npm links a folder instead of copying it, and Vite's dev server refuses to serve files from outside the app.
 
 ```js
-import { PhononTTS } from 'phonon-tts';
+import { PhononTTS } from 'ptts';
 
 const tts = await PhononTTS.load({
   lang: 'en',

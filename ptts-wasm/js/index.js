@@ -1,4 +1,4 @@
-// phonon-tts: on-device text-to-speech in the browser.
+// ptts: on-device text-to-speech in the browser.
 //
 // `PhononTTS` is the public API. The model runs in a dedicated worker (`worker.js`), so
 // generating never blocks the page; this file only posts requests to it and turns its
@@ -185,7 +185,7 @@ export class PhononTTS {
       e.preventDefault?.();
       // A dead worker never replies: fail what is pending and refuse what comes next, rather
       // than leaving later requests waiting forever.
-      const error = new Error(`phonon-tts worker failed: ${e.message || 'could not start'}`);
+      const error = new Error(`ptts worker failed: ${e.message || 'could not start'}`);
       this.#disposed = true;
       this.#failure = error;
       worker.terminate();

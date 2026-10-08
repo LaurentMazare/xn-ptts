@@ -42,7 +42,7 @@ export async function fetchBytes(url, { cache = true, onProgress } = {}) {
   const stored = store
     ? store.put(url, response.clone()).catch((e) => {
         // Usually the storage quota. Not fatal: the next load downloads again.
-        console.warn(`[phonon-tts] could not cache ${url}: ${e}`);
+        console.warn(`[ptts] could not cache ${url}: ${e}`);
       })
     : null;
 

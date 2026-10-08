@@ -168,5 +168,5 @@ These routes have not been tested here yet; the Kotlin wrapper and the C interfa
 
 ### No native code
 
-To run Phonon in a WebView instead, use the [`phonon-tts`](../ptts-wasm/js/README.md) npm package,
+To run Phonon in a WebView instead, use the [`ptts`](../ptts-wasm/js/README.md) npm package,
 which runs the same model as WebAssembly.

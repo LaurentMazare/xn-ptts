@@ -33,7 +33,7 @@
 </head>
 <body>
 
-<p class="subtitle"><a href="https://github.com/gradium-ai/xn-ptts" target="_blank">Phonon</a> running in the browser via WebAssembly, with the <a href="https://www.npmjs.com/package/phonon-tts" target="_blank">phonon-tts</a> package</p>
+<p class="subtitle"><a href="https://github.com/gradium-ai/xn-ptts" target="_blank">Phonon</a> running in the browser via WebAssembly, with the <a href="https://www.npmjs.com/package/ptts" target="_blank">ptts</a> package</p>
 
 <div class="section">
   <label for="text">Text to speak</label>
@@ -211,7 +211,7 @@ function startVisualizer() {
 }
 
 // ---- TTS ----
-import { PhononTTS, encodeWav, concatPcm } from './phonon-tts/index.js';
+import { PhononTTS, encodeWav, concatPcm } from './ptts/index.js';
 
 // The language the demo normalizes its input as. The package requires one: the spoken forms
 // of `@`, `+` and `=` differ per language, so there is nothing safe to default to.

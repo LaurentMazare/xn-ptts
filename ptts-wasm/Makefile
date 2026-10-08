@@ -23,7 +23,7 @@ THREADS_WASM_PACK = RUSTUP_TOOLCHAIN=$(THREADS_TOOLCHAIN) RUSTFLAGS='$(THREADS_R
 	wasm-pack build --target web --no-pack --out-dir pkg/wasm-threads --out-name phonon_tts --release \
 	-- --features threads,$(FEATURES) -Z build-std=std,panic_abort
 
-# The `phonon-tts` npm package, ready to publish from pkg/: both builds, and the JS around them.
+# The `ptts` npm package, ready to publish from pkg/: both builds, and the JS around them.
 build: check-wasm-opt check-threads-toolchain
 	rm -rf pkg
 	wasm-pack build $(WASM_PACK_ARGS) --release -- --features $(FEATURES)
@@ -66,7 +66,7 @@ threads-toolchain:
 demo: check-model-dir build
 	rm -rf site
 	mkdir -p site
-	cp -r pkg site/phonon-tts
+	cp -r pkg site/ptts
 	cp www/index.html site/
 	ln -s "$(abspath $(MODEL_DIR))" site/model
 	node scripts/demo-model.mjs site/model > site/model.json

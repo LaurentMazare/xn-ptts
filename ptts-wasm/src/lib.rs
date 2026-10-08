@@ -2,7 +2,7 @@
 //!
 //! This is what `wasm-bindgen` exports, and it is deliberately low level: it takes bytes the
 //! caller has already fetched and generates a few frames per call, because the worker it
-//! runs in must yield to its event loop between calls to hear a cancel. The `phonon-tts` npm
+//! runs in must yield to its event loop between calls to hear a cancel. The `ptts` npm
 //! package runs it in a worker and handles downloads, caching and voices by name. Most
 //! callers want that, not this.
 //!
@@ -555,7 +555,7 @@ fn js_err(e: xn::Error) -> JsError {
 /// The state sits behind an `Rc<RefCell<Option<_>>>` because `generation_step` is async and a
 /// `RefCell` borrow may not be held across an await: the step takes the state out for its
 /// duration and puts it back after. A call that arrives meanwhile finds it missing and is
-/// refused, so calls must not overlap; `phonon-tts`'s worker awaits each one. The exception
+/// refused, so calls must not overlap; `ptts`'s worker awaits each one. The exception
 /// is `stop_generation`, which the step applies when it puts the state back.
 #[wasm_bindgen]
 pub struct Model {

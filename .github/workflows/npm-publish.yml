@@ -1,14 +1,14 @@
-# Builds the `phonon-tts` npm package from `ptts-wasm/`, and publishes it on a `v*` tag --
+# Builds the `ptts` npm package from `ptts-wasm/`, and publishes it on a `v*` tag --
 # the same tag that publishes the PyPI wheels, so every registry gets the same version.
 #
 # Publishing uses npm trusted publishing (OIDC), so no token is stored in the repo. It has to
-# be enabled once on npmjs.com: phonon-tts -> Settings -> Trusted publishing -> GitHub Actions,
+# be enabled once on npmjs.com: ptts -> Settings -> Trusted publishing -> GitHub Actions,
 # repository gradium-ai/xn-ptts, workflow `npm-publish.yml`. npm records provenance for
 # packages published this way on its own.
 #
-# That setting only exists for a package that is already on the registry. `phonon-tts` is, as a
-# placeholder version, so it can be configured before the first real release. Until it is, a
-# `v*` tag publishes the wheels and fails here, leaving PyPI and npm on different versions.
+# Configure this for `ptts`, even if `phonon-tts` already has a publisher. Before
+# tagging the first release, create `ptts` with an authenticated initial publication,
+# then configure its trusted publisher. Check the package settings at launch.
 name: npm
 
 on:
@@ -48,7 +48,7 @@ concurrency:
 
 jobs:
   package:
-    name: Build phonon-tts
+    name: Build ptts
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -107,13 +107,13 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: phonon-tts
+          name: ptts
           path: ptts-wasm/pkg
 
   # A job of its own, so only this step can mint the OIDC token npm accepts, and what it
   # publishes is exactly the artifact the build job listed.
   publish:
-    name: Publish phonon-tts
+    name: Publish ptts
     needs: package
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -127,7 +127,7 @@ jobs:
           node-version: 24
       - uses: actions/download-artifact@v8
         with:
-          name: phonon-tts
+          name: ptts
           path: pkg
       # Trusted publishing needs npm 11.5.1 or later. npm also refuses to publish a
       # prerelease without a dist-tag, so `-rc` and `-beta` versions go to `next`.

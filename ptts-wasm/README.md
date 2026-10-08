@@ -1,6 +1,6 @@
 # ptts-wasm
 
-The browser build of [Phonon](../ptts/), published to npm as [`phonon-tts`](https://www.npmjs.com/package/phonon-tts). This README is about building and changing it. For using the package, see [`js/README.md`](js/README.md), which is also the README on npm.
+The browser build of [Phonon](../ptts/), packaged for npm as `ptts`. This README is about building and changing it. For using the package, see [`js/README.md`](js/README.md), which is also the README on npm.
 
 ## Layout
 
@@ -51,7 +51,7 @@ make serve MODEL_DIR=/path/to/model      # build, then serve the demo from site/
 
 `make profiling` builds only the single-threaded module, without wasm-opt, keeping names for the browser profiler. `make serve` sends the cross-origin isolation headers, so the demo runs on the threaded build and shows how many threads it got.
 
-`MODEL_DIR` is a model folder holding `tokenizer.json`, `model.q8.gguf` or `model.safetensors`, an optional `config.json`, and voices under `voices/`. `make demo` links it into `site/model/` and writes `site/model.json` describing what is in it, since the page cannot list a directory over HTTP. The page offers the weight formats the folder has, downloads them the first time, then loads them from the browser's cache.
+`MODEL_DIR` is a model folder holding `tokenizer.json`, `model.q8.gguf` or `model.safetensors`, `config.json`, and voices under `voices/`. `make demo` links it into `site/model/` and writes `site/model.json` describing what is in it, since the page cannot list a directory over HTTP. The page offers the weight formats the folder has, downloads them the first time, then loads them from the browser's cache.
 
 The package version is not in `js/package.json`. `pack.mjs` stamps it from `workspace.package.version` in the top-level `Cargo.toml`, so npm, PyPI and crates.io stay on one version.
 
@@ -59,7 +59,18 @@ The package version is not in `js/package.json`. `pack.mjs` stamps it from `work
 
 `.github/workflows/npm-publish.yml` builds the package on every PR that touches it. It publishes on a `v*` tag, the same tag that publishes the Python wheels. It uses npm trusted publishing, so no token is stored here.
 
-That has to be enabled once for `phonon-tts` on npmjs.com, pointed at this repository and at `npm-publish.yml`. npm only offers the setting for a package that is already on the registry; `phonon-tts` is, as a placeholder, so it can be set up before the first real release. Until it is, a `v*` tag publishes the wheels and fails here, leaving PyPI and npm on different versions.
+Configure trusted publishing for the `ptts` package, repository `gradium-ai/xn-ptts`, workflow `npm-publish.yml`, as described in [npm's guide](https://docs.npmjs.com/trusted-publishers/). A publisher configured for the old `phonon-tts` name does not authorize `ptts`. Before the first version tag, the package owner must make an authenticated initial publication of `ptts`, then configure its trusted publisher. Confirm ownership and this setting before a coordinated release.
+
+To rehearse installation before publication, pack the built package and install it in a separate project:
+
+```sh
+cd pkg
+npm pack
+# From your application:
+npm install /path/to/ptts-<version>.tgz
+```
+
+The consumer import is `import { PhononTTS } from 'ptts'`. Phonon remains the model identity.
 
 Supply the checkpoint URLs through `ModelSpec`. Use pinned HF revisions or versioned local paths because files are cached by URL. Every checkpoint must supply its config and tokenizer JSON.
 

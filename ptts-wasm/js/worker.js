@@ -79,7 +79,7 @@ async function loadSingleThreaded(options) {
   } catch (e) {
     if (e instanceof WebAssembly.CompileError) {
       throw new Error(
-        `this browser cannot run phonon-tts: it needs WebAssembly SIMD and Relaxed SIMD (${e.message})`,
+        `this browser cannot run ptts: it needs WebAssembly SIMD and Relaxed SIMD (${e.message})`,
       );
     }
     throw e;

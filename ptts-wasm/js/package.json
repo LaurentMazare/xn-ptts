@@ -1,5 +1,5 @@
 {
-  "name": "phonon-tts",
+  "name": "ptts",
   "description": "On-device text-to-speech in the browser: Phonon compiled to WebAssembly, streaming 24 kHz speech from a worker.",
   "type": "module",
   "main": "./index.js",

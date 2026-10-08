@@ -1,4 +1,4 @@
-// Assemble the `phonon-tts` npm package in `<out>` (default `pkg/`), around the wasm-pack
+// Assemble the `ptts` npm package in `<out>` (default `pkg/`), around the wasm-pack
 // output already in `<out>/wasm/`, and in `<out>/wasm-threads/` when the threaded build ran.
 //
 // The version is not in `js/package.json`: it is stamped here from the workspace
@@ -78,4 +78,4 @@ if (existsSync(join(threads, 'phonon_tts_bg.wasm'))) {
   writeFileSync(helpers[0], after);
 }
 
-console.log(`phonon-tts@${version} assembled in ${out}`);
+console.log(`${name}@${version} assembled in ${out}`);
