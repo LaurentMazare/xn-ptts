@@ -1,7 +1,7 @@
 //! Generate speech from text on the command line.
 //!
 //! ```text
-//! cargo run --release --example ptts --features hf,audio -- "hello world" -o out.wav
+//! ptts --dir /path/to/model --lang en "hello world" -o out.wav
 //! ```
 //!
 //! Everything between the text and the WAV file is [`ptts::synth::Synth`]; what
@@ -9,7 +9,6 @@
 //! `model_helpers`), audio file decoding for `--voice <file>`, and the timing
 //! report.
 
-#[path = "model_helpers.rs"]
 mod model_helpers;
 
 use anyhow::{Context, Result};
@@ -18,7 +17,7 @@ use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant, SpeechOptions};
 
 #[derive(Parser, Debug)]
-#[command(name = "ptts", about = "Generate speech from text")]
+#[command(name = "ptts", version, about = "Generate speech with Phonon")]
 struct Args {
     /// Text to synthesize.
     text: String,

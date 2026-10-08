@@ -89,7 +89,7 @@ fn parse_request_limit(value: &str) -> Result<std::num::NonZeroUsize, String> {
 fn init_tracing() {
     // `info` for everything but the Hub download stack: `hf_hub` transfers through the Xet
     // backend, which reports every retry policy and range probe at `info`. Keep in sync with
-    // `LOG_DIRECTIVES` in `ptts/examples/model_helpers.rs`.
+    // `LOG_DIRECTIVES` in `ptts/src/bin/ptts/model_helpers.rs`.
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(
             "info,xet=warn,xet_client=warn,xet_data=warn,xet_runtime=warn,xet_core_structures=warn",
