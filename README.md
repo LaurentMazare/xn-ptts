@@ -102,7 +102,7 @@ Load the model once and reuse it. The [Python README](ptts-pyo3/README.md) cover
 
 ## 5. Use it in an iOS or macOS app
 
-The `PhononTTS` Swift package runs the model on the device through Core ML, with its transformer on the Apple Neural Engine: about 12 times faster than realtime on an iPhone 16 Pro, with first audio in under 40 ms. It needs iOS 18 or macOS 15, and Xcode.
+The `ptts` Swift package exposes the `PhononTTS` module and runs the model on the device through Core ML, with its transformer on the Apple Neural Engine: about 12 times faster than realtime on an iPhone 16 Pro, with first audio in under 40 ms. It needs iOS 18 or macOS 15, and Xcode. The [Swift package guide](ios/PhononTTS/README.md) describes the prepared release package and source installation.
 
 Build the package's compiled core and convert the model to Core ML, both from the repository root:
 

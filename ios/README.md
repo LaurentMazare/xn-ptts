@@ -4,7 +4,7 @@ For contributors. Apps start with [`PhononTTS/README.md`](PhononTTS/README.md).
 
 | path | what |
 |---|---|
-| [`PhononTTS/`](PhononTTS/) | The Swift package: `Phonon`, `PhononPlayer`, `PhononModels`. |
+| [`PhononTTS/`](PhononTTS/) | The `ptts` Swift package, exposing the `PhononTTS` module: `Phonon`, `PhononPlayer`, `PhononModels`. |
 | `build-xcframework.sh` | Builds `PhononTTS/PhononCore.xcframework` from `ptts-ffi`, for iPhone, the simulator and Apple-silicon Macs, plus a zip and its checksum for a future URL-based release. |
 | [`../ptts-ffi/`](../ptts-ffi/) | The C interface the framework exports. `include/ptts.h` is written by hand and must match `src/lib.rs`. |
 | [`../ptts-coreml/`](../ptts-coreml/) | The Core ML graphs and the driver that runs them. |
