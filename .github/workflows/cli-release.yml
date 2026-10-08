@@ -1,0 +1,142 @@
+name: CLI binaries
+
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths:
+      - 'ptts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'LICENSE-*'
+      - 'scripts/package-cli.py'
+      - 'scripts/homebrew-cli.py'
+      - 'scripts/upload-release.py'
+      - 'docs/cli.md'
+      - '.github/workflows/cli-release.yml'
+      - '.github/actions/setup-rust/**'
+  pull_request:
+    paths:
+      - 'ptts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'LICENSE-*'
+      - 'scripts/package-cli.py'
+      - 'scripts/homebrew-cli.py'
+      - 'scripts/upload-release.py'
+      - 'docs/cli.md'
+      - '.github/workflows/cli-release.yml'
+      - '.github/actions/setup-rust/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: CLI / ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            rustflags: '-C target-cpu=x86-64-v3'
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            rustflags: '-C target-cpu=generic'
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            rustflags: '-C target-cpu=apple-m1'
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            rustflags: '-C target-cpu=x86-64-v3'
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            rustflags: '-C target-cpu=x86-64-v3 -C target-feature=+crt-static'
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      # macOS 15 is the oldest Mac runner used to verify these downloads.
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.target }}
+          cache-key: cli-${{ matrix.target }}
+          audio-deps: 'false'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      # setup-rust removes target-cpu=native. These CPU binaries use fixed baselines,
+      # with no GPU SDKs or server audio libraries needed at runtime.
+      - name: Build the command
+        run: cargo build --release --locked -p ptts --features cli --bin ptts --target ${{ matrix.target }}
+      - name: Package and check the installed command
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          binary="target/$TARGET/release/ptts"
+          if [ "$RUNNER_OS" = Windows ]; then binary="$binary.exe"; fi
+          tag_args=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag_args=(--tag "$GITHUB_REF_NAME"); fi
+          python scripts/package-cli.py --binary "$binary" --target "$TARGET" ${tag_args[@]+"${tag_args[@]}"}
+          mkdir unpacked
+          if [ "$RUNNER_OS" = Windows ]; then
+            python -m zipfile -e dist/*.zip unpacked
+            installed=$(find unpacked -name ptts.exe -type f)
+          else
+            tar xzf dist/*.tar.gz -C unpacked
+            installed=$(find unpacked -name ptts -type f)
+          fi
+          "$installed" --version
+          "$installed" --help
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Attach CLI downloads
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: dist
+      - name: Attach archives and checksums
+        shell: bash
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cat ./*.sha256 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --draft --title "$TAG" \
+              --notes 'Release artifacts are being prepared. Review the release notes before publishing.'
+          fi
+          python ../scripts/homebrew-cli.py .
+          python ../scripts/upload-release.py "$TAG" ./*.tar.gz ./*.zip SHA256SUMS ptts.rb

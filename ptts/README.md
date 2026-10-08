@@ -4,6 +4,8 @@ Phonon is Gradium's on-device text-to-speech runtime. The `ptts` crate provides 
 
 Each checkpoint supplies its own `config.json`, `tokenizer.json`, weights, and voice assets. Supply a model explicitly. No checkpoint is selected or downloaded by the library.
 
+See the [CLI guide](https://github.com/gradium-ai/xn-ptts/blob/main/docs/cli.md) for desktop downloads and platform requirements.
+
 ## Command line
 
 Installing the command requires `--features cli`; without it, this crate builds only the library.

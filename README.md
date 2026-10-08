@@ -38,7 +38,7 @@ uv run --project ptts-pyo3 --locked ptts --lang en \
 
 `--quant q8` runs the model in q8, the format `model.q8.gguf` is stored in. The Rust and Python examples below set q8 too. Loading q8 weights as f32 expands them, which is slower and uses more memory. `--lang` is required. It picks how numbers, symbols and abbreviations are spelled out before synthesis: `en`, `fr`, `de`, `es` or `pt`, or `none` to use the text as written.
 
-The Rust CLI also accepts `--repo <owner/model>` and an optional `--revision <commit>` instead of `--dir`. For a private repo, set `HF_TOKEN` or log in with the Hugging Face CLI. Run `ptts --help` for voice, device, and generation options.
+The Rust CLI also accepts `--repo <owner/model>` and an optional `--revision <commit>` instead of `--dir`. For a private repo, set `HF_TOKEN` or log in with the Hugging Face CLI. Run `ptts --help` for voice, device, and generation options. The [CLI guide](docs/cli.md) covers desktop downloads and platform requirements.
 
 When no voice is specified, native integrations use the checkpoint's configured default, then `default`, then the first registered voice by name. Swift uses its exported bundle's voice selection. For a fixed choice, pass `--voice Freya` to either CLI, `voice="Freya"` to Python, or call `tts.setVoice("Freya")` in Swift.
 
