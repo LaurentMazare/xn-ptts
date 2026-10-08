@@ -2,7 +2,7 @@
 
 Phonon is Gradium's on-device text-to-speech runtime, written in Rust, with Python bindings. It builds on [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), developed by Kyutai. This preview pairs the code in this repository with a model package supplied by Gradium; the model is not in this repository.
 
-Gradium's Phonon checkpoints are the primary integration target and use their own model config, weights, tokenizer, and voices. Kyutai's Pocket TTS is also supported as a compatibility option. The release will make the selected Phonon checkpoint the default.
+Gradium's Phonon checkpoints are the primary integration target and use their own model config, weights, tokenizer, and voices. Pocket TTS checkpoints can be used when they supply a compatible `config.json`, `tokenizer.json`, and weights. The release will make the selected Phonon checkpoint the default.
 
 [![Rust CI](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml)
 
@@ -191,6 +191,14 @@ curl http://localhost:8880/v1/audio/speech -H "Content-Type: application/json" \
 ```
 
 The image contains no model weights. Supply a mounted model folder or an HF repo through `PTTS_CONFIG`. The [server README](ptts-openai-server/README.md) covers running it without Docker, the API, and setup for clients such as Open WebUI and Home Assistant. For streaming text in and audio out over one WebSocket connection, there is `ptts-ws-server`.
+
+## Updating from earlier builds
+
+Model sources are now required: use `--repo` or `--dir` in the Rust CLI, `config=` in Python, `--config` or `PTTS_CONFIG` for servers, and an explicit `ModelSpec` in the browser. The Docker image contains no model weights.
+
+Every checkpoint must supply its own config and tokenizer JSON. Built-in configs, Pocket TTS presets, legacy filenames, and `ptts-model.json` support have been removed. The Rust manifest types and `TTSConfig::v202601()` and the browser's `POCKET_TTS_MODEL` export are no longer available. Move custom artifact paths and voice selection to the caller's options; manifest checksums are no longer checked by the runtime.
+
+For a SentencePiece-only checkpoint, [convert its tokenizer to JSON](scripts/convert-tokenizer.py) once before loading it. This is an explicit preparation tool; the runtime reads only the supplied tokenizer JSON.
 
 ## License
 

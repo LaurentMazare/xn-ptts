@@ -4,7 +4,7 @@
 //! left here is deciding which files to load, which voices to register, and
 //! holding the result for the request handlers.
 //!
-//! Local artifact resolution are shared in `ptts::checkpoint`.
+//! Local artifact resolution is shared in `ptts::checkpoint`.
 
 use anyhow::{Context as _, Result};
 use ptts::checkpoint::{
@@ -58,7 +58,11 @@ async fn load_from_hf(repo_id: &str, revision: Option<&str>, quant: Quant) -> Re
         .ok_or_else(|| first_error.unwrap_or_else(|| anyhow::anyhow!("no weights in {repo_id}")))?;
     let tokenizer = Some(repo.get("tokenizer.json").await?);
     let mut voices = Vec::new();
-    for (name, file) in repo.voice_files().await? {
+    let voice_files = repo.voice_files().await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "cannot list voice files; only the default voice file is tried");
+        Vec::new()
+    });
+    for (name, file) in voice_files {
         match repo.get(&file).await {
             Ok(path) => voices.push((name, path)),
             Err(e) => {
@@ -80,7 +84,7 @@ async fn load_from_hf(repo_id: &str, revision: Option<&str>, quant: Quant) -> Re
 /// repo ID. The source is required.
 #[allow(clippy::too_many_arguments)]
 pub async fn load_ptts(
-    config: Option<&std::path::PathBuf>,
+    config: &std::path::Path,
     revision: Option<&str>,
     voice_dir: Option<&std::path::PathBuf>,
     device: DeviceKind,
@@ -92,7 +96,7 @@ pub async fn load_ptts(
 ) -> Result<AppState> {
     quant.check_device(device)?;
     let (m, model_name) = match config {
-        Some(path) if is_local_source(path) => {
+        path if is_local_source(path) => {
             anyhow::ensure!(revision.is_none(), "--revision requires a Hugging Face repo ID");
             let checkpoint = Checkpoint::resolve(path, ResolveOptions { quant, weights: None })?;
             let absolute = std::fs::canonicalize(path)?;
@@ -104,13 +108,10 @@ pub async fn load_ptts(
             let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
             (checkpoint, name)
         }
-        Some(repo_id) => {
+        repo_id => {
             let repo_id = repo_id.to_str().context("invalid repo ID path")?;
             (load_from_hf(repo_id, revision, quant).await?, repo_id.to_string())
         }
-        None => anyhow::bail!(
-            "--config is required: supply a local model directory or Hugging Face repo ID"
-        ),
     };
     let extra_voices = if let Some(voice_dir) = voice_dir {
         let found = ptts::loader::voices_in(voice_dir);
@@ -172,7 +173,7 @@ mod checkpoint_tests {
         std::fs::write(extra_dir.join("invalid.safetensors"), b"unreadable optional voice")
             .unwrap();
         let loaded = load_ptts(
-            Some(&path),
+            &path,
             None,
             Some(&extra_dir),
             DeviceKind::Cpu,

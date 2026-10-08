@@ -82,13 +82,9 @@ impl Checkpoint {
         };
         let tokenizer = dir.join("tokenizer.json");
         let tokenizer = tokenizer.is_file().then_some(tokenizer);
-        Ok(Self {
-            config,
-            weights,
-            tokenizer,
-            voices: crate::loader::checkpoint_voices(&dir),
-            quant: options.quant,
-        })
+        let mut voices = crate::loader::checkpoint_voices(&dir);
+        voices.sort();
+        Ok(Self { config, weights, tokenizer, voices, quant: options.quant })
     }
 
     pub fn builder(&self, normalize: impl Into<Normalize>) -> SynthBuilder {

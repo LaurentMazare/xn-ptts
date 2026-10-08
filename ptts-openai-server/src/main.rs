@@ -22,7 +22,7 @@ struct Args {
 
     /// Required local model directory, config.json, or Hugging Face repo ID.
     #[arg(long, env = "PTTS_CONFIG", required = true)]
-    config: Option<std::path::PathBuf>,
+    config: std::path::PathBuf,
 
     /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.
     #[arg(long, env = "PTTS_REVISION")]
@@ -147,7 +147,7 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         );
     }
     model::load_ptts(
-        args.config.as_ref(),
+        &args.config,
         args.revision.as_deref(),
         args.voice_dir.as_ref(),
         device,

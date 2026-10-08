@@ -226,7 +226,7 @@ def tts() -> ptts.TTS:
         pytest.skip("set PTTS_TEST_MODEL for checkpoint synthesis tests")
     return ptts.TTS(
         config=model,
-        revision=os.environ.get("PTTS_TEST_REVISION") if model else None,
+        revision=os.environ.get("PTTS_TEST_REVISION"),
         lang="en",
         device="cpu",
         quant="q8",

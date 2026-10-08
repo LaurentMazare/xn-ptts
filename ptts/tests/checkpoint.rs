@@ -101,10 +101,12 @@ fn voice_precedence_is_identical_for_all_callers() {
     f.write("embeddings/default.safetensors", b"second");
     f.write("default-voice.safetensors", b"third");
     f.write("voices/z.safetensors", b"z");
+    f.write("embeddings/a.safetensors", b"a");
     let ck = f.q8(&f.0).unwrap();
     assert_eq!(
         ck.voices,
         vec![
+            ("a".into(), f.0.join("embeddings/a.safetensors")),
             ("default".into(), f.0.join("voices/default.safetensors")),
             ("z".into(), f.0.join("voices/z.safetensors"))
         ]

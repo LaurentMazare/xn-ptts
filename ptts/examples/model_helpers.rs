@@ -60,7 +60,11 @@ pub fn from_hub(
     };
     let tokenizer = Some(repo.get("tokenizer.json")?);
     let mut voices = vec![];
-    for (name, file) in repo.voice_files()? {
+    let voice_files = repo.voice_files().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "cannot list voice files; only the default voice file is tried");
+        Vec::new()
+    });
+    for (name, file) in voice_files {
         if let Some(path) = repo.get_optional(&file) {
             voices.push((name, path));
         }

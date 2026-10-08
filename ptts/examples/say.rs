@@ -7,14 +7,14 @@
 use anyhow::Context as _;
 use ptts::checkpoint::{Checkpoint, ResolveOptions};
 use ptts::preprocess::Lang;
-use ptts::synth::Quant;
+use ptts::synth::{DeviceKind, Quant};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let dir = args.next().context("usage: say <model directory> [text]")?;
     let text = args.next().unwrap_or_else(|| "Hello from Phonon.".to_string());
     let checkpoint = Checkpoint::resolve(dir, ResolveOptions { quant: Quant::Q80, weights: None })?;
-    let mut tts = checkpoint.builder(Lang::En).build()?;
+    let mut tts = checkpoint.builder(Lang::En).device(DeviceKind::Cpu).build()?;
     checkpoint.register_voices(&mut tts);
     let pcm = tts.say(&text)?;
     ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate())?;
