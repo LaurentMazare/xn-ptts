@@ -12,9 +12,8 @@ use ptts::preprocess::Lang;
 fn main() -> anyhow::Result<()> {
     let text = std::env::args().nth(1).unwrap_or_else(|| "Hello from Phonon.".to_string());
 
-    // `ptts` reads the files it is handed; finding them is the frontend's job,
-    // and for the examples `model_helpers` is where that knowledge lives.
-    let checkpoint = model_helpers::Checkpoint::from_hub(model_helpers::REPO_ID, None)?;
+    let checkpoint =
+        model_helpers::from_hub(model_helpers::REPO_ID, None, ptts::synth::Quant::F32)?;
     // Which language to normalize as has no default: see `SynthBuilder::new`.
     let mut tts = checkpoint.builder(Lang::En).build()?;
     checkpoint.register_voices(&mut tts);

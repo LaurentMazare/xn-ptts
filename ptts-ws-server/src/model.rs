@@ -5,16 +5,15 @@
 //! holding the result for the request handlers.
 
 use anyhow::{Context as _, Result};
+use ptts::checkpoint::{
+    Checkpoint, POCKET_TTS_VOICES, ResolveOptions, is_local_source, read_config, weight_candidates,
+};
 use ptts::preprocess::Normalize;
-use ptts::synth::{DeviceKind, Quant, Synth, SynthBuilder};
+use ptts::synth::{DeviceKind, Quant, Synth};
 use ptts::tts_model::TTSConfig;
 use std::sync::Arc;
 
-pub const VOICES: &[&str] =
-    &["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
-
-pub const DEFAULT_REPO_ID: &str = "kyutai/pocket-tts";
-pub const DEFAULT_MODEL_FILE: &str = "tts_b6369a24.safetensors";
+pub const DEFAULT_REPO_ID: &str = ptts::checkpoint::POCKET_TTS_REPO;
 
 /// The loaded model and the request defaults, shared by every connection.
 ///
@@ -44,73 +43,47 @@ impl std::ops::Deref for AppState {
     }
 }
 
-/// A checkpoint whose files are located. The voices are loaded once the model is, since a
-/// file of stored speaker latents goes through the checkpoint's speaker projection.
-struct LoadedModel {
-    cfg: TTSConfig,
-    /// Voice name to embedding file.
-    voice_files: Vec<(String, std::path::PathBuf)>,
-    tokenizer_path: std::path::PathBuf,
-    model_path: std::path::PathBuf,
-}
-
-impl LoadedModel {
-    async fn load_from_hf(repo_id: &str) -> Result<Self> {
-        tracing::info!("downloading model artifacts");
-        let repo = crate::utils::HfRepo::model(repo_id)?;
-        let config_path = repo.get("config.json").await?;
-        let cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(&config_path)?)
-            .with_context(|| format!("failed to read config from file {config_path:?}"))?;
-
-        let model_path = repo.get("model.q8.gguf").await?;
-        tracing::info!(?model_path, "model weights ready");
-        let tokenizer_path = repo.get("tokenizer.json").await?;
-
-        let default_voice_path = repo.get("default-voice.safetensors").await?;
-        let voice_files = vec![("default".to_string(), default_voice_path)];
-
-        Ok(Self { cfg, voice_files, tokenizer_path, model_path })
-    }
-
-    async fn load_pocket_from_hf() -> Result<Self> {
-        tracing::info!("downloading model artifacts");
-        let repo = crate::utils::HfRepo::model(DEFAULT_REPO_ID)?;
-        let model_path = repo.get(DEFAULT_MODEL_FILE).await?;
-        tracing::info!(?model_path, "model weights ready");
-        let tokenizer_path = repo.get("tokenizer.json").await?;
-
-        let mut voice_files = Vec::new();
-        for &voice in VOICES {
-            let voice_file = format!("embeddings/{voice}.safetensors");
-            match repo.get(&voice_file).await {
-                Ok(voice_path) => voice_files.push((voice.to_string(), voice_path)),
-                Err(e) => tracing::warn!(?voice, error = %e, "failed to download voice embedding"),
+/// Existing async Hub transport. Local candidates use the shared checkpoint resolver.
+/// Manifest-aware Hub acquisition is the next release work item.
+async fn load_from_hf(repo_id: &str, quant: Quant, pocket: bool) -> Result<Checkpoint> {
+    tracing::info!(repo_id, "downloading model artifacts");
+    let repo = crate::utils::HfRepo::model(repo_id)?;
+    let config =
+        if pocket { TTSConfig::v202601() } else { read_config(repo.get("config.json").await?)? };
+    let mut weights = None;
+    let mut first_error = None;
+    for name in weight_candidates(quant) {
+        match repo.get(name).await {
+            Ok(path) => {
+                weights = Some(path);
+                break;
+            }
+            Err(e) => {
+                first_error.get_or_insert(e);
             }
         }
-
-        let cfg = TTSConfig::v202601();
-        Ok(Self { cfg, voice_files, tokenizer_path, model_path })
     }
-
-    fn load_from_path(config: &std::path::PathBuf) -> Result<Self> {
-        let parent_dir = config
-            .parent()
-            .with_context(|| format!("failed to get parent directory of config path {config:?}"))?;
-        let cfg: TTSConfig = serde_json::from_str(&std::fs::read_to_string(config)?)
-            .with_context(|| format!("failed to read config from file {config:?}"))?;
-        let model_path = if parent_dir.join("model.safetensors").is_file() {
-            parent_dir.join("model.safetensors")
-        } else if parent_dir.join("model.q8.gguf").is_file() {
-            parent_dir.join("model.q8.gguf")
-        } else {
-            anyhow::bail!(
-                "model file not found in directory {parent_dir:?}; expected model.safetensors or model.gguf"
-            );
-        };
-        let tokenizer_path = parent_dir.join("tokenizer.json");
-        let voice_files = ptts::loader::checkpoint_voices(parent_dir);
-        Ok(Self { cfg, voice_files, tokenizer_path, model_path })
+    let weights = weights
+        .ok_or_else(|| first_error.unwrap_or_else(|| anyhow::anyhow!("no weights in {repo_id}")))?;
+    let tokenizer = Some(repo.get("tokenizer.json").await?);
+    let mut voices = Vec::new();
+    if pocket {
+        for name in POCKET_TTS_VOICES {
+            let file = format!("embeddings/{name}.safetensors");
+            match repo.get(&file).await {
+                Ok(path) => voices.push((name.to_string(), path)),
+                Err(e) => {
+                    tracing::warn!(voice = %name, error = %e, "failed to download voice embedding")
+                }
+            }
+        }
     }
+    // A checkpoint with baked-in voices need not ship an external default.
+    if let Ok(path) = repo.get(ptts::loader::DEFAULT_VOICE_FILE).await {
+        voices.push(("default".to_string(), path));
+    }
+    voices.sort();
+    Ok(Checkpoint { config, weights, tokenizer, voices, quant, manifest: None })
 }
 
 /// Load the model named by `config` -- a local `config.json`, a Hub repo id, or
@@ -127,39 +100,49 @@ pub async fn load_ptts(
     normalize: Normalize,
     conditions: &[(String, String)],
 ) -> Result<AppState> {
-    let mut m = match config {
-        Some(config) if config.is_file() || config.extension().is_some_and(|v| v == "json") => {
-            LoadedModel::load_from_path(config)?
+    quant.check_device(device)?;
+    let (m, model_name) = match config {
+        Some(path) if is_local_source(path) => {
+            let checkpoint = Checkpoint::resolve(path, ResolveOptions { quant, weights: None })?;
+            let absolute = std::fs::canonicalize(path)?;
+            let dir = if absolute.is_dir() {
+                absolute.as_path()
+            } else {
+                absolute.parent().context("config has a parent directory")?
+            };
+            let name =
+                checkpoint.manifest.as_ref().map(|m| m.model_id.clone()).unwrap_or_else(|| {
+                    dir.file_name().unwrap_or_default().to_string_lossy().into_owned()
+                });
+            (checkpoint, name)
         }
         Some(repo_id) => {
             let repo_id = repo_id.to_str().context("invalid repo ID path")?;
-            LoadedModel::load_from_hf(repo_id).await?
+            (load_from_hf(repo_id, quant, repo_id == DEFAULT_REPO_ID).await?, repo_id.to_string())
         }
-        None => LoadedModel::load_pocket_from_hf().await?,
+        None => (load_from_hf(DEFAULT_REPO_ID, quant, true).await?, DEFAULT_REPO_ID.to_string()),
     };
-    if let Some(voice_dir) = voice_dir {
+    let extra_voices = if let Some(voice_dir) = voice_dir {
         let found = ptts::loader::voices_in(voice_dir);
         if found.is_empty() {
             tracing::warn!(?voice_dir, "no voice files found in --voice-dir");
         }
-        m.voice_files.extend(found);
-    }
-    let frame_rate = m.cfg.mimi.frame_rate;
-    let mut builder = SynthBuilder::new(m.cfg, &m.model_path, normalize)
-        .tokenizer_file(&m.tokenizer_path)
-        .device(device)
-        .quant(quant)
-        .temperature(temperature);
+        found
+    } else {
+        Vec::new()
+    };
+    let frame_rate = m.config.mimi.frame_rate;
+    let mut builder = m.builder(normalize).device(device).quant(quant).temperature(temperature);
     for (name, value) in conditions {
         builder = builder.condition(name, value);
     }
     let mut synth = builder.build()?;
-    // Registered after the build, not through it: the builder propagates a bad
-    // voice file and one should not take the server down. Order is preserved,
-    // so a --voice-dir entry still overrides a bundled voice of the same name.
-    for (name, path) in m.voice_files.iter() {
-        if let Err(e) = synth.add_voice_file(name, path) {
-            tracing::warn!(voice = %name, error = %e, "failed to load voice embedding");
+    m.register_voices(&mut synth);
+    // Additional user voices remain optional and override names from the checkpoint.
+    // Only manifest-declared voices are required during the builder's validation.
+    for (name, path) in extra_voices {
+        if let Err(e) = synth.add_voice_file(&name, &path) {
+            tracing::warn!(voice = %name, error = %e, "failed to load additional voice embedding");
         }
     }
 
@@ -176,18 +159,6 @@ pub async fn load_ptts(
         "model loaded"
     );
 
-    // A repo id as given. For a local config, only its folder's name: clients have no use for
-    // the server's filesystem layout.
-    let model_name = match config {
-        None => DEFAULT_REPO_ID.to_string(),
-        Some(c) if c.is_file() => {
-            let dir = std::fs::canonicalize(c)
-                .ok()
-                .and_then(|c| Some(c.parent()?.file_name()?.to_owned()));
-            dir.unwrap_or_else(|| c.as_os_str().to_owned()).to_string_lossy().into_owned()
-        }
-        Some(repo_id) => repo_id.display().to_string(),
-    };
     Ok(AppState(Arc::new(Inner {
         synth,
         model_name,
@@ -199,4 +170,51 @@ pub async fn load_ptts(
         sample_rate,
         frame_size,
     })))
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires PTTS_TEST_MODEL pointing to a private q8 checkpoint"]
+    async fn private_checkpoint_loads_with_the_shared_default_voice() {
+        let path = std::path::PathBuf::from(
+            std::env::var("PTTS_TEST_MODEL").expect("set PTTS_TEST_MODEL"),
+        );
+        let checkpoint =
+            Checkpoint::resolve(&path, ResolveOptions { quant: Quant::Q80, weights: None })
+                .unwrap();
+        let suffix =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let extra_dir =
+            std::env::temp_dir().join(format!("ptts-extra-voices-{}-{suffix}", std::process::id()));
+        std::fs::create_dir(&extra_dir).unwrap();
+        std::fs::write(extra_dir.join("invalid.safetensors"), b"unreadable optional voice")
+            .unwrap();
+        let loaded = load_ptts(
+            Some(&path),
+            Some(&extra_dir),
+            DeviceKind::Cpu,
+            Quant::Q80,
+            0.3,
+            7,
+            1024,
+            Normalize::OFF,
+            &[],
+        )
+        .await;
+        std::fs::remove_dir_all(extra_dir).unwrap();
+        let state = loaded.unwrap();
+        assert!(!state.voices.iter().any(|v| v == "invalid"));
+        assert_eq!(state.sample_rate, checkpoint.config.mimi.sample_rate as u32);
+        if let Some(manifest) = &checkpoint.manifest {
+            assert_eq!(state.model_name, manifest.model_id);
+            assert_eq!(state.synth.default_voice(), manifest.default_voice);
+        }
+        let audio = state.synth.say("Hello from Phonon.").unwrap();
+        assert!(audio.len() > state.sample_rate as usize / 4);
+        assert!(audio.iter().all(|x| x.is_finite()));
+        assert!(audio.iter().any(|x| x.abs() > 0.01));
+    }
 }

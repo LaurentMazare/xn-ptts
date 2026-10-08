@@ -39,7 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "-m",
         "--model",
-        help="Hugging Face repo id or path to a local config.json (default: the published one)",
+        help="Hugging Face repo id or local model directory, config.json, or ptts-model.json",
     )
     p.add_argument(
         "-d", "--device", help=f"one of {', '.join(['auto', *available_devices()])} (default: auto)"

@@ -20,7 +20,7 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8880", env = "PTTS_ADDR")]
     addr: String,
 
-    /// The checkpoint: a local folder, a `config.json` in one, or a Hugging Face repo id.
+    /// Local model directory, config.json, ptts-model.json, or Hugging Face repo ID.
     /// Kyutai's Pocket TTS checkpoint from the Hub when not given.
     #[arg(long, env = "PTTS_CONFIG")]
     config: Option<std::path::PathBuf>,
