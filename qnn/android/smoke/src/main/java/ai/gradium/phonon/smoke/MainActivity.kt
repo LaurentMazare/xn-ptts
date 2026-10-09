@@ -32,6 +32,18 @@ class MainActivity : Activity() {
                 } catch (e: Throwable) { android.util.Log.e("PhononSmoke", "JNI_PROBE_FAILED", e) }
             }.start()
         }
+        if (intent.getBooleanExtra("verify", false)) {
+            speak.isEnabled = false
+            Thread {
+                try {
+                    Verification.run(this, File(getExternalFilesDir(null), "model"), intent.getStringExtra("lang") ?: "en")
+                    runOnUiThread { status.text = "Verification passed. WAV saved in external files." }
+                } catch (e: Throwable) {
+                    android.util.Log.e("PhononSmoke", "QNN_VERIFY_FAILED", e)
+                    runOnUiThread { status.text = e.toString() }
+                } finally { runOnUiThread { speak.isEnabled = true } }
+            }.start()
+        }
         speak.setOnClickListener {
             speak.isEnabled = false
             Thread {

@@ -148,3 +148,41 @@ Automated installed-app checks are available with:
 Without `modelDir`, the real-model test is skipped and native packaging/JNI loading is still
 checked. A real Snapdragon phone is required to verify NPU execution and performance. Desktop
 unit tests and APK builds do not establish that the engine works inside an installed app.
+
+### Test through Qualcomm Device Cloud
+
+Use a mobile interactive session with SSH enabled. Forward the remote ADB server to an unused
+local port, then pass that port to each ADB command:
+
+```sh
+ssh -i /path/to/key -L 5038:<device-host>:5037 -N sshtunnel@ssh.qdc.qualcomm.com
+adb -H 127.0.0.1 -P 5038 devices -l
+adb -H 127.0.0.1 -P 5038 shell getprop ro.soc.model
+```
+
+Choose a bundle compiled for the reported SoC. Install and push it using the commands above,
+adding `-H 127.0.0.1 -P 5038` and `-s <serial>` to select the cloud device. Run installed-app
+checks directly after installing `smoke/build/outputs/apk/androidTest/debug/smoke-debug-androidTest.apk`:
+
+```sh
+adb -H 127.0.0.1 -P 5038 -s <serial> shell am instrument -w \
+  -e modelDir /sdcard/Android/data/ai.gradium.phonon.smoke/files/model -e lang en \
+  ai.gradium.phonon.smoke.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Then install the minified release APK and run five utterances without playback. The app logs
+first-audio time, total generation time and RTF for each run, and saves the last one as a WAV:
+
+```sh
+adb -H 127.0.0.1 -P 5038 -s <serial> shell am force-stop ai.gradium.phonon.smoke
+adb -H 127.0.0.1 -P 5038 -s <serial> shell am start \
+  -n ai.gradium.phonon.smoke/.MainActivity --ez verify true --es lang en
+adb -H 127.0.0.1 -P 5038 -s <serial> logcat -d -s PhononSmoke:I
+adb -H 127.0.0.1 -P 5038 -s <serial> pull \
+  /sdcard/Android/data/ai.gradium.phonon.smoke/files/phonon-verification.wav
+```
+
+Wait for `QNN_VERIFY_OK` before pulling the file. Inspect the WAV locally because QDC does not
+stream device audio. These results apply to the tested device and firmware; they do not establish
+support for other Snapdragon targets. Compare with the native runner on the same device and bundle
+when checking for a performance regression.

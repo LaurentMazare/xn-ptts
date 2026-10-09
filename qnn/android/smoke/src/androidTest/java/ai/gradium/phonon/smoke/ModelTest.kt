@@ -6,6 +6,9 @@ import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class ModelTest {
     @Test fun nativeLibrariesAndJniLoadInsideAnInstalledApp() {
@@ -53,6 +56,31 @@ class ModelTest {
             assertTrue(cancelled.cancelled)
             val error = IllegalArgumentException("audio callback failed")
             assertSame(error, assertThrows(IllegalArgumentException::class.java) { model.speak("Hello.") { throw error } })
+            val entered = CountDownLatch(1)
+            val resume = CountDownLatch(1)
+            val stopped = AtomicReference<PhononTTS.Result>()
+            val failure = AtomicReference<Throwable>()
+            val worker = Thread {
+                try {
+                    stopped.set(model.speak("This sentence is cancelled from another thread.") {
+                        entered.countDown()
+                        check(resume.await(10, TimeUnit.SECONDS)) { "Stop test timed out" }
+                        true
+                    })
+                } catch (e: Throwable) { failure.set(e) }
+            }
+            worker.start()
+            try {
+                assertTrue("No audio callback", entered.await(30, TimeUnit.SECONDS))
+                assertThrows(IllegalStateException::class.java) { model.close() }
+                model.stop()
+            } finally {
+                resume.countDown()
+                worker.join(30000)
+            }
+            assertFalse("Speak did not stop", worker.isAlive)
+            failure.get()?.let { throw it }
+            assertTrue(stopped.get().cancelled)
             val result = model.speak("Hello from Phonon.") { pcm -> assertTrue(pcm.all { it.isFinite() }); true }
             assertFalse(result.cancelled)
             assertTrue(result.samples > 0)
