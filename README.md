@@ -302,7 +302,6 @@ Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chu
 | Streaming text and audio over one connection | [WebSocket server](ptts-ws-server/README.md) |
 | Rust library and the `say` example | [Rust](ptts/README.md) |
 | Build packages, run the local demo, and develop from source | [Development](docs/development.md) |
-| Move from an earlier checkout | [Migration notes](docs/development.md#updating-earlier-builds) |
 
 ### Platform notes
 
