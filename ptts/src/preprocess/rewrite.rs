@@ -139,11 +139,6 @@ pub(super) fn rewrite_text(
                     .has("abbreviations")
                     .then(|| abbreviations::ranks(&words[i..], lang))
                     .flatten()
-            })
-            .or_else(|| {
-                let code =
-                    rules.has("numbers").then(|| numbers::code(&out, words[i], lang)).flatten();
-                code.map(|code| (code, 1))
             });
         if let Some((rewritten, used)) = span {
             out.push(rewritten);

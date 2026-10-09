@@ -98,17 +98,6 @@ pub(super) fn digit_run(words: &[&str], lang: Lang) -> Option<(String, usize)> {
     Some((format!("{spelled}{end}"), bodies.len()))
 }
 
-pub(super) fn code(before: &[String], word: &str, lang: Lang) -> Option<String> {
-    let (body, end) = split_suffix(word);
-    if body.len() < 5 || !all_digits(body) {
-        return None;
-    }
-    let keys =
-        ["number", "code", "pin", "id", "cpt", "zip", "ref", "reference", "account", "ticket"];
-    let key = |w: &String| keys.contains(&w.trim_end_matches([',', ':']).to_lowercase().as_str());
-    before.iter().rev().take(3).any(key).then(|| format!("{}{end}", spell(body, lang)))
-}
-
 pub(super) fn ending_in(prev: Option<&str>, words: &[&str], lang: Lang) -> Option<(String, usize)> {
     let prev = prev?.to_lowercase();
     if !matches!(prev.as_str(), "ending" | "ends" | "ended") || *words.first()? != "in" {

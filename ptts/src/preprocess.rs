@@ -646,8 +646,7 @@ mod tests {
             ("In 2019 2020 2021", "In 2019 2020 2021"),
             ("The card ending in -4098.", "The card ending in four zero nine eight."),
             ("It fell to -12.", "It fell to minus 12."),
-            ("Your order number is 48213.", "Your order number is four eight two one three."),
-            ("It weighs 48213 tons.", "It weighs 48 thousand 213 tons."),
+            ("Your order number is 48213.", "Your order number is 48 thousand 213."),
             (
                 "Lt Col Vann and Lt. Col. Harris.",
                 "Lieutenant Colonel Vann and Lieutenant Colonel Harris.",
