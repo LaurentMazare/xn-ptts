@@ -60,7 +60,7 @@ Packages and native downloads are available as a runtime preview. Follow the [ru
 | Python `ptts` | [PyPI](https://pypi.org/project/ptts/) | Wheels for supported platforms; CPython 3.9+. [Python guide](ptts-pyo3/README.md). |
 | Browser `phonon-tts` | [npm](https://www.npmjs.com/package/phonon-tts) | Worker, single-thread and threaded Wasm builds, and TypeScript declarations. [Browser guide](ptts-wasm/js/README.md). |
 | Swift `ptts` | [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) | `ptts-swift-<version>.zip` and its matching compiled framework. [Swift guide](ios/PhononTTS/README.md). |
-| Android `ptts` (QNN preview) | [Source and build guide in PR #154](https://github.com/gradium-ai/xn-ptts/pull/154) | Kotlin API and AAR for supported Snapdragon NPUs. Not published to Maven Central yet. |
+| Android `ptts` (QNN preview) | [QNN Android guide](https://github.com/gradium-ai/xn-ptts/blob/feat/phonon-qnn/qnn/android/README.md) | Kotlin API and AAR for supported Snapdragon NPUs. Not published to Maven Central yet. |
 | Android CPU library | [Build guide](android/README.md#1-build-the-library) | `libptts_ffi.so` and a Kotlin wrapper, built from source with Rust and the Android NDK. |
 | `ptts-openai-server` | `ghcr.io/gradium-ai/ptts-openai-server:<version>` | CPU image for amd64 and arm64; model weights downloaded or mounted separately. [Server guide](ptts-openai-server/README.md). |
 | Rust `ptts` | [crates.io](https://crates.io/crates/ptts) | Library API; add the `cli` feature to install the command. [Rust guide](ptts/README.md). |
@@ -89,7 +89,7 @@ Voice files may instead live in `voices/` or `embeddings/`. Use the files and vo
 |---|---|
 | A checkpoint with `config.json`, `tokenizer.json`, weights and voices | Command line, Python, Rust, browser, servers or Android CPU. Use a runtime version compatible with your checkpoint. |
 | A prepared Core ML bundle | Swift. Add it to your app as `Models`, or host it for the Swift download API. A raw checkpoint needs [exporting first](ios/PhononTTS/README.md#1-build-the-two-pieces-that-are-not-in-the-source). |
-| A QNN bundle with `metadata.json` and compiled context binaries | Android NPU. It must match the phone's SoC and the package's QNN runtime. Older bundles may need their target metadata updated; see the [preview guide](https://github.com/gradium-ai/xn-ptts/pull/154). A raw checkpoint needs exporting and compiling first. |
+| A QNN bundle with `metadata.json` and compiled context binaries | Android NPU. It must match the phone's SoC and the package's QNN runtime. Older bundles may need their target metadata updated; see the [preview guide](https://github.com/gradium-ai/xn-ptts/blob/feat/phonon-qnn/qnn/android/README.md). A raw checkpoint needs exporting and compiling first. |
 
 For the shell examples below, set the folder once:
 
@@ -254,7 +254,7 @@ Keep `tts` and `player` in your app's state while audio plays. You can also down
 <details>
 <summary>Show Android integration options</summary>
 
-**Snapdragon NPU:** The [QNN Android preview](https://github.com/gradium-ai/xn-ptts/pull/154) provides a Kotlin API and an AAR around the optimized QNN engine. It requires Android 12+, ARM64, working QNN HTP support and a model bundle compiled for the phone's SoC. Build the AAR from the preview's source using its build guide. The planned Maven package is `ai.gradium:ptts`; it is not published yet.
+**Snapdragon NPU:** The [QNN Android preview](https://github.com/gradium-ai/xn-ptts/blob/feat/phonon-qnn/qnn/android/README.md) provides a Kotlin API and an AAR around the optimized QNN engine. It requires Android 12+, ARM64, working QNN HTP support and a model bundle compiled for the phone's SoC. Build the AAR from the `feat/phonon-qnn` branch using its build guide. The planned Maven package is `ai.gradium:ptts`; it is not published yet.
 
 Load a supplied compiled model folder on a worker thread and stream audio to your player:
 
@@ -355,7 +355,7 @@ Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chu
 | Browser playback, download progress, caching, threads, and WebGPU | [Browser](ptts-wasm/js/README.md) |
 | Apple installation, model bundles, playback, and cancellation | [Swift](ios/PhononTTS/README.md) |
 | Android CPU library, Kotlin, NDK, and playback | [Android](android/README.md) |
-| Android Snapdragon NPU AAR, Kotlin API, and compiled bundles | [QNN preview in PR #154](https://github.com/gradium-ai/xn-ptts/pull/154) |
+| Android Snapdragon NPU AAR, Kotlin API, and compiled bundles | [QNN Android](https://github.com/gradium-ai/xn-ptts/blob/feat/phonon-qnn/qnn/android/README.md) |
 | Docker, OpenAI-compatible clients, and deployment | [HTTP server](ptts-openai-server/README.md) |
 | Streaming text and audio over one connection | [WebSocket server](ptts-ws-server/README.md) |
 | Rust library and the `say` example | [Rust](ptts/README.md) |
