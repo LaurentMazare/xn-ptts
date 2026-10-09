@@ -1,54 +1,254 @@
 # Phonon
 
-Phonon is Gradium's on-device text-to-speech runtime, written in Rust, with Python bindings. It builds on [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), developed by Kyutai. This preview pairs the code in this repository with a model package supplied by Gradium; the model is not in this repository.
+**Streaming speech, on your device.**
 
-Gradium's Phonon checkpoints are the primary integration target and use their own model config, weights, tokenizer, and voices. Pocket TTS checkpoints can be used when they supply a compatible `config.json`, `tokenizer.json`, and weights. The release will make the selected Phonon checkpoint the default.
+Phonon is Gradium's text-to-speech runtime for apps, browsers, and local servers. Start playback as speech is generated, choose a voice, stop it, and speak again. The runtime is written in Rust and runs without PyTorch.
 
-[![Rust CI](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml)
+[![Rust CI](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml)
+[![Python wheels](https://github.com/gradium-ai/xn-ptts/actions/workflows/maturin-pub.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/maturin-pub.yml)
+[![Browser package](https://github.com/gradium-ai/xn-ptts/actions/workflows/npm-publish.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/npm-publish.yml)
+[![Native packages](https://github.com/gradium-ai/xn-ptts/actions/workflows/cli-release.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/cli-release.yml)
+[![Docker builds](https://github.com/gradium-ai/xn-ptts/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/docker.yml)
+[![Code license: MIT OR Apache-2.0](https://img.shields.io/badge/code-MIT%20OR%20Apache--2.0-blue)](#license)
 
-## 1. Set up
+[![Published Rust version](https://img.shields.io/crates/v/ptts?label=crates.io)](https://crates.io/crates/ptts)
+[![Published Python version](https://img.shields.io/pypi/v/ptts?label=PyPI)](https://pypi.org/project/ptts/)
+[![Published npm version](https://img.shields.io/npm/v/phonon-tts?label=npm)](https://www.npmjs.com/package/phonon-tts)
+[![Native downloads](https://img.shields.io/github/v/release/gradium-ai/xn-ptts?include_prereleases&label=native%20downloads)](https://github.com/gradium-ai/xn-ptts/releases)
 
-For the source installation below, you need [Rust](https://rustup.rs), and [uv](https://docs.astral.sh/uv/) for Python.
+[Choose an integration](#choose-an-integration) · [Packages and downloads](#packages-and-downloads) · [Quickstart](#quickstart) · [Guides](#guides)
 
-Point `MODEL_DIR` at the model folder, the one holding `config.json`, `model.q8.gguf`, `tokenizer.json` and its voice assets:
+> **Runtime preview available:** Python, Rust, browser packages, and native downloads are published. See [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) for preview installation instructions. The unversioned registry commands below target the upcoming stable release and currently select older packages. Supply a checkpoint separately; the public Phonon model and hosted demo are still being prepared. Docker public access is being finalized.
 
-```bash
-export MODEL_DIR=/path/to/model
+<!-- Launch: insert the Phonon banner here once the visual is ready. -->
+<!-- Launch: add a real hosted demo link and a short captioned playback video here. -->
+<!-- Launch: add a few playable samples with text, voice, language, and checkpoint revision. -->
+<!-- Launch: add the public model badge after model publication. -->
+
+A no-install browser demo and audio samples will accompany the public model release. The browser runs synthesis on your device; a model download is needed on first use.
+
+## Choose an integration
+
+| You want to… | Start here | What you need |
+|---|---|---|
+| Generate a speech file | [Command line](#command-line) | A desktop binary and a checkpoint. No Python or Rust required for a published binary. |
+| Add speech to a script or backend | [Python](#python) | A Python wheel and a checkpoint. |
+| Run speech in a web app | [Browser](#browser) | `phonon-tts` and model files served with your app. |
+| Add speech to an iPhone or Mac app | [Swift](#swift) | The `ptts` Swift package and a prepared Core ML bundle. |
+| Connect an existing app or self-host | [Docker and OpenAI-compatible API](#docker-and-openai-compatible-api) | Docker and a local checkpoint or HF repo. |
+| Embed the runtime in Rust | [Rust](#rust) | The `ptts` crate and a checkpoint folder. |
+
+Phonon is the product and model identity. The Rust, Python, and Swift packages are named **`ptts`**; the browser npm package is **`phonon-tts`**. This repository remains `xn-ptts`. Swift apps use `import PhononTTS`.
+
+## What you get
+
+- **Streaming audio:** start consuming speech before the whole utterance is generated.
+- **Local execution:** run from model files on your device, or serve speech from your own machine.
+- **Reusable models:** load once, select a voice, and handle multiple requests.
+- **Interruptible speech:** cancel generation and reuse the model. Playback examples show how to stop audio too.
+- **Familiar integrations:** NumPy audio in Python, WebAssembly in the browser, Core ML on Apple devices, and an OpenAI-compatible speech endpoint.
+
+Voice availability, spoken languages, and voice cloning depend on the checkpoint. The browser uses prepared voice files; creating voices from audio requires a runtime with the encoder.
+
+## Packages and downloads
+
+Packages and native downloads are available as a runtime preview. Follow [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) to install the preview. The unversioned commands below are the installation paths for the upcoming stable release.
+
+| Package | Get it | Details |
+|---|---|---|
+| Desktop `ptts` command | [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) | Linux x64/ARM64, Mac Apple silicon/Intel, and Windows x64 archives, with checksums. [Download guide and Homebrew](docs/cli.md). |
+| Python `ptts` | [PyPI](https://pypi.org/project/ptts/) | Wheels for supported platforms; CPython 3.9+. [Python guide](ptts-pyo3/README.md). |
+| Browser `phonon-tts` | [npm](https://www.npmjs.com/package/phonon-tts) | Worker, single-thread and threaded Wasm builds, and TypeScript declarations. [Browser guide](ptts-wasm/js/README.md). |
+| Swift `ptts` | [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) | `ptts-swift-<version>.zip` and its matching compiled framework. [Swift guide](ios/PhononTTS/README.md). |
+| `ptts-openai-server` | `ghcr.io/gradium-ai/ptts-openai-server:<version>` | CPU image for amd64 and arm64; model weights downloaded or mounted separately. [Server guide](ptts-openai-server/README.md). |
+| Rust `ptts` | [crates.io](https://crates.io/crates/ptts) | Library API; add the `cli` feature to install the command. [Rust guide](ptts/README.md). |
+
+Desktop downloads and Python wheels do not need a Rust compiler. Older x86 CPUs may need a source build: x86 wheels and desktop downloads target x86-64-v3. See the platform requirements in the [CLI guide](docs/cli.md) and [Python guide](ptts-pyo3/README.md).
+
+## Model setup
+
+Every integration needs an explicitly selected checkpoint. No model is chosen automatically.
+
+The local examples below use a q8 checkpoint folder supplied to you, for example:
+
+```text
+model/
+  config.json
+  tokenizer.json
+  model.q8.gguf
+  default-voice.safetensors
 ```
 
-The CLI, Rust examples, Python, and both servers share the [checkpoint resolver](ptts/src/checkpoint.rs). Supply a local model directory or an HF repo explicitly. Each model supplies its own `config.json`, `tokenizer.json`, weights, and voice assets. No model or model config is selected automatically.
+Voice files may instead live in `voices/` or `embeddings/`. Use the files and voice names your checkpoint supplies; do not substitute another model's tokenizer or config. Swift uses a separately exported Core ML bundle.
 
-## 2. Run it
+For the native examples, set the folder once:
 
-Install the `ptts` command from the repository root (the first build takes a few minutes):
-
-```bash
-cargo install --path ptts --locked --features cli
-ptts --lang en --dir "$MODEL_DIR" --quant q8 "Hello world" -o out.wav
+```sh
+# Linux / macOS
+export MODEL_DIR=/absolute/path/to/model
 ```
 
-Both Rust and Python install a command named `ptts`, with different flags. `PATH` order selects which one runs. To select the Python CLI explicitly in its environment, use `python -m ptts`; the `uv run --project` command below selects the project's Python command.
-
-With Python, from the repository root (the first run builds the package, a few minutes):
-
-```bash
-uv run --project ptts-pyo3 --locked ptts --lang en \
-  --model "$MODEL_DIR" --quant q8 "Hello world" -o out.wav
+```powershell
+# Windows PowerShell
+$env:MODEL_DIR = "C:\path\to\model"
 ```
 
-`--quant q8` runs the model in q8, the format `model.q8.gguf` is stored in. The Rust and Python examples below set q8 too. Loading q8 weights as f32 expands them, which is slower and uses more memory. `--lang` is required. It picks how numbers, symbols and abbreviations are spelled out before synthesis: `en`, `fr`, `de`, `es` or `pt`, or `none` to use the text as written.
+Native integrations can also acquire a checkpoint from Hugging Face. Use its repo ID and a fixed revision when you want a repeatable model version. Private repos require `HF_TOKEN` or a saved HF login. Local folders require no Hub access.
 
-The Rust CLI also accepts `--repo <owner/model>` and an optional `--revision <commit>` instead of `--dir`. For a private repo, set `HF_TOKEN` or log in with the Hugging Face CLI. Run `ptts --help` for voice, device, and generation options. The [CLI guide](docs/cli.md) covers desktop downloads and platform requirements.
+`lang` is required and selects **text normalization**, such as how numbers and symbols are spoken. Choose `en`, `fr`, `de`, `es`, `pt`, or `none` to pass text through unchanged. This setting does not establish which languages a checkpoint can speak.
 
-When no voice is specified, native integrations use the checkpoint's configured default, then `default`, then the first registered voice by name. Swift uses its exported bundle's voice selection. For a fixed choice, pass `--voice Freya` to either CLI, `voice="Freya"` to Python, or call `tts.setVoice("Freya")` in Swift.
+## Quickstart
 
-## 3. Use it from Rust
+These examples use the published runtime preview and a supplied checkpoint. Install the preview from [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases), or follow the [source setup](docs/development.md). The unversioned `uvx` and registry commands target the upcoming stable release.
 
-Add the crate from your checkout as a path dependency:
+### Command line
 
-```toml
-[dependencies]
-ptts = { path = "/path/to/xn-ptts/ptts", features = ["hf"] }
+With [uv](https://docs.astral.sh/uv/) installed, try the Python command in an isolated environment:
+
+```sh
+uvx ptts --model "$MODEL_DIR" --lang en --quant q8 "Hello from Phonon." -o speech.wav
+```
+
+`uvx` manages the Python environment and dependencies. On PowerShell, use `--model "$env:MODEL_DIR"`.
+
+For the desktop command, extract the archive and put `ptts` on your `PATH`, then generate a WAV. No Python or Rust installation is needed:
+
+```sh
+ptts --dir "$MODEL_DIR" --lang en --quant q8 "Hello from Phonon." -o speech.wav
+```
+
+On PowerShell, use `--dir "$env:MODEL_DIR"`. The output is a mono 24 kHz WAV. Open it in your audio player.
+
+If you prefer Cargo, install the command with `cargo install ptts --locked --features cli` after the matching stable release is published.
+
+To download a checkpoint instead, replace the example repo and revision with your own:
+
+```sh
+ptts --repo OWNER/MODEL --revision COMMIT_SHA --lang en --quant q8 \
+  "Hello from Phonon." -o speech.wav
+```
+
+Use `--voice NAME` to choose a voice; omitting it uses the checkpoint's default selection. Run `ptts --help` for the remaining options. [CLI guide →](docs/cli.md)
+
+### Python
+
+Install the Python package into your environment:
+
+```sh
+python -m pip install ptts
+```
+
+Then save speech in four lines:
+
+```python
+import os
+import ptts
+
+tts = ptts.TTS(config=os.environ["MODEL_DIR"], lang="en", quant="q8")
+tts.save("speech.wav", "Hello from Phonon.")
+```
+
+Reuse `tts`. `tts.synth(text)` returns a float32 NumPy array; `tts.stream(text)` yields audio chunks:
+
+```python
+with tts.stream("Speech can play while the rest is being generated.") as audio:
+    for pcm in audio:
+        # Send each chunk to your player at audio.sample_rate.
+        print(pcm.shape)
+```
+
+Leaving the `with` block stops generation and releases its workers. For Hub loading, use `config="OWNER/MODEL"` and `revision="COMMIT_SHA"`.
+
+The wheel also provides a command:
+
+```sh
+python -m ptts --model "$MODEL_DIR" --lang en --quant q8 \
+  "Hello from Phonon." -o speech.wav
+```
+
+Rust and Python both install a command named `ptts`, with different flags. `python -m ptts` explicitly selects Python. [Python guide →](ptts-pyo3/README.md)
+
+### Browser
+
+Install the browser package into your web app:
+
+```sh
+npm install phonon-tts
+```
+
+Serve the checkpoint's files under `/model/`, then generate a WAV:
+
+```js
+import { PhononTTS } from 'phonon-tts';
+
+const tts = await PhononTTS.load({
+  lang: 'en',
+  model: {
+    config: '/model/config.json',
+    tokenizer: '/model/tokenizer.json',
+    weights: { q8: '/model/model.q8.gguf' },
+    voices: { default: '/model/default-voice.safetensors' },
+  },
+});
+
+const wav = await tts.synthWav('Hello from Phonon.'); // WAV Blob
+```
+
+Use the returned `Blob` for a download link or your audio player. `tts.stream(text)` yields mono `Float32Array` chunks for streaming playback; the [browser guide](ptts-wasm/js/README.md#streaming) includes a complete Web Audio example. Call `tts.dispose()` when finished with the model.
+
+The first load downloads and caches the files. `onProgress` reports download progress. Serve over HTTPS or localhost for caching, and use a browser with WebAssembly Relaxed SIMD. CPU is the default. Threading and WebGPU setup are covered in the [browser guide →](ptts-wasm/js/README.md).
+
+### Swift
+
+Extract `ptts-swift-<version>.zip`, add the folder to Xcode as a local package, and select the **`ptts`** library product. Swift Package Manager downloads the matching compiled framework. This path needs no Rust build.
+
+Add the prepared Core ML model bundle to your app as a folder reference named `Models`:
+
+```swift
+import Foundation
+import PhononTTS
+
+guard let bundled = Bundle.main.url(forResource: "Models", withExtension: nil) else {
+    throw PhononError(description: "Add the model folder to your app as Models.")
+}
+let models = try PhononModels.install(bundled: bundled)
+let tts = try await Phonon.load(models: models, language: .english)
+let player = try PhononPlayer()
+try await player.play(tts.stream("Hello from Phonon."))
+```
+
+Keep `tts` and `player` in your app's state while audio plays. You can also download models on first run. Requires iOS 18+ or macOS 15+ on Apple silicon. The public Core ML model bundle is still being prepared. [Swift guide and Stop example →](ios/PhononTTS/README.md)
+
+### Docker and OpenAI-compatible API
+
+Choose an image version from [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) and replace `<release-version>` below, without the leading `v`. Public GHCR access is being finalized; until then use an image you can access or the [source setup](docs/development.md#docker). Mount your model folder and start the speech server:
+
+```sh
+PTTS_IMAGE="ghcr.io/gradium-ai/ptts-openai-server:<release-version>"
+docker run --rm -p 127.0.0.1:8880:8880 -v "$MODEL_DIR:/models:ro" \
+  -e PTTS_CONFIG=/models -e PTTS_LANG=en -e PTTS_QUANT=q8 \
+  "$PTTS_IMAGE"
+```
+
+In a second terminal:
+
+```sh
+curl http://localhost:8880/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Hello from Phonon.","voice":"default","response_format":"wav"}' \
+  -o speech.wav
+```
+
+For applications with an OpenAI-compatible TTS setting, use `http://localhost:8880/v1` as the base URL and a voice your checkpoint supports. The [server guide](ptts-openai-server/README.md) includes client setup recipes, supported formats, and limits.
+
+For HF acquisition and a cache that survives container replacement, use the [Hub Compose file](ptts-openai-server/compose.hub.yaml). Supply the repo, revision, and normalization language explicitly. The image contains no model weights. Deployment and access controls are in the [server guide →](ptts-openai-server/README.md).
+
+### Rust
+
+Add `ptts` with tokenizer support to your Rust project. This command targets the upcoming stable release; preview installation is in the release notes, and source development can use a [path dependency](docs/development.md#rust):
+
+```sh
+cargo add ptts --features hf
 ```
 
 ```rust
@@ -63,167 +263,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let mut tts = checkpoint.builder(Lang::En).device(DeviceKind::Cpu).build()?;
     checkpoint.register_voices(&mut tts);
-
-    let pcm = tts.say("Hello world")?;
-    ptts::wav::write_wav_file("out.wav", &pcm, tts.sample_rate())?;
+    let pcm = tts.say("Hello from Phonon.")?;
+    ptts::wav::write_wav_file("speech.wav", &pcm, tts.sample_rate())?;
     Ok(())
 }
 ```
 
-Load the model once and reuse it. `tts.say` returns the whole waveform as mono `f32` samples at `tts.sample_rate()`. `tts.stream(text)?` is an iterator of `Result<Vec<f32>>` chunks, yielded as they are generated, for playback that starts before the sentence is finished. Select a registered voice through `SpeechOptions::voice`; the checkpoint resolver discovers its file. Build with `--release`: a debug build is far too slow for realtime.
+Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chunks for your own playback. The library reads local files; Hub acquisition belongs to the caller. [Rust API and small example →](ptts/README.md)
 
-Long text is grouped at sentence boundaries, usually aiming for 50 text tokens per chunk. A single sentence may exceed that target. Sentences over 200 tokens are split at a sentence or clause mark when possible, otherwise at a word boundary. An indivisible piece over 200 tokens returns an input error before the KV cache is allocated. Each spoken piece starts again from the selected voice prompt.
+## Guides
 
-For repeated requests in one voice, `tts.session_default(&SpeechOptions::default())?` keeps a primed session with a budget calculated from that voice and the configured chunk target. Use `tts.session(&options, max_seq_len)?` when you need to set the KV budget yourself.
+| Topic | Guide |
+|---|---|
+| Desktop downloads, Homebrew, CPU requirements, CLI flags | [Command line](docs/cli.md) |
+| Python installation, voices, streaming, and wheels | [Python](ptts-pyo3/README.md) |
+| Browser playback, download progress, caching, threads, and WebGPU | [Browser](ptts-wasm/js/README.md) |
+| Apple installation, model bundles, playback, and cancellation | [Swift](ios/PhononTTS/README.md) |
+| Docker, OpenAI-compatible clients, and deployment | [HTTP server](ptts-openai-server/README.md) |
+| Streaming text and audio over one connection | [WebSocket server](ptts-ws-server/README.md) |
+| Rust library and the `say` example | [Rust](ptts/README.md) |
+| Build packages, run the local demo, and develop from source | [Development](docs/development.md) |
+| Move from an earlier checkout | [Migration notes](docs/development.md#updating-earlier-builds) |
 
-## 4. Use it from Python
+### Platform notes
 
-Install the package from your checkout into your project. This compiles the Rust code, so it needs Rust installed:
+Native desktop packages cover the targets listed in the [CLI guide](docs/cli.md). Apple apps use Core ML; browser apps use Wasm on CPU by default. Browser WebGPU is opt in. The npm package targets browsers, not native Node.js inference.
 
-```bash
-uv add /path/to/xn-ptts/ptts-pyo3      # or: pip install /path/to/xn-ptts/ptts-pyo3
-```
+The private candidate has been checked through native CLI/Python/server paths, browser CPU with one and three threads, and a packaged Swift consumer on Mac. Device suitability, model size, memory use, and speech quality depend on the checkpoint. Final performance measurements and public samples will accompany the selected release model.
 
-```python
-import os
-import ptts
+<!-- Launch: add a measured performance table with hardware, checkpoint revision, weight format,
+     cold/warm load, first audio, peak memory, and full-pipeline realtime factor. Link to results. -->
 
-model = os.environ["MODEL_DIR"]
-tts = ptts.TTS(lang="en", config=model, quant="q8")
+### Questions and feedback
 
-tts.save("out.wav", "Hello world")    # write a 16-bit WAV
-pcm = tts.synth("Hello world")        # float32 NumPy array at tts.sample_rate
-with tts.stream("A longer sentence, played as it is generated.") as audio:
-    for chunk in audio:
-        ...                           # each chunk is a float32 NumPy array
-```
+Report bugs or request integrations through [GitHub Issues](https://github.com/gradium-ai/xn-ptts/issues). Include your runtime version, device/OS, model revision, weight format, normalization language, and a small reproduction.
 
-Load the model once and reuse it. The [Python README](ptts-pyo3/README.md) covers voices and the remaining options.
+## Acknowledgements
 
-## 5. Use it in an iOS or macOS app
-
-The `ptts` Swift package exposes the `PhononTTS` module and runs the model on the device through Core ML, with its transformer on the Apple Neural Engine: about 12 times faster than realtime on an iPhone 16 Pro, with first audio in under 40 ms. It needs iOS 18 or macOS 15, and Xcode. The [Swift package guide](ios/PhononTTS/README.md) describes the prepared release package and source installation.
-
-Build the package's compiled core and convert the model to Core ML, both from the repository root:
-
-```bash
-./ios/build-xcframework.sh
-cargo run --release -p ptts --example export_coreml -- --dir "$MODEL_DIR" phonon-coreml
-```
-
-Then add `ios/PhononTTS` to your Xcode project as a local package, add the `phonon-coreml` folder to your app as a folder reference named `Models`, and speak:
-
-```swift
-import Foundation
-import PhononTTS
-
-guard let bundled = Bundle.main.url(forResource: "Models", withExtension: nil) else {
-    throw PhononError(description: "Add the exported model folder to your app as a folder reference named Models.")
-}
-let models = try PhononModels.install(bundled: bundled)
-let tts = try await Phonon.load(models: models, language: .english)
-let player = try PhononPlayer()
-try await player.play(tts.stream("Hello world"))
-```
-
-Keep `tts` and `player` in your app or view state while speech is playing. `play` returns when generation finishes; scheduled audio can still be playing.
-
-The [package README](ios/PhononTTS/README.md) covers downloading the models instead of bundling them, voices, and the rest of the API.
-
-## 6. Use it in the browser
-
-The `phonon-tts` JavaScript package runs the model in the page, compiled to WebAssembly, in a Web Worker: on the CPU by default, or on the GPU through WebGPU when asked with `device: 'webgpu'` or `'auto'`. Build it from the repository, which needs Rust with the `wasm32-unknown-unknown` target, [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/), Node 22.7 or later, [binaryen](https://github.com/WebAssembly/binaryen/releases) 124 or later, and a pinned nightly toolchain for the package's multithreaded build, which `make threads-toolchain` installs:
-
-```bash
-rustup target add wasm32-unknown-unknown
-cargo install wasm-pack
-brew install binaryen           # or a release from GitHub: distribution packages are often older than 124
-
-cd ptts-wasm
-make threads-toolchain          # once
-make build                      # the package, in ptts-wasm/pkg
-cd pkg && npm pack              # and as a tarball, phonon-tts-<version>.tgz
-```
-
-Install the tarball into your web app, and serve the model folder with the app's static files, here under `/model/`:
-
-```bash
-npm install /path/to/xn-ptts/ptts-wasm/pkg/phonon-tts-*.tgz
-```
-
-Install the tarball rather than the `pkg` folder: npm links a folder instead of copying it, and Vite's dev server refuses to serve files from outside the app.
-
-```js
-import { PhononTTS } from 'phonon-tts';
-
-const tts = await PhononTTS.load({
-  lang: 'en',
-  model: {
-    weights: { q8: '/model/model.q8.gguf' },
-    tokenizer: '/model/tokenizer.json',
-    config: '/model/config.json',
-    voices: {
-      Freya: '/model/voices/Freya.safetensors',
-      Harper: '/model/voices/Harper.safetensors',
-      Sterling: '/model/voices/Sterling.safetensors',
-      Toby: '/model/voices/Toby.safetensors',
-    },
-    defaultVoice: 'Freya',
-  },
-});
-
-for await (const pcm of tts.stream('Hello from the browser.')) {
-  // mono Float32Array chunks of 80 ms at tts.sampleRate, as they are generated
-}
-const wav = await tts.synthWav('Hello world');   // or a whole WAV Blob
-```
-
-Load the model once and reuse it. The first load downloads the model files and keeps them in the browser's Cache API, which needs the page served over `https://` or from `localhost`. Files are cached by URL, so when you replace the model, serve it under a new path (say `/model-v2/`) or call `clearCache()` first; otherwise the browser keeps using the old files. The browser needs WebAssembly Relaxed SIMD; this was tested in current Chrome. Bundlers such as Vite pick up the package's worker and wasm with no configuration. The [package README](ptts-wasm/js/README.md) covers streaming playback, voices and the remaining options.
-
-`tts.device` says whether it runs on `'webgpu'` or `'cpu'`. On the CPU, generation runs on 3 threads when the page is served with these two headers, and on one thread otherwise. Pass `threads` to `load` to choose another number:
-
-```
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-```
-
-With them, the page can only load cross-origin files that opt in through CORS, which matters if the model is served from another origin. `tts.threads` says how many threads it got, and `tts.threadsReason` why.
-
-## 7. Run it as a server
-
-`ptts-openai-server` serves OpenAI's text-to-speech API, `POST /v1/audio/speech`, so any client with an "OpenAI TTS" setting and a custom base URL can use it. Its Docker image runs on the CPU, for `linux/amd64` and `linux/arm64`. Mount the model folder into it:
-
-```bash
-docker run -p 8880:8880 -v "$MODEL_DIR:/model:ro" -e PTTS_CONFIG=/model \
-  ghcr.io/gradium-ai/ptts-openai-server
-
-curl http://localhost:8880/v1/audio/speech -H "Content-Type: application/json" \
-  -d '{"input": "Hello world", "voice": "Freya"}' -o hello.mp3
-```
-
-The image contains no model weights. Supply a mounted model folder or an HF repo through `PTTS_CONFIG`. The [server README](ptts-openai-server/README.md) covers running it without Docker, the API, and setup for clients such as Open WebUI and Home Assistant. For streaming text in and audio out over one WebSocket connection, there is `ptts-ws-server`.
-
-Both servers keep fixed audio queues through generation and encoding, so a slow reader applies backpressure. Disconnecting stops generation and releases its workers. WebSocket sessions accept up to 4096 pending text characters between flushes and 64 KiB per message. Once 16 requests are queued, the server pauses reading until generation catches up. A socket write stalled for 30 seconds closes the session.
-
-## Updating from earlier builds
-
-Streaming generation now uses bounded buffers across the Rust API and native bindings. Leaving a stream unread pauses generation once its buffers fill; it resumes when you consume audio.
-
-Model sources are now required: use `--repo` or `--dir` in the Rust CLI, `config=` in Python, `--config` or `PTTS_CONFIG` for servers, and an explicit `ModelSpec` in the browser. The Docker image contains no model weights.
-
-Every checkpoint must supply its own config and tokenizer JSON. Built-in configs, Pocket TTS presets, legacy filenames, and `ptts-model.json` support have been removed. The Rust manifest types and `TTSConfig::v202601()` and the browser's `POCKET_TTS_MODEL` export are no longer available. Move custom artifact paths and voice selection to the caller's options; manifest checksums are no longer checked by the runtime.
-
-`Quant::check_device` now rejects backends that were not compiled into the runtime as well as incompatible weight formats. Call it before acquiring model files to fail before downloading.
-
-For a SentencePiece-only checkpoint, [convert its tokenizer to JSON](scripts/convert-tokenizer.py) once before loading it. This is an explicit preparation tool; the runtime reads only the supplied tokenizer JSON.
+Phonon builds on [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), developed by Kyutai, and uses the [xn](https://github.com/LaurentMazare/xn) Rust tensor runtime. Gradium's Phonon checkpoints are the primary target. Compatible Pocket TTS checkpoints use the same explicit loading interface when they supply their own config, tokenizer JSON, weights, and voices.
 
 ## License
 
-The code in this repository is licensed under either of
+The code is **MIT OR Apache-2.0**, at your option: [MIT](LICENSE-MIT) · [Apache-2.0](LICENSE-APACHE).
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
+Model weights and voices are distributed separately and have their own licenses. The selected public Phonon model license will be announced with the model release.
 
-at your option. The model weights are not part of this repository and come with their own license.
-
-Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in this repository, as defined in the Apache-2.0 license, is dual licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this repository is dual licensed as above, without additional terms or conditions.
