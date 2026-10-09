@@ -1,6 +1,8 @@
 #pragma once
 
 #include "third_party/json.hpp"
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -10,7 +12,9 @@ namespace phonon {
 // Match only explicitly declared targets. Do not guess compatibility from a
 // device name.
 inline std::string select_context_binary(const nlohmann::json &binaries,
-                                         const std::string &soc) {
+                                         std::string soc) {
+  std::transform(soc.begin(), soc.end(), soc.begin(),
+                 [](unsigned char c) { return std::toupper(c); });
   if (soc.empty())
     throw std::runtime_error("set soc_model to select a compiled QNN model");
   std::string selected;

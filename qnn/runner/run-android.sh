@@ -1,7 +1,7 @@
 #!/bin/sh
 # Push the runner, a Phonon bundle and the QNN libraries to an Android phone over adb, and speak.
 #
-#   QAIRT_ROOT=.../qairt/2.50.0.260828 ./run-android.sh BUNDLE_DIR "Hello world." [htp|cpu] [hexagon-v79] LANG SOC_MODEL
+#   QAIRT_ROOT=.../qairt/2.50.0.260828 ./run-android.sh BUNDLE_DIR "Hello world." LANG [htp|cpu|gpu] [SOC_MODEL] [hexagon-v79]
 #
 # htp runs the context binary on the NPU (Snapdragon only; the Hexagon version must
 # match the SoC the binary was compiled for: v79 for 8 Elite, v75 for 8 Gen 3,
@@ -11,10 +11,15 @@ set -eu
 
 BUNDLE=${1:?bundle dir}
 TEXT=${2:?text}
-BACKEND=${3:-htp}
-HEXAGON=${4:-hexagon-v79}
-LANGUAGE=${5:?normalization language or none}
-SOC_MODEL=${6:?compiled target SoC, e.g. SM8750}
+LANGUAGE=${3:?normalization language or none}
+BACKEND=${4:-htp}
+SOC_MODEL=${5:-}
+HEXAGON=${6:-hexagon-v79}
+case "$BACKEND" in
+  htp) : "${SOC_MODEL:?compiled target SoC, e.g. SM8750}" ;;
+  cpu|gpu) ;;
+  *) echo "backend must be htp, cpu or gpu" >&2; exit 2 ;;
+esac
 : "${QAIRT_ROOT:?set QAIRT_ROOT to the QAIRT SDK root}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 BIN="$HERE/build-android/phonon"
@@ -54,7 +59,7 @@ if [ "$BACKEND" = htp ]; then
   CONTEXT=$(python3 -c '
 import json, sys
 entries = json.load(open(sys.argv[1]))["runtime"]["context_binaries"].values()
-files = [v["file"] for v in entries if sys.argv[2] in v.get("soc_models", [])]
+files = [v["file"] for v in entries if sys.argv[2].upper() in v.get("soc_models", [])]
 if len(files) != 1:
     raise SystemExit("bundle must have exactly one context binary for " + sys.argv[2])
 print(files[0])' "$BUNDLE/metadata.json" "$SOC_MODEL")

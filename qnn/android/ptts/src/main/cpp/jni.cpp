@@ -79,9 +79,13 @@ extern "C" JNIEXPORT jlong JNICALL Java_ai_gradium_phonon_QnnNative_create(
     // before QNN loads.
     static std::mutex init;
     std::lock_guard<std::mutex> lock(init);
-    const std::string dsp =
-        options.lib_dir +
-        ";/vendor/lib/rfsa/adsp;/vendor/dsp/cdsp;/system/lib/rfsa/adsp;/dsp";
+    const char *existing = std::getenv("ADSP_LIBRARY_PATH");
+    std::string dsp = existing ? existing : "";
+    if (dsp.empty())
+      dsp = "/vendor/lib/rfsa/adsp;/vendor/dsp/cdsp;/system/lib/rfsa/adsp;/dsp";
+    const std::string prefix = options.lib_dir + ";";
+    if (dsp != options.lib_dir && dsp.rfind(prefix, 0) != 0)
+      dsp = prefix + dsp;
     if (setenv("ADSP_LIBRARY_PATH", dsp.c_str(), 1) != 0)
       throw std::runtime_error("cannot set ADSP_LIBRARY_PATH");
     auto state = std::make_unique<Session>();

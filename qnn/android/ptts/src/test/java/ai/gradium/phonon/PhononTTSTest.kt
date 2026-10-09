@@ -38,6 +38,8 @@ class PhononTTSTest {
             model.speak("first") { throw failure }
         })
         model.speak("second") {
+            assertEquals(24000, model.sampleRate)
+            assertEquals(listOf("default", "test"), model.voices)
             assertThrows(IllegalStateException::class.java) { model.close() }
             assertThrows(IllegalStateException::class.java) { model.speak("nested") { true } }
             model.stop()

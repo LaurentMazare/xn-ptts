@@ -36,25 +36,23 @@ T symbol(void* lib, const char* name) {
 PttsText::PttsText(const std::string& lib, const std::string& tokenizer_json, const std::string& lang) {
   lib_ = dlopen(lib.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (!lib_) throw std::runtime_error("dlopen " + lib + ": " + dlerror());
-  try {
-    auto make = symbol<void* (*)(const char*, const char*, char**)>(lib_, "ptts_text_new");
-    split_ = symbol<decltype(split_)>(lib_, "ptts_text_split");
-    chunks_free_ = symbol<decltype(chunks_free_)>(lib_, "ptts_text_chunks_free");
-    string_free_ = symbol<decltype(string_free_)>(lib_, "ptts_text_string_free");
-    free_ = symbol<decltype(free_)>(lib_, "ptts_text_free");
-    char* error = nullptr;
-    handle_ = make(tokenizer_json.c_str(), lang.c_str(), &error);
-    if (!handle_) {
-      std::string msg = error ? error : "unknown error";
-      if (error) string_free_(error);
-      throw std::runtime_error("ptts_text_new: " + msg);
-    }
-  } catch (...) { dlclose(lib_); throw; }
+  auto make = symbol<void* (*)(const char*, const char*, char**)>(lib_, "ptts_text_new");
+  split_ = symbol<decltype(split_)>(lib_, "ptts_text_split");
+  chunks_free_ = symbol<decltype(chunks_free_)>(lib_, "ptts_text_chunks_free");
+  string_free_ = symbol<decltype(string_free_)>(lib_, "ptts_text_string_free");
+  free_ = symbol<decltype(free_)>(lib_, "ptts_text_free");
+  char* error = nullptr;
+  handle_ = make(tokenizer_json.c_str(), lang.c_str(), &error);
+  if (!handle_) {
+    std::string msg = error ? error : "unknown error";
+    if (error) string_free_(error);
+    throw std::runtime_error("ptts_text_new: " + msg);
+  }
 }
 
 PttsText::~PttsText() {
   if (handle_) free_(handle_);
-  if (lib_) dlclose(lib_);
+  // Keep the Rust library resident: TLS destructors and worker threads may still use it.
 }
 
 std::vector<Chunk> PttsText::split(const std::string& text, size_t max_tokens, double frame_rate) const {

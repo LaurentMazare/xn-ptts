@@ -11,12 +11,12 @@ class PhononTTS internal constructor(private var handle: Long, private val nativ
     private var voice: String? = null
 
     /** This model's output rate, in Hz. Audio is mono float PCM. */
-    val sampleRate: Int get() = synchronized(lock) { idle(); native.sampleRate(handle) }
-    val voices: List<String> get() = synchronized(lock) { idle(); native.voices(handle).toList() }
+    val sampleRate: Int = native.sampleRate(handle)
+    val voices: List<String> = native.voices(handle).toList()
 
     fun setVoice(name: String) = synchronized(lock) {
         idle()
-        require(name in native.voices(handle)) { "Unknown voice: $name" }
+        require(name in voices) { "Unknown voice: $name" }
         voice = name
     }
 
@@ -77,7 +77,12 @@ class PhononTTS internal constructor(private var handle: Long, private val nativ
             }
             val engine = QnnNative()
             val handle = engine.create(modelDir.canonicalPath, lang, Build.SOC_MODEL.uppercase(java.util.Locale.ROOT), libraries.absolutePath)
-            return PhononTTS(handle, engine)
+            try {
+                return PhononTTS(handle, engine)
+            } catch (e: Throwable) {
+                engine.close(handle)
+                throw e
+            }
         }
     }
 }

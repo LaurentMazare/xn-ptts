@@ -9,6 +9,8 @@ int main() {
       {"S24", {{"file", "s24.bin"}, {"soc_models", {"SM8650"}}}}};
   if (phonon::select_context_binary(binaries, "SM8650") != "s24.bin")
     return 1;
+  if (phonon::select_context_binary(binaries, "sm8750") != "s25.bin")
+    return 6;
   auto rejects = [](const json &entries, const std::string &soc) {
     try {
       phonon::select_context_binary(entries, soc);
