@@ -33,17 +33,15 @@ On Windows, compare `Get-FileHash .\ptts-<version>-x86_64-pc-windows-msvc.zip -A
 
 ## Homebrew
 
-Each release also includes a `ptts.rb` formula generated from those exact archives and their SHA-256 hashes. After that release is published, Mac and Linux users can install it with Homebrew: Set `VERSION` to the version of your selected [GitHub Release](https://github.com/gradium-ai/xn-ptts/releases), without the leading `v`.
+On Mac or Linux, install the prebuilt CPU command from [Gradium's Homebrew tap](https://github.com/gradium-ai/homebrew-tap):
 
 ```sh
-VERSION="<release-version>"
-brew tap-new local/ptts
-curl -fL "https://github.com/gradium-ai/xn-ptts/releases/download/v${VERSION}/ptts.rb" \
-  -o "$(brew --repository local/ptts)/Formula/ptts.rb"
-brew install local/ptts/ptts
+brew install gradium-ai/tap/ptts
 ```
 
-This installs the prebuilt CPU command. For upgrades, repeat the download with the new version, then run `brew upgrade local/ptts/ptts`. Create the local tap only once. The platform and CPU requirements above still apply.
+Homebrew adds the tap automatically. The formula currently installs the `0.4.0-rc.1` runtime preview and pins each release archive by SHA-256. It does not include a model. Supply one with `--dir` or `--repo` when running `ptts`.
+
+After a new formula version is published, run `brew update` and `brew upgrade gradium-ai/tap/ptts`. The platform and CPU requirements above still apply.
 
 ## Generate speech
 
