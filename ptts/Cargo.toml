@@ -93,7 +93,3 @@ required-features = ["audio"]
 
 [[example]]
 name = "export_coreml"
-
-[[example]]
-name = "dump_reference"
-required-features = ["hf"]

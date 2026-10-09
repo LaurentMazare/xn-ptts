@@ -78,14 +78,11 @@ or callback failure. Concurrent generation and closing during generation are rej
 
 ## Model bundles
 
-The existing QNN export path creates `metadata.json`, a tokenizer, BOS data, voices and compiled
+Supply a prepared bundle with `metadata.json`, a tokenizer, BOS data, voices and compiled
 context binaries. These are exported model assets, not raw safetensors or GGUF checkpoints.
-Exporters must declare the exact tested SoC, matching the target passed to `package.py`:
-
-```sh
-# Run from qnn/export after compiling for the target device.
-python bundle.py --soc-model SM8750 --out bundle
-```
+Model export and diagnostic tools remain on the [feat/phonon-qnn branch](https://github.com/gradium-ai/xn-ptts/tree/feat/phonon-qnn/qnn/export).
+They are not needed to build or use the AAR with an existing bundle. Bundle metadata must
+declare the exact tested SoC for each compiled context binary.
 
 Every `runtime.context_binaries` entry needs an explicit `soc_models` list:
 
