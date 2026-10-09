@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 
 #include <stdexcept>
+#include <memory>
 
 namespace phonon {
 namespace {
@@ -51,7 +52,7 @@ PttsText::PttsText(const std::string& lib, const std::string& tokenizer_json, co
 
 PttsText::~PttsText() {
   if (handle_) free_(handle_);
-  // The library stays loaded, as the QNN ones do.
+  // Keep the Rust library resident: TLS destructors and worker threads may still use it.
 }
 
 std::vector<Chunk> PttsText::split(const std::string& text, size_t max_tokens, double frame_rate) const {
@@ -62,6 +63,8 @@ std::vector<Chunk> PttsText::split(const std::string& text, size_t max_tokens, d
     if (error) string_free_(error);
     throw std::runtime_error("ptts_text_split: " + msg);
   }
+  auto release = [&](void* value) { chunks_free_(value); };
+  std::unique_ptr<void, decltype(release)> guard(chunks, release);
   std::vector<Chunk> out;
   for (size_t i = 0; i < chunks->n_chunks; i++) {
     const ptts_text_chunk& c = chunks->chunks[i];
@@ -71,7 +74,6 @@ std::vector<Chunk> PttsText::split(const std::string& text, size_t max_tokens, d
     chunk.frame_budget = int(c.frame_budget);
     out.push_back(std::move(chunk));
   }
-  chunks_free_(chunks);
   return out;
 }
 

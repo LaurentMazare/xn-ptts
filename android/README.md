@@ -170,3 +170,9 @@ These routes have not been tested here yet; the Kotlin wrapper and the C interfa
 
 To run Phonon in a WebView instead, use the [`phonon-tts`](../ptts-wasm/js/README.md) npm package,
 which runs the same model as WebAssembly.
+
+## Snapdragon NPU package
+
+The QNN Android library and its Kotlin API are in [qnn/android](../qnn/android/README.md).
+It wraps the optimized QNN engine in an AAR, with model assets supplied separately.
+The package is still a preview and has not been published to Maven Central.
