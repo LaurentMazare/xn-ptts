@@ -2,7 +2,7 @@
 
 **Streaming speech, on your device.**
 
-Phonon gives apps a natural voice wherever people use them, from phones and laptops to browsers and local services. It is built for offline assistants, accessibility tools, and interactive experiences that need speech without a cloud round trip. The runtime is written in Rust and needs no PyTorch.
+Phonon brings natural text-to-speech to phones, laptops, browsers, and local services. It is built for offline assistants, accessibility tools, and interactive experiences that need speech without a cloud round trip. The runtime is written in Rust and needs no PyTorch.
 
 [![Rust CI](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml)
 [![Python wheels](https://github.com/gradium-ai/xn-ptts/actions/workflows/maturin-pub.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/maturin-pub.yml)
@@ -18,13 +18,17 @@ Phonon gives apps a natural voice wherever people use them, from phones and lapt
 
 [What you get](#what-you-get) · [Choose an integration](#choose-an-integration) · [Packages and downloads](#packages-and-downloads) · [Quickstart](#quickstart) · [Guides](#guides)
 
-> **Runtime preview available:** Python, Rust, browser packages, and native downloads are published. See the [runtime preview release](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1) for installation instructions. The unversioned registry commands below target the upcoming stable release and currently select older packages. Supply a checkpoint separately; the public Phonon model and hosted demo are still being prepared. Docker public access is being finalized.
+> **Runtime preview available:** Python, Rust, browser packages, and native downloads are published. See the [runtime preview release](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1) for installation instructions. The unversioned registry commands below target the upcoming stable release and currently select older packages. Phonon model files are available separately from the runtime packages. Docker public access is being finalized.
 
-A no-install browser demo and audio samples will accompany the public model release. The browser runs synthesis on your device; a model download is needed on first use.
+The browser runs synthesis on your device; it downloads model files on first use.
 
 ## What you get
 
-Once model files are available, Phonon generates speech locally. Playback can begin before the full utterance is ready, stop when a user interrupts, and start again from the loaded model. Choose from the voices in your checkpoint; Rust and Python can also create a voice from an audio sample when the checkpoint supports cloning. Spoken languages and voice options depend on the checkpoint.
+- **Small enough to ship:** Choose a 40M or 90M parameter model. Both can ship inside a mobile app or load in a browser tab.
+- **Five languages in one model:** Speak English, French, German, Spanish, and Portuguese, with more languages planned.
+- **Fast across devices:** A custom inference stack runs on phones, laptops, embedded hardware, browsers, and GPUs. Multiple backends deliver faster inference than Kokoro and llama.cpp-based runtimes on the same hardware.
+- **Voices ready to use or make your own:** Choose Harper, Sterling, Freya, or Toby, or create a custom voice with voice cloning and voice design.
+- **Control the delivery:** Adjust speaking speed and start playing streamed audio before the full utterance is ready.
 
 ## Choose an integration
 
@@ -307,7 +311,7 @@ Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chu
 
 Native desktop packages cover the targets listed in the [CLI guide](docs/cli.md). Apple apps use Core ML; browser apps use Wasm on CPU by default. Browser WebGPU is opt in. The npm package targets browsers, not native Node.js inference.
 
-Device suitability, model size, memory use, and speech quality depend on the checkpoint. Performance measurements and public samples will accompany the release model.
+Performance and memory use depend on the checkpoint and device.
 
 ### Questions and feedback
 
@@ -321,6 +325,6 @@ Phonon builds on [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), develo
 
 The code is **MIT OR Apache-2.0**, at your option: [MIT](LICENSE-MIT) · [Apache-2.0](LICENSE-APACHE).
 
-Model weights and voices are distributed separately and have their own licenses. The selected public Phonon model license will be announced with the model release.
+Model weights and voices are distributed separately and have their own licenses. Check the model license before redistribution.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this repository is dual licensed as above, without additional terms or conditions.
