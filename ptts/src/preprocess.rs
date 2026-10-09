@@ -137,6 +137,65 @@ impl Lang {
         }
     }
 
+    fn about(self) -> &'static str {
+        match self {
+            Lang::En => "about",
+            Lang::Fr => "environ",
+            Lang::De => "etwa",
+            Lang::Es | Lang::Pt => "aproximadamente",
+        }
+    }
+
+    fn plus_minus(self) -> &'static str {
+        match self {
+            Lang::En => "plus or minus",
+            Lang::Fr => "plus ou moins",
+            Lang::De => "plus minus",
+            Lang::Es => "más o menos",
+            Lang::Pt => "mais ou menos",
+        }
+    }
+
+    fn pi(self) -> &'static str {
+        match self {
+            Lang::De => "Pi",
+            _ => "pi",
+        }
+    }
+
+    fn love(self) -> &'static str {
+        match self {
+            Lang::En => "love",
+            Lang::Fr => "aime",
+            Lang::De => "liebe",
+            Lang::Es | Lang::Pt => "amo",
+        }
+    }
+
+    fn star(self) -> &'static str {
+        match self {
+            Lang::En => "star",
+            Lang::Fr => "étoile",
+            Lang::De => "Stern",
+            Lang::Es | Lang::Pt => "asterisco",
+        }
+    }
+
+    fn stars(self, n: &str, of: Option<usize>) -> String {
+        match (self, of) {
+            (Lang::En, Some(of)) => format!("{n} out of {of} stars"),
+            (Lang::En, None) => format!("{n} stars"),
+            (Lang::Fr, Some(of)) => format!("{n} étoiles sur {of}"),
+            (Lang::Fr, None) => format!("{n} étoiles"),
+            (Lang::De, Some(of)) => format!("{n} von {of} Sternen"),
+            (Lang::De, None) => format!("{n} Sterne"),
+            (Lang::Es, Some(of)) => format!("{n} de {of} estrellas"),
+            (Lang::Es, None) => format!("{n} estrellas"),
+            (Lang::Pt, Some(of)) => format!("{n} de {of} estrelas"),
+            (Lang::Pt, None) => format!("{n} estrelas"),
+        }
+    }
+
     pub fn decimal_separator(self) -> &'static str {
         match self {
             Lang::En => "point",
@@ -258,7 +317,7 @@ impl StringAppender {
     /// "it costs 5$.".
     fn keeps(&self, last: char) -> bool {
         match last {
-            '"' | '\'' | '@' | '+' => true,
+            '"' | '\'' | '@' | '+' | '%' | '#' => true,
             '$' => self.buffer.len() >= 2 && self.buffer[self.buffer.len() - 2].is_ascii_digit(),
             _ => false,
         }
@@ -373,6 +432,35 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
             c if is_double_quote(c) => res.push('"'),
             c if is_single_quote(c) => res.push('\''),
             '‐' | '‑' | '‒' | '―' => res.push('-'),
+            '★' | '☆' => {
+                let mut full = usize::from(c == '★');
+                let mut empty = usize::from(c == '☆');
+                while let Some(&next) = chars.peek().filter(|&&c| c == '★' || c == '☆') {
+                    full += usize::from(next == '★');
+                    empty += usize::from(next == '☆');
+                    chars.next();
+                }
+                let half = chars.next_if_eq(&'½').is_some();
+                let n = match (half, lang) {
+                    (false, _) => full.to_string(),
+                    (true, Lang::En) => format!("{full}.5"),
+                    (true, _) => format!("{full},5"),
+                };
+                let of = (empty > 0).then_some(full + empty + usize::from(half));
+                res.push_spoken(&lang.stars(&n, of));
+            }
+            '±' => res.push_spoken(lang.plus_minus()),
+            'π' => res.push_spoken(lang.pi()),
+            '❤' | '♥' => {
+                chars.next_if_eq(&'\u{FE0F}');
+                res.push_spoken(lang.love());
+            }
+            '~' if chars.peek().is_some_and(char::is_ascii_digit) => res.push_spoken(lang.about()),
+            '*' if prev.is_none_or(char::is_whitespace)
+                && chars.peek().is_some_and(char::is_ascii_digit) =>
+            {
+                res.push_spoken(lang.star())
+            }
             // The two dashes below are not - (ascii 45) but similar unicode chars.
             '–' | '*' | '—' | '[' | ']' | '{' | '}' => res.push_whitespace(),
             '•' | '‣' | '◦' | '·' | '→' | '←' | '↑' | '↓' | '➡' | '➜' => {
@@ -401,11 +489,7 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
         prev = Some(c);
     }
     let text = res.into_string();
-    let words = text.split(' ').map(|w| match rewrite_word(w, lang, rules) {
-        Some(rewritten) => rewritten,
-        None => spell_symbols(w, lang, rules),
-    });
-    words.collect::<Vec<_>>().join(" ")
+    rewrite::rewrite_text(&text, lang, rules, |w| spell_symbols(w, lang, rules))
 }
 
 /// Spell out the `@` and `+` of a word no rule claimed, as the character pass spells `=`, and
@@ -545,6 +629,46 @@ mod tests {
         for (lang, input, expected) in cases {
             assert_eq!(normalize_text(input, lang, Rules::DEFAULT), expected, "{input:?}");
         }
+        let en = [
+            ("It sold for £3.2m.", "It sold for 3 point 2 million pounds."),
+            (
+                "We raised $2 million, then €3bn.",
+                "We raised 2 million dollars, then 3 billion euros.",
+            ),
+            (
+                "Ring +44 20 7946 0958.",
+                "Ring plus four four, two zero, seven nine four six, zero nine five eight.",
+            ),
+            (
+                "Text 07700 900123 now.",
+                "Text zero seven seven zero zero, nine zero zero one two three now.",
+            ),
+            ("In 2019 2020 2021", "In 2019 2020 2021"),
+            ("The card ending in -4098.", "The card ending in four zero nine eight."),
+            ("It fell to -12.", "It fell to minus 12."),
+            ("Your order number is 48213.", "Your order number is four eight two one three."),
+            ("It weighs 48213 tons.", "It weighs 48 thousand 213 tons."),
+            (
+                "Lt Col Vann and Lt. Col. Harris.",
+                "Lieutenant Colonel Vann and Lieutenant Colonel Harris.",
+            ),
+            ("Rated ★★★★☆, or ★★★½.", "Rated 4 out of 5 stars, or 3 point 5 stars."),
+            ("Wait ~10 minutes, ±2.", "Wait about 10 minutes, plus or minus 2."),
+            ("I ❤️ NY, dial *67, it's 4.5%.", "I love NY, dial star 67, it's 4.5%."),
+            ("Press 1, then #.", "Press 1, then #."),
+            ("That was sooo good.", "That was so good."),
+        ];
+        for (input, expected) in en {
+            assert_eq!(normalize_text(input, Lang::En, Rules::DEFAULT), expected, "{input:?}");
+        }
+        assert_eq!(
+            normalize_text("Il a levé 2 € millions, ★★★☆☆.", Lang::Fr, Rules::DEFAULT),
+            "Il a levé 2 € millions, 3 étoiles sur 5."
+        );
+        assert_eq!(
+            normalize_text("Sie zahlte $2 Millionen.", Lang::De, Rules::DEFAULT),
+            "Sie zahlte 2 Millionen Dollar."
+        );
         assert_eq!(
             normalize_text("It's 1:06pm on 20/12/2015.", Lang::En, Rules::ALL),
             "It's 1-06 PM on 20-12 2015."

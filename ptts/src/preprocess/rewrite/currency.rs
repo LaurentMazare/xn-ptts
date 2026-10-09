@@ -9,16 +9,18 @@ enum Currency {
     Dollar,
     Euro,
     Pound,
+    Yen,
 }
 
 impl Currency {
-    const SYMBOLS: [char; 3] = ['$', '€', '£'];
+    const SYMBOLS: [char; 4] = ['$', '€', '£', '¥'];
 
     fn from_symbol(symbol: char) -> Option<Self> {
         match symbol {
             '$' => Some(Self::Dollar),
             '€' => Some(Self::Euro),
             '£' => Some(Self::Pound),
+            '¥' => Some(Self::Yen),
             _ => None,
         }
     }
@@ -35,6 +37,11 @@ impl Currency {
             (Self::Pound, Lang::Fr) => ("livre", "livres"),
             (Self::Pound, Lang::De) => ("Pfund", "Pfund"),
             (Self::Pound, Lang::Es | Lang::Pt) => ("libra", "libras"),
+            (Self::Yen, Lang::De) => ("Yen", "Yen"),
+            (Self::Yen, Lang::En) => ("yen", "yen"),
+            (Self::Yen, Lang::Fr) => ("yen", "yens"),
+            (Self::Yen, Lang::Es) => ("yen", "yenes"),
+            (Self::Yen, Lang::Pt) => ("iene", "ienes"),
         }
     }
 }
@@ -58,6 +65,9 @@ pub(super) fn currency(word: &str, lang: Lang) -> Option<String> {
         None => (body.chars().next_back()?, body.strip_suffix(Currency::SYMBOLS)?),
     };
     let currency = Currency::from_symbol(symbol)?;
+    if let Some((amount, scale)) = split_scale(amount, lang) {
+        return with_scale(amount, scale, currency, lang).map(|spoken| format!("{spoken}{suffix}"));
+    }
     if let Some(spoken) = with_cents(amount, currency, lang) {
         return Some(format!("{spoken}{suffix}"));
     }
@@ -70,6 +80,64 @@ pub(super) fn currency(word: &str, lang: Lang) -> Option<String> {
 
 /// `amount` read as whole units and cents, when it has exactly two decimals: English writes it
 /// "1,234.56" and French "1234,56". `None` for any other amount, and in the other languages.
+fn split_scale(amount: &str, lang: Lang) -> Option<(&str, &'static str)> {
+    let suffixes: &[(&str, &str)] = match lang {
+        Lang::En => &[
+            ("thousand", "thousand"),
+            ("million", "million"),
+            ("billion", "billion"),
+            ("trillion", "trillion"),
+            ("bn", "billion"),
+            ("BN", "billion"),
+            ("mn", "million"),
+            ("tn", "trillion"),
+            ("k", "thousand"),
+            ("K", "thousand"),
+            ("m", "million"),
+            ("M", "million"),
+            ("b", "billion"),
+            ("B", "billion"),
+        ],
+        _ => &[],
+    };
+    suffixes.iter().find_map(|&(suffix, scale)| {
+        let number = amount.strip_suffix(suffix)?;
+        number.ends_with(|c: char| c.is_ascii_digit()).then_some((number, scale))
+    })
+}
+
+fn scale_word(word: &str, lang: Lang) -> bool {
+    let words: &[&str] = match lang {
+        Lang::En => &["thousand", "million", "billion", "trillion"],
+        Lang::Fr => &["mille", "million", "millions", "milliard", "milliards"],
+        Lang::De => &["Tausend", "Million", "Millionen", "Milliarde", "Milliarden"],
+        Lang::Es => &["mil", "millón", "millones"],
+        Lang::Pt => &["mil", "milhão", "milhões", "bilhão", "bilhões"],
+    };
+    words.contains(&word)
+}
+
+fn with_scale(amount: &str, scale: &str, currency: Currency, lang: Lang) -> Option<String> {
+    let (amount, rest) = number_words(amount, lang)?;
+    if !rest.is_empty() {
+        return None;
+    }
+    let (_, name) = currency.name(lang);
+    Some(with_name(&format!("{amount} {scale}"), name, lang))
+}
+
+pub(super) fn scaled(words: &[&str], lang: Lang) -> Option<(String, usize)> {
+    let [word, next, ..] = words else { return None };
+    let (scale, suffix) = split_suffix(next);
+    if !scale_word(scale, lang) {
+        return None;
+    }
+    let symbol = word.chars().next()?;
+    let currency = Currency::from_symbol(symbol)?;
+    let spoken = with_scale(&word[symbol.len_utf8()..], scale, currency, lang)?;
+    Some((format!("{spoken}{suffix}"), 2))
+}
+
 fn with_cents(amount: &str, currency: Currency, lang: Lang) -> Option<String> {
     let (whole, cents) = match lang {
         Lang::En => amount.rsplit_once('.').filter(|(whole, _)| {

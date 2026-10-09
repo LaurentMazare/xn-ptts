@@ -249,8 +249,8 @@ impl Tts {
     ///
     /// `rewrites` picks which word rewrites run on the normalized text:
     /// `"default"` (what `None` means: numbers, currency, dashed-digits,
-    /// emails, urls), `"all"` (those and phones, times, dates), `"none"`, or a
-    /// comma-separated list of rule names.
+    /// emails, urls, abbreviations, elongations), `"all"` (those and phones,
+    /// times, dates), `"none"`, or a comma-separated list of rule names.
     #[new]
     #[pyo3(signature = (
         config = None,
