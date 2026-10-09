@@ -10,10 +10,10 @@ See the [CLI guide](https://github.com/gradium-ai/xn-ptts/blob/main/docs/cli.md)
 
 Installing the command requires `--features cli`; without it, this crate builds only the library.
 
-From a checkout of [xn-ptts](https://github.com/gradium-ai/xn-ptts):
+Install the command from crates.io:
 
 ```sh
-cargo install --path ptts --locked --features cli
+cargo install ptts --locked --features cli
 ptts --dir /path/to/model --lang en --quant q8 "Hello world" -o out.wav
 ```
 
@@ -26,6 +26,12 @@ The Python package also installs a command named `ptts`, with `--model` instead 
 The short Rust library example remains in `examples/say.rs`.
 
 ## Rust API
+
+Add the library to your project:
+
+```sh
+cargo add ptts --features hf
+```
 
 Enable `hf` for the Hugging Face JSON tokenizer. The library loads local files and does not require the `cli` feature.
 

@@ -263,6 +263,23 @@ jobs:
       # Used to generate artifact attestation
       attestations: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Check the tag matches the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PYTHON'
+          import os, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["workspace"]["package"]["version"]
+          if os.environ["TAG"] != f"v{version}":
+              raise SystemExit(f"Tag {os.environ['TAG']} does not match workspace version {version}")
+          PYTHON
       - uses: actions/download-artifact@v8
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v4
