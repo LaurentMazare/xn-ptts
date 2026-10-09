@@ -4,7 +4,7 @@ The root [README](../README.md) covers the consumer integrations. This guide is 
 
 ## Model setup
 
-Set `MODEL_DIR` to the absolute path of a checkpoint folder with its own config, tokenizer JSON, weights, and voice assets. The examples use q8 GGUF weights. Use a normalization language supported by your checkpoint. See [model setup](../README.md#model-setup).
+Set `MODEL_DIR` to the absolute path of a checkpoint folder with its own config, tokenizer JSON, weights, and voice assets. The examples use q8 GGUF weights. `--lang` selects how the runtime reads numbers and symbols: `en`, `fr`, `de`, `es`, `pt`, or `none` to keep text unchanged. Choose it for the language of your input; the checkpoint determines which spoken languages it supports. See [model setup](../README.md#model-setup).
 
 Clone the repository and run the following commands from its root:
 

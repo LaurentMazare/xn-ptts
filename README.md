@@ -18,12 +18,7 @@ Phonon is Gradium's text-to-speech runtime for apps, browsers, and local servers
 
 [Choose an integration](#choose-an-integration) · [Packages and downloads](#packages-and-downloads) · [Quickstart](#quickstart) · [Guides](#guides)
 
-> **Runtime preview available:** Python, Rust, browser packages, and native downloads are published. See [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) for preview installation instructions. The unversioned registry commands below target the upcoming stable release and currently select older packages. Supply a checkpoint separately; the public Phonon model and hosted demo are still being prepared. Docker public access is being finalized.
-
-<!-- Launch: insert the Phonon banner here once the visual is ready. -->
-<!-- Launch: add a real hosted demo link and a short captioned playback video here. -->
-<!-- Launch: add a few playable samples with text, voice, language, and checkpoint revision. -->
-<!-- Launch: add the public model badge after model publication. -->
+> **Runtime preview available:** Python, Rust, browser packages, and native downloads are published. See the [runtime preview release](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1) for installation instructions. The unversioned registry commands below target the upcoming stable release and currently select older packages. Supply a checkpoint separately; the public Phonon model and hosted demo are still being prepared. Docker public access is being finalized.
 
 A no-install browser demo and audio samples will accompany the public model release. The browser runs synthesis on your device; a model download is needed on first use.
 
@@ -52,7 +47,7 @@ Voice availability, spoken languages, and voice cloning depend on the checkpoint
 
 ## Packages and downloads
 
-Packages and native downloads are available as a runtime preview. Follow [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) to install the preview. The unversioned commands below are the installation paths for the upcoming stable release.
+Packages and native downloads are available as a runtime preview. Follow the [runtime preview release](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1) to install the preview. The unversioned commands below are the installation paths for the upcoming stable release.
 
 | Package | Get it | Details |
 |---|---|---|
@@ -99,11 +94,11 @@ Native integrations can also acquire a checkpoint from Hugging Face. Use its rep
 
 ## Quickstart
 
-These examples use the published runtime preview and a supplied checkpoint. Install the preview from [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases), or follow the [source setup](docs/development.md). The unversioned `uvx` and registry commands target the upcoming stable release.
+These examples use the published runtime preview and a supplied checkpoint. Install the preview using the [release instructions](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1), or follow the [source setup](docs/development.md). The unversioned `uvx` and registry commands target the upcoming stable release.
 
 ### Command line
 
-With [uv](https://docs.astral.sh/uv/) installed, try the Python command in an isolated environment:
+After the stable release, [uv](https://docs.astral.sh/uv/) can run the Python command in an isolated environment. For the current preview, use the command in the [release instructions](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1):
 
 ```sh
 uvx ptts --model "$MODEL_DIR" --lang en --quant q8 "Hello from Phonon." -o speech.wav
@@ -132,7 +127,7 @@ Use `--voice NAME` to choose a voice; omitting it uses the checkpoint's default 
 
 ### Python
 
-Install the Python package into your environment:
+For the stable release, install the Python package into your environment. Current preview users should follow the [release instructions](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1):
 
 ```sh
 python -m pip install ptts
@@ -170,7 +165,7 @@ Rust and Python both install a command named `ptts`, with different flags. `pyth
 
 ### Browser
 
-Install the browser package into your web app:
+For the stable release, install the browser package into your web app. Current preview users should follow the [release instructions](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1):
 
 ```sh
 npm install phonon-tts
@@ -221,7 +216,7 @@ Keep `tts` and `player` in your app's state while audio plays. You can also down
 
 ### Docker and OpenAI-compatible API
 
-Choose an image version from [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) and replace `<release-version>` below, without the leading `v`. Public GHCR access is being finalized; until then use an image you can access or the [source setup](docs/development.md#docker). Mount your model folder and start the speech server:
+Choose an image version from [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) and replace `<release-version>` below, without the leading `v`. Public GHCR access is being finalized; until then use an image you can access or the [source setup](docs/development.md#docker). The Docker commands below use Bash or another POSIX shell. Mount your model folder and start the speech server:
 
 ```sh
 PTTS_IMAGE="ghcr.io/gradium-ai/ptts-openai-server:<release-version>"
@@ -245,7 +240,7 @@ For HF acquisition and a cache that survives container replacement, use the [Hub
 
 ### Rust
 
-Add `ptts` with tokenizer support to your Rust project. This command targets the upcoming stable release; preview installation is in the release notes, and source development can use a [path dependency](docs/development.md#rust):
+Add `ptts` with tokenizer support to your Rust project. This command targets the upcoming stable release; preview installation is in the [release instructions](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1), and source development can use a [path dependency](docs/development.md#rust):
 
 ```sh
 cargo add ptts --features hf
@@ -289,10 +284,7 @@ Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chu
 
 Native desktop packages cover the targets listed in the [CLI guide](docs/cli.md). Apple apps use Core ML; browser apps use Wasm on CPU by default. Browser WebGPU is opt in. The npm package targets browsers, not native Node.js inference.
 
-The private candidate has been checked through native CLI/Python/server paths, browser CPU with one and three threads, and a packaged Swift consumer on Mac. Device suitability, model size, memory use, and speech quality depend on the checkpoint. Final performance measurements and public samples will accompany the selected release model.
-
-<!-- Launch: add a measured performance table with hardware, checkpoint revision, weight format,
-     cold/warm load, first audio, peak memory, and full-pipeline realtime factor. Link to results. -->
+Device suitability, model size, memory use, and speech quality depend on the checkpoint. Performance measurements and public samples will accompany the release model.
 
 ### Questions and feedback
 
