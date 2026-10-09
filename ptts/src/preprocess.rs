@@ -181,6 +181,71 @@ impl Lang {
         }
     }
 
+    fn degrees(self, one: bool) -> &'static str {
+        match (self, one) {
+            (Lang::En, true) => "degree",
+            (Lang::En, false) => "degrees",
+            (Lang::Fr, true) => "degré",
+            (Lang::Fr, false) => "degrés",
+            (Lang::De, _) => "Grad",
+            (Lang::Es, true) => "grado",
+            (Lang::Es, false) => "grados",
+            (Lang::Pt, true) => "grau",
+            (Lang::Pt, false) => "graus",
+        }
+    }
+
+    fn symbol(self, c: char) -> Option<&'static str> {
+        use Lang::*;
+        Some(match (c, self) {
+            ('×', En) => "times",
+            ('×', Fr) => "fois",
+            ('×', De) => "mal",
+            ('×', Es) => "por",
+            ('×', Pt) => "vezes",
+            ('÷', En) => "divided by",
+            ('÷', Fr) => "divisé par",
+            ('÷', De) => "geteilt durch",
+            ('÷', Es) => "dividido entre",
+            ('÷', Pt) => "dividido por",
+            ('≤', En) => "less than or equal to",
+            ('≤', Fr) => "inférieur ou égal à",
+            ('≤', De) => "kleiner oder gleich",
+            ('≤', Es) => "menor o igual que",
+            ('≤', Pt) => "menor ou igual a",
+            ('≥', En) => "greater than or equal to",
+            ('≥', Fr) => "supérieur ou égal à",
+            ('≥', De) => "größer oder gleich",
+            ('≥', Es) => "mayor o igual que",
+            ('≥', Pt) => "maior ou igual a",
+            ('≠', En) => "is not equal to",
+            ('≠', Fr) => "différent de",
+            ('≠', De) => "ungleich",
+            ('≠', Es) => "distinto de",
+            ('≠', Pt) => "diferente de",
+            ('≈', En) => "approximately",
+            ('≈', Fr) => "environ",
+            ('≈', De) => "ungefähr",
+            ('≈', Es | Pt) => "aproximadamente",
+            ('√', En) => "square root of",
+            ('√', Fr) => "racine carrée de",
+            ('√', De) => "Wurzel aus",
+            ('√', Es) => "raíz cuadrada de",
+            ('√', Pt) => "raiz quadrada de",
+            ('∞', En) => "infinity",
+            ('∞', Fr) => "infini",
+            ('∞', De) => "unendlich",
+            ('∞', Es | Pt) => "infinito",
+            ('∑', De) => "Sigma",
+            ('∑', _) => "sigma",
+            ('‰', En) => "per mille",
+            ('‰', Fr) => "pour mille",
+            ('‰', De) => "Promille",
+            ('‰', Es | Pt) => "por mil",
+            _ => return None,
+        })
+    }
+
     fn stars(self, n: &str, of: Option<usize>) -> String {
         match (self, of) {
             (Lang::En, Some(of)) => format!("{n} out of {of} stars"),
@@ -323,6 +388,16 @@ impl StringAppender {
         }
     }
 
+    fn ends_with_one(&self) -> bool {
+        let b = &self.buffer
+            [..self.buffer.iter().rposition(|c| !c.is_whitespace()).map_or(0, |i| i + 1)];
+        b.last() == Some(&'1')
+            && !b
+                .len()
+                .checked_sub(2)
+                .is_some_and(|i| b[i].is_ascii_digit() || b[i] == '.' || b[i] == ',')
+    }
+
     /// `word` as a word of its own, for a symbol read aloud.
     fn push_spoken(&mut self, word: &str) {
         self.push_whitespace();
@@ -449,6 +524,23 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
                 let of = (empty > 0).then_some(full + empty + usize::from(half));
                 res.push_spoken(&lang.stars(&n, of));
             }
+            '°' => {
+                res.push_spoken(lang.degrees(res.ends_with_one()));
+                let scale = match chars.peek() {
+                    Some('C') => Some("Celsius"),
+                    Some('F') => Some("Fahrenheit"),
+                    _ => None,
+                };
+                let mut after = chars.clone();
+                after.next();
+                if let Some(scale) =
+                    scale.filter(|_| !after.peek().is_some_and(|c| c.is_alphanumeric()))
+                {
+                    chars.next();
+                    res.push_str(scale);
+                }
+            }
+            c if lang.symbol(c).is_some() => res.push_spoken(lang.symbol(c).unwrap_or_default()),
             '±' => res.push_spoken(lang.plus_minus()),
             'π' => res.push_spoken(lang.pi()),
             '❤' | '♥' => {
@@ -656,10 +748,38 @@ mod tests {
             ("I ❤️ NY, dial *67, it's 4.5%.", "I love NY, dial star 67, it's 4.5%."),
             ("Press 1, then #.", "Press 1, then #."),
             ("That was sooo good.", "That was so good."),
+            ("It's -40° outside.", "It's minus 40 degrees outside."),
+            (
+                "Water boils at 100°C, or 212 °F.",
+                "Water boils at 100 degrees Celsius, or 212 degrees Fahrenheit.",
+            ),
+            (
+                "It was -3.5°C, then 1°C.",
+                "It was minus 3 point 5 degrees Celsius, then 1 degree Celsius.",
+            ),
+            ("Turn 90°, then 1°.", "Turn 90 degrees, then 1 degree."),
+            ("A 45°Ceiling", "A 45 degrees Ceiling"),
+            (
+                "1920×1080, 6÷2, x≤3, y≥4, a≠b, π≈3.14",
+                "1920 times 1 thousand 80, 6 divided by 2, x less than or equal to 3, y greater than or equal to 4, a is not equal to b, pi approximately 3 point 14",
+            ),
+            ("√2, ∞, 5‰ and ∑", "square root of 2, infinity, 5 per mille and sigma"),
         ];
         for (input, expected) in en {
             assert_eq!(normalize_text(input, Lang::En, Rules::DEFAULT), expected, "{input:?}");
         }
+        assert_eq!(
+            normalize_text("Il fait -5°C.", Lang::Fr, Rules::DEFAULT),
+            "Il fait moins 5 degrés Celsius."
+        );
+        assert_eq!(
+            normalize_text("Es sind 21°C.", Lang::De, Rules::DEFAULT),
+            "Es sind 21 Grad Celsius."
+        );
+        assert_eq!(
+            normalize_text("Hace 1° y 3×2.", Lang::Es, Rules::DEFAULT),
+            "Hace 1 grado y 3 por 2."
+        );
         assert_eq!(
             normalize_text("Il a levé 2 € millions, ★★★☆☆.", Lang::Fr, Rules::DEFAULT),
             "Il a levé 2 € millions, 3 étoiles sur 5."
