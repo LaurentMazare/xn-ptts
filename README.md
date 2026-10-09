@@ -2,7 +2,7 @@
 
 **Streaming speech, on your device.**
 
-Phonon is Gradium's text-to-speech runtime for apps, browsers, and local servers. Start playback as speech is generated, choose a voice, stop it, and speak again. The runtime is written in Rust and runs without PyTorch.
+Phonon brings natural text-to-speech to phones, laptops, browsers, and local services. It is built for offline assistants, accessibility tools, and interactive experiences that need speech without a cloud round trip. The runtime is written in Rust and needs no PyTorch.
 
 [![Rust CI](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml)
 [![Python wheels](https://github.com/gradium-ai/xn-ptts/actions/workflows/maturin-pub.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/maturin-pub.yml)
@@ -16,11 +16,23 @@ Phonon is Gradium's text-to-speech runtime for apps, browsers, and local servers
 [![Published npm version](https://img.shields.io/npm/v/phonon-tts?label=npm)](https://www.npmjs.com/package/phonon-tts)
 [![Native downloads](https://img.shields.io/github/v/release/gradium-ai/xn-ptts?include_prereleases&label=native%20downloads)](https://github.com/gradium-ai/xn-ptts/releases)
 
-[Choose an integration](#choose-an-integration) · [Packages and downloads](#packages-and-downloads) · [Quickstart](#quickstart) · [Guides](#guides)
+[What you get](#what-you-get) · [Choose an integration](#choose-an-integration) · [Packages and downloads](#packages-and-downloads) · [Quickstart](#quickstart) · [Guides](#guides)
 
-> **Runtime preview available:** Python, Rust, browser packages, and native downloads are published. See the [runtime preview release](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1) for installation instructions. The unversioned registry commands below target the upcoming stable release and currently select older packages. Supply a checkpoint separately; the public Phonon model and hosted demo are still being prepared. Docker public access is being finalized.
+> **Runtime preview available:** Python, Rust, browser packages, and native downloads are published. See the [runtime preview release](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1) for installation instructions. The unversioned registry commands below target the upcoming stable release and currently select older packages. Phonon model files are available separately from the runtime packages. Docker public access is being finalized.
 
-A no-install browser demo and audio samples will accompany the public model release. The browser runs synthesis on your device; a model download is needed on first use.
+The browser runs synthesis on your device; it downloads model files on first use.
+
+## What you get
+
+- **Small enough to ship:** Choose a 40M or 90M parameter model. Both can ship inside a mobile app or load in a browser tab.
+- **Five languages in one model:** Speak English, French, German, Spanish, and Portuguese, with more languages planned.
+- **Fast across devices:** A custom inference stack runs in browsers and on phones, laptops, and embedded hardware, with support for mobile NPUs and GPUs. Multiple backends deliver faster inference than Kokoro and llama.cpp-based runtimes on the same hardware.
+- **Voices ready to use or make your own:** Choose from ready-to-use voices, or explore voice design and cloning in [Gradium Studio](https://studio.gradium.ai/).
+- **Control the delivery:** Adjust speaking speed and start playing streamed audio before the full utterance is ready.
+
+## Performance
+
+<!-- Performance measurements and methodology will go here. -->
 
 ## Choose an integration
 
@@ -34,16 +46,6 @@ A no-install browser demo and audio samples will accompany the public model rele
 | Embed the runtime in Rust | [Rust](#rust) | The `ptts` crate and a checkpoint folder. |
 
 Phonon is the product and model identity. The Rust, Python, and Swift packages are named **`ptts`**; the browser npm package is **`phonon-tts`**. This repository remains `xn-ptts`. Swift apps use `import PhononTTS`.
-
-## What you get
-
-- **Streaming audio:** start consuming speech before the whole utterance is generated.
-- **Local execution:** run from model files on your device, or serve speech from your own machine.
-- **Reusable models:** load once, select a voice, and handle multiple requests.
-- **Interruptible speech:** cancel generation and reuse the model. Playback examples show how to stop audio too.
-- **Familiar integrations:** NumPy audio in Python, WebAssembly in the browser, Core ML on Apple devices, and an OpenAI-compatible speech endpoint.
-
-Voice availability, spoken languages, and voice cloning depend on the checkpoint. The browser uses prepared voice files; creating voices from audio requires a runtime with the encoder.
 
 ## Packages and downloads
 
@@ -313,7 +315,7 @@ Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chu
 
 Native desktop packages cover the targets listed in the [CLI guide](docs/cli.md). Apple apps use Core ML; browser apps use Wasm on CPU by default. Browser WebGPU is opt in. The npm package targets browsers, not native Node.js inference.
 
-Device suitability, model size, memory use, and speech quality depend on the checkpoint. Performance measurements and public samples will accompany the release model.
+Performance and memory use depend on the checkpoint and device.
 
 ### Questions and feedback
 
@@ -327,6 +329,6 @@ Phonon builds on [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), develo
 
 The code is **MIT OR Apache-2.0**, at your option: [MIT](LICENSE-MIT) · [Apache-2.0](LICENSE-APACHE).
 
-Model weights and voices are distributed separately and have their own licenses. The selected public Phonon model license will be announced with the model release.
+Model weights and voices are distributed separately and have their own licenses. Check the model license before redistribution.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this repository is dual licensed as above, without additional terms or conditions.
