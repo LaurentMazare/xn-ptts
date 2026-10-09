@@ -1,7 +1,7 @@
 # Phonon on Android
 
-For supported Snapdragon NPUs, the [QNN AAR preview](https://github.com/gradium-ai/xn-ptts/pull/154) provides a
-Kotlin API and compiled model support on Android 12+ ARM64. Build it from the preview source;
+For supported Snapdragon NPUs, the [QNN AAR preview](../qnn/android/README.md) provides a
+Kotlin API and compiled model support on Android 12+ ARM64. Build it from this repository;
 the Maven package is not published yet. This guide covers the CPU library.
 
 Phonon runs on Android on the CPU as a C library: `libptts_ffi.so` and its header,
