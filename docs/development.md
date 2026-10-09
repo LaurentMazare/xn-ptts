@@ -129,13 +129,3 @@ node --test ptts-wasm/js/test/*.test.mjs
 Do not use `--all-features`: CUDA requires its own SDK. The servers require libopus, and the HTTP server also uses LAME; their guides list the system packages. Release workflows set explicit CPU baselines rather than the checkout's `target-cpu=native` flags.
 
 Installed wheel tests run without weights by default. Supply `PTTS_TEST_MODEL` and, for a Hub model, `PTTS_TEST_REVISION` to include the marked checkpoint tests. Keep private model files and credentials out of public artifacts and shared caches.
-
-## Updating earlier builds
-
-- Every model source is explicit: `--dir` or `--repo` in the Rust command, `config=` in Python, `--config` or `PTTS_CONFIG` for servers, and `model` in the browser. Docker images contain no weights.
-- Checkpoints supply their own `config.json` and `tokenizer.json`. Built-in configs, Pocket TTS presets, legacy filename fallbacks, and `ptts-model.json` support were removed. `TTSConfig::v202601()`, native manifest types, and the browser's `POCKET_TTS_MODEL` export are no longer available.
-- For a SentencePiece-only checkpoint, [convert its tokenizer to JSON](../scripts/convert-tokenizer.py) once. The runtime reads the supplied JSON tokenizer and does not guess another one.
-- Streaming buffers are bounded. An unread stream pauses generation when its buffers fill; consume or cancel it when finished. Stop already-scheduled playback separately, using the cancellation examples in the package guides.
-- The full Rust command moved from an example to a binary. Use `cargo run --release -p ptts --features cli --bin ptts -- ...` instead of `--example ptts`.
-- The Swift product is `ptts`; existing package dependencies must select that product. `import PhononTTS` is unchanged.
-- The browser npm name remains `phonon-tts`.
