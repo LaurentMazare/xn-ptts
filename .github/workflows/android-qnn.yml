@@ -14,9 +14,9 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
       - name: Install Android platform
-        run: sdkmanager 'platforms;android-36'
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
       - name: Kotlin lifecycle and cancellation
         working-directory: qnn/android
         run: ./gradlew :ptts:testDebugUnitTest -PpttsUnitTestsOnly=true --console=plain
