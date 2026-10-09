@@ -30,7 +30,7 @@ tts.save("out.wav", "Hello world")
 PY
 ```
 
-For a source install, use `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Source builds need Rust installed; supported CPython wheels do not.
+For a source install, use `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Source builds need Rust installed; supported CPython wheels do not. See the [development guide](https://github.com/gradium-ai/xn-ptts/blob/main/docs/development.md) for repository build commands.
 
 `config` must name a local directory, a `config.json`, or a Hugging Face repo ID. There is no default model. Local paths download nothing. Rust examples, Python, and both servers use the [shared checkpoint resolver](https://github.com/gradium-ai/xn-ptts/blob/main/ptts/src/checkpoint.rs). Every checkpoint supplies its own `config.json` and `tokenizer.json`. q8 prefers `model.q8.gguf`; other formats prefer `model.safetensors`. Voices come from `voices/` or `embeddings/`, plus `default-voice.safetensors` as `default`. Hub downloads use the supplied `revision` for all files.
 

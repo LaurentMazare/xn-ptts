@@ -51,7 +51,7 @@ This installs the prebuilt CPU command. For upgrades, repeat the download with t
 ptts --dir /path/to/model --lang en --quant q8 "Hello world" -o out.wav
 ```
 
-The folder must contain `config.json`, `tokenizer.json`, weights, and any required voice assets. Use q8 for a q8 GGUF checkpoint, or omit `--quant` for f32 weights. Choose a normalization language that the checkpoint supports: `en`, `fr`, `de`, `es`, `pt`, or `none` to disable normalization.
+The folder must contain `config.json`, `tokenizer.json`, weights, and any required voice assets. Use q8 for a q8 GGUF checkpoint, or omit `--quant` for f32 weights. `--lang` selects how the runtime reads numbers and symbols: `en`, `fr`, `de`, `es`, `pt`, or `none` to keep text unchanged. Choose it for the language of your input; the checkpoint determines which spoken languages it supports.
 
 You can also use a Hugging Face repo:
 
