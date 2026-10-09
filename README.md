@@ -27,8 +27,12 @@ The browser runs synthesis on your device; it downloads model files on first use
 - **Small enough to ship:** Choose a 40M or 90M parameter model. Both can ship inside a mobile app or load in a browser tab.
 - **Five languages in one model:** Speak English, French, German, Spanish, and Portuguese, with more languages planned.
 - **Fast across devices:** A custom inference stack runs in browsers and on phones, laptops, and embedded hardware, with support for mobile NPUs and GPUs. Multiple backends deliver faster inference than Kokoro and llama.cpp-based runtimes on the same hardware.
-- **Voices ready to use or make your own:** Choose Harper, Sterling, Freya, or Toby, or create a custom voice with voice cloning and voice design.
+- **Voices ready to use or make your own:** Choose from ready-to-use voices, or explore voice design and cloning in [Gradium Studio](https://studio.gradium.ai/).
 - **Control the delivery:** Adjust speaking speed and start playing streamed audio before the full utterance is ready.
+
+## Performance
+
+<!-- Performance measurements and methodology will go here. -->
 
 ## Choose an integration
 
