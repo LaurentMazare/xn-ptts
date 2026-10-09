@@ -33,10 +33,10 @@ On Windows, compare `Get-FileHash .\ptts-<version>-x86_64-pc-windows-msvc.zip -A
 
 ## Homebrew
 
-Each release also includes a `ptts.rb` formula generated from those exact archives and their SHA-256 hashes. After that release is published, Mac and Linux users can install it with Homebrew:
+Each release also includes a `ptts.rb` formula generated from those exact archives and their SHA-256 hashes. After that release is published, Mac and Linux users can install it with Homebrew: Set `VERSION` to the version of your selected [GitHub Release](https://github.com/gradium-ai/xn-ptts/releases), without the leading `v`.
 
 ```sh
-VERSION=0.4.0  # use the version you want to install
+VERSION="<release-version>"
 brew tap-new local/ptts
 curl -fL "https://github.com/gradium-ai/xn-ptts/releases/download/v${VERSION}/ptts.rb" \
   -o "$(brew --repository local/ptts)/Formula/ptts.rb"
