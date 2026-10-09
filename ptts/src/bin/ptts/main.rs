@@ -1,7 +1,7 @@
 //! Generate speech from text on the command line.
 //!
 //! ```text
-//! cargo run --release --example ptts --features hf,audio -- "hello world" -o out.wav
+//! ptts --dir /path/to/model --lang en "hello world" -o out.wav
 //! ```
 //!
 //! Everything between the text and the WAV file is [`ptts::synth::Synth`]; what
@@ -9,7 +9,6 @@
 //! `model_helpers`), audio file decoding for `--voice <file>`, and the timing
 //! report.
 
-#[path = "model_helpers.rs"]
 mod model_helpers;
 
 use anyhow::{Context, Result};
@@ -18,7 +17,7 @@ use ptts::preprocess::{Normalize, Rules};
 use ptts::synth::{DeviceKind, Quant, SpeechOptions};
 
 #[derive(Parser, Debug)]
-#[command(name = "ptts", about = "Generate speech from text")]
+#[command(name = "ptts", version, about = "Generate speech with Phonon")]
 struct Args {
     /// Text to synthesize.
     text: String,
@@ -43,8 +42,12 @@ struct Args {
 
     /// Hugging Face model repo to download the checkpoint from: config.json,
     /// weights, tokenizer and voices.
-    #[arg(long, default_value = model_helpers::REPO_ID, conflicts_with = "dir")]
-    repo: String,
+    #[arg(long, required_unless_present = "dir", conflicts_with = "dir")]
+    repo: Option<String>,
+
+    /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.
+    #[arg(long, conflicts_with = "dir")]
+    revision: Option<String>,
 
     /// Load from a local directory holding config.json, weights, tokenizer and
     /// voices/ instead of downloading from the Hugging Face Hub.
@@ -52,15 +55,13 @@ struct Args {
     dir: Option<std::path::PathBuf>,
 
     /// Tokenizer to load, as a path to a `tokenizer.json`. Defaults to the one
-    /// the checkpoint ships. A checkpoint that carries only a SentencePiece
-    /// `tokenizer.model` needs converting once with `scripts/convert-tokenizer.py`.
+    /// the checkpoint ships.
     #[arg(long)]
     tokenizer: Option<std::path::PathBuf>,
 
     /// Weights file to load from the repo or directory, e.g. `model.q8.gguf` for
     /// a checkpoint that ships both f32 and quantized weights. Defaults to the
-    /// first of model.safetensors, model.q8.gguf or tts_b6369a24.safetensors
-    /// that exists.
+    /// standard weights matching --quant, then f32 weights.
     #[arg(long)]
     weights: Option<String>,
 
@@ -126,23 +127,21 @@ fn main() -> Result<()> {
         xn::with_f16c()
     );
 
-    // Which files the checkpoint ships, and what they are called, is this
-    // example's business rather than the library's.
     let source = match args.dir.as_deref() {
         Some(dir) => model_helpers::Source::Dir(dir),
-        None => model_helpers::Source::Hub(&args.repo),
+        None => model_helpers::Source::Hub {
+            repo: args.repo.as_deref().context("--repo or --dir is required")?,
+            revision: args.revision.as_deref(),
+        },
     };
-    let checkpoint = model_helpers::Checkpoint::locate(source, args.weights.as_deref())?;
-    let mut builder = checkpoint
-        .builder(normalize)
-        .device(args.device.parse::<DeviceKind>()?)
-        .temperature(args.temperature)
-        .seed(args.seed);
+    let quant = args.quant.as_deref().unwrap_or("f32").parse::<Quant>()?;
+    let device = args.device.parse::<DeviceKind>()?;
+    quant.check_device(device)?;
+    let checkpoint = model_helpers::locate(source, args.weights.as_deref(), quant)?;
+    let mut builder =
+        checkpoint.builder(normalize).device(device).temperature(args.temperature).seed(args.seed);
     if let Some(tokenizer) = args.tokenizer.as_deref() {
         builder = builder.tokenizer_file(tokenizer);
-    }
-    if let Some(quant) = args.quant.as_deref() {
-        builder = builder.quant(quant.parse::<Quant>()?);
     }
     if let Some(cfg_coef) = args.cfg_coef {
         builder = builder.cfg_coef(cfg_coef);
@@ -279,4 +278,32 @@ fn peak_rss_mb() -> Option<f64> {
 #[cfg(not(unix))]
 fn peak_rss_mb() -> Option<f64> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_model_source_is_required_before_loading() {
+        let err = Args::try_parse_from(["ptts", "--lang", "en", "hello"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert!(err.to_string().contains("--repo"));
+    }
+
+    #[test]
+    fn a_local_directory_rejects_a_hub_revision_before_loading() {
+        let err = Args::try_parse_from([
+            "ptts",
+            "--dir",
+            "./missing",
+            "--revision",
+            "test-commit",
+            "--lang",
+            "en",
+            "Hello",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
 }

@@ -55,7 +55,7 @@ jobs:
       - name: Workspace, default features
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: ptts, every optional feature on
-        run: cargo clippy -p ptts --features hf,audio --all-targets -- -D warnings
+        run: cargo clippy -p ptts --features cli --all-targets -- -D warnings
       # The C interface as android/build.sh builds it, so it keeps compiling for Android. No NDK
       # is needed: nothing links and no build script compiles C.
       - name: ptts-ffi for Android
@@ -91,7 +91,7 @@ jobs:
         run: cargo test --workspace --all-targets $WS_EXCLUDE
         shell: bash
       - name: ptts, every optional feature on
-        run: cargo test -p ptts --features hf,audio --all-targets
+        run: cargo test -p ptts --features cli --all-targets
         shell: bash
       # `-p ptts` rather than `--workspace`: it is the only crate with doctests, and selecting
       # the two `cdylib` crates only produces "doc tests are not supported for crate type(s)
@@ -127,7 +127,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for features in "" hf audio hf,audio; do
+          for features in "" hf audio hf,audio cli; do
             echo "::group::ptts --features ${features:-<none>}"
             cargo check -p ptts --no-default-features --features "$features" --all-targets
             echo "::endgroup::"

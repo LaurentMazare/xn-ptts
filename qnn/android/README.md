@@ -125,7 +125,8 @@ model layout is settled.
 ./gradlew :ptts:testDebugUnitTest :smoke:assembleDebug :smoke:assembleRelease
 ```
 
-Model-free CI runs the Kotlin lifecycle and callback tests without proprietary SDK headers:
+Model-free CI checks the Rust text frontend with its locked dependencies, model selection,
+and the Kotlin lifecycle and callback tests without proprietary SDK headers:
 
 ```sh
 ./gradlew :ptts:testDebugUnitTest -PpttsUnitTestsOnly=true

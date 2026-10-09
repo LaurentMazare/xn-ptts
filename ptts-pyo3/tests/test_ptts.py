@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
 import sys
 from importlib import metadata
 from pathlib import Path
@@ -188,6 +189,7 @@ def test_thread_count_round_trips():
         # `src/lib.rs` is where that mapping lives, and this is what holds it to it.
         ({"quant": "q3k"}, ValueError, "q3k"),
         ({"device": "tpu"}, ValueError, "tpu"),
+        ({"config": "./missing", "revision": "test-commit"}, ValueError, "revision"),
         ({"config": "/definitely/not/a/checkpoint/config.json"}, LookupError, "config.json"),
         ({"device": "cuda", "quant": "q8_0"}, NotImplementedError, "CPU-only"),
     ],
@@ -217,7 +219,18 @@ def test_nothing_is_downloaded_before_the_arguments_are_checked():
 
 @pytest.fixture(scope="module")
 def tts() -> ptts.TTS:
-    return ptts.TTS(lang="en")
+    # Private rehearsals use the installed wheel and a local directory or Hub repo ID.
+    # Model tests require an explicit checkpoint; ordinary wheel checks need none.
+    model = os.environ.get("PTTS_TEST_MODEL")
+    if not model:
+        pytest.skip("set PTTS_TEST_MODEL for checkpoint synthesis tests")
+    return ptts.TTS(
+        config=model,
+        revision=os.environ.get("PTTS_TEST_REVISION"),
+        lang="en",
+        device="cpu",
+        quant="q8",
+    )
 
 
 @pytest.mark.checkpoint
@@ -264,4 +277,10 @@ def test_the_same_seed_gives_the_same_audio(tts):
 
     a = tts.synth("Reproducible.", seed=7)
     b = tts.synth("Reproducible.", seed=7)
-    assert np.array_equal(a, b)
+    # The decoder drains available latents in batches, whose sizes depend on scheduling.
+    # Different GEMM shapes can change rounding even for identical sampled latents.
+    # This absolute tolerance is below one 16-bit PCM step; duration must still match.
+    assert a.shape == b.shape
+    np.testing.assert_allclose(a, b, rtol=0, atol=1e-6)
+    c = tts.synth("Reproducible.", seed=8)
+    assert a.shape != c.shape or not np.allclose(a, c, rtol=0, atol=1e-6)

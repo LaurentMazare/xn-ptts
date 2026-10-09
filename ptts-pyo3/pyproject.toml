@@ -34,7 +34,6 @@ ptts = "ptts.__main__:main"
 Homepage = "https://github.com/gradium-ai/xn-ptts"
 Repository = "https://github.com/gradium-ai/xn-ptts"
 Issues = "https://github.com/gradium-ai/xn-ptts/issues"
-"Model card" = "https://huggingface.co/kyutai/pocket-tts"
 
 [project.optional-dependencies]
 # For a local `uv sync` or an editable install. The wheel jobs cannot use it: they install

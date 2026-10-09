@@ -1,23 +1,38 @@
 # ptts for Python
 
-Python bindings for the [Phonon Rust runtime](../README.md). For this preview, the package is built from this repository and reads the model package supplied by Gradium.
+Python bindings for the [Phonon Rust runtime](https://github.com/gradium-ai/xn-ptts).
 
-Set `MODEL_DIR` as described in the [root README](../README.md#1-set-up). Then, from the repository root:
+To try a q8 checkpoint with [uv](https://docs.astral.sh/uv/), run:
 
 ```bash
-uv run --project ptts-pyo3 --locked python - <<'PY'
+uvx ptts --model /path/to/model --lang en --quant q8 "Hello world" -o out.wav
+```
+
+`uvx` handles the isolated Python environment and package dependencies. Model files are supplied separately; `--model` accepts a local checkpoint directory or a Hugging Face repo ID.
+
+To use the Python API in your own environment, install the package:
+
+```bash
+pip install ptts
+```
+
+Model weights are supplied separately. Set `MODEL_DIR` to a local checkpoint directory containing `config.json`, `tokenizer.json`, weights, and voice files. Then:
+
+```bash
+export MODEL_DIR=/path/to/model
+python - <<'PY'
 import os
 import ptts
 
-tts = ptts.TTS(lang="en", config=os.environ["MODEL_DIR"] + "/config.json", quant="q8")
+tts = ptts.TTS(lang="en", config=os.environ["MODEL_DIR"], quant="q8")
 print(tts.voices)
 tts.save("out.wav", "Hello world")
 PY
 ```
 
-To use it from your own project, install it with `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Either one compiles the Rust code, so it needs Rust installed.
+For a source install, use `uv add /path/to/xn-ptts/ptts-pyo3` or `pip install /path/to/xn-ptts/ptts-pyo3`. Source builds need Rust installed; supported CPython wheels do not. See the [development guide](https://github.com/gradium-ai/xn-ptts/blob/main/docs/development.md) for repository build commands.
 
-`config` is the path to `config.json`. The package loads the weights, `tokenizer.json` and the voices from the same directory, and downloads nothing. With `quant="q8"` it loads `model.q8.gguf`; with any other format it prefers `model.safetensors` when the directory has one. Voices are every file in `voices/` or `embeddings/`, plus `default-voice.safetensors` as `default`. `config` can also be a Hugging Face repo id with the same layout.
+`config` must name a local directory, a `config.json`, or a Hugging Face repo ID. There is no default model. Local paths download nothing. Rust examples, Python, and both servers use the [shared checkpoint resolver](https://github.com/gradium-ai/xn-ptts/blob/main/ptts/src/checkpoint.rs). Every checkpoint supplies its own `config.json` and `tokenizer.json`. q8 prefers `model.q8.gguf`; other formats prefer `model.safetensors`. Voices come from `voices/` or `embeddings/`, plus `default-voice.safetensors` as `default`. Hub downloads use the supplied `revision` for all files.
 
 `lang` is required: `en`, `fr`, `de`, `es` or `pt` picks how numbers, symbols and abbreviations are spelled out; `none` uses the text as written.
 
@@ -34,17 +49,17 @@ with tts.stream("A longer sentence.", voice=voice) as audio:
         print(chunk.shape)  # process each PCM chunk as it arrives
 ```
 
-`tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early.
+`tts.sample_rate` is the PCM sample rate; `save` writes a mono 16-bit WAV and returns its duration. Leaving the `with` block stops a stream early and waits for its workers to finish. Streaming keeps bounded audio and latent buffers: leaving a stream unread pauses generation once they fill, and consuming chunks lets it resume.
 
-`tts.voices` lists the voices that were found. When no voice is given, `default` is used if the checkpoint ships one, and otherwise the first by name. Pass `voice="name"` to any speech method to select one.
+`tts.voices` lists the voices that were found. When no voice is given, the checkpoint's configured default is used, then `default` if present, then the first by name. Pass `voice="name"` to any speech method to select one.
 
 ## Command line
 
-The package also provides the `ptts` command. From the repository root:
+The package also provides the `ptts` command:
 
 ```bash
-uv run --project ptts-pyo3 --locked ptts --lang en --quant q8 \
-  --model "$MODEL_DIR/config.json" "Hello world" -o out.wav
+python -m ptts --lang en --quant q8 \
+  --model "$MODEL_DIR" "Hello world" -o out.wav
 ```
 
 `--voice` selects a loaded voice, and `--list-voices` prints the available names. Run with `--help` for the remaining options. The package ships type stubs and `py.typed`.

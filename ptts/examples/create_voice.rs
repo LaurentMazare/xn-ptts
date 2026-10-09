@@ -1,4 +1,4 @@
-#[path = "model_helpers.rs"]
+#[path = "../src/bin/ptts/model_helpers.rs"]
 mod model_helpers;
 
 use anyhow::{Context, Result};
@@ -12,6 +12,10 @@ use xn::Tensor;
 struct Args {
     #[arg(long)]
     config: String,
+
+    /// Hugging Face branch, tag, or commit, for a Hub model.
+    #[arg(long)]
+    revision: Option<String>,
 
     #[arg(long)]
     weights: Option<String>,
@@ -42,6 +46,7 @@ fn run(args: Args) -> Result<()> {
     let dev = xn::CpuDevice;
     tracing::info!("loading config from {}", args.config);
     let (cfg, model_path) = if args.config.ends_with("json") {
+        anyhow::ensure!(args.revision.is_none(), "--revision requires a Hugging Face repo ID");
         let cfg: ptts::tts_model::TTSConfig =
             serde_json::from_str(&std::fs::read_to_string(&args.config)?)?;
         let config = std::fs::canonicalize(args.config)?;
@@ -52,7 +57,7 @@ fn run(args: Args) -> Result<()> {
         };
         (cfg, model_path)
     } else {
-        let repo = model_helpers::HubRepo::open(&args.config)?;
+        let repo = model_helpers::HubRepo::open(&args.config, args.revision.as_deref())?;
         let cfg = repo.get("config.json")?;
         let cfg: ptts::tts_model::TTSConfig = serde_json::from_str(&std::fs::read_to_string(cfg)?)?;
         let model_path = match args.weights.as_ref() {

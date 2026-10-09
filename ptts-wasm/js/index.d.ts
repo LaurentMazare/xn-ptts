@@ -10,8 +10,8 @@ export interface ModelSpec {
   weights: Partial<Record<Quant, string | URL>>;
   /** The checkpoint's `tokenizer.json`. */
   tokenizer: string | URL;
-  /** Its `config.json`, or `null` for the original Pocket TTS architecture. */
-  config?: string | URL | null;
+  /** Required URL of this checkpoint's `config.json`. */
+  config: string | URL;
   /**
    * Voice name to voice `.safetensors` file. Fetched on first use. A model without any can
    * still be loaded, but every request then needs a voice added with `addVoice` first.
@@ -57,7 +57,7 @@ export interface LoadOptions {
   quant?: Quant;
   /**
    * Required. Where the checkpoint's files are. There is no default: pass the model you
-   * mean, or {@link POCKET_TTS_MODEL} for Kyutai's published Pocket TTS checkpoint.
+   * mean.
    */
   model: ModelSpec;
   /** Voices to fetch up front. Default: just the default voice; others load on first use. */
@@ -99,7 +99,7 @@ export interface SpeechOptions {
    * `Number.MAX_SAFE_INTEGER`, pass a `bigint`.
    */
   seed?: number | bigint;
-  /** Aborting stops the generation; the stream ends with what was produced so far. */
+  /** Aborting stops generation and discards unread chunks. Stop scheduled playback separately. */
   signal?: AbortSignal;
 }
 
@@ -133,7 +133,7 @@ export interface SpeechStream extends AsyncIterable<Float32Array> {
   readonly sampleRate: number;
   /** Resolves with timing stats once generation ends, or rejects if it failed. */
   readonly done: Promise<SpeechStats>;
-  /** Stop generating. Breaking out of a `for await` loop does the same. */
+  /** Stop generating and discard unread chunks. Await `done` for cleanup. Breaking out of a `for await` loop does the same. */
   cancel(): void;
 }
 
@@ -174,9 +174,6 @@ export declare class PhononTTS {
   /** Stop the worker and free the model. Pending requests fail. */
   dispose(): void;
 }
-
-/** Kyutai's published Pocket TTS checkpoint, on Hugging Face. Pass it as `model` to use it. */
-export declare const POCKET_TTS_MODEL: Readonly<ModelSpec>;
 
 /** Delete every file this package has cached. Resolves to whether there was anything. */
 export declare function clearCache(): Promise<boolean>;

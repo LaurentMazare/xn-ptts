@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Cargo workspace (resolver "3", edition 2024) with seven members:
 
-- `ptts/` — core TTS library. Pure Rust, depends on the `xn` tensor/nn crate. Examples live under `ptts/examples/`: `say` (shortest end-to-end call) and `bench` (benchmark harness) require the `hf` feature for the tokenizer, `ptts` (full CLI) requires `hf` and `audio`, `create_voice` (voice embeddings from audio samples) requires `audio`, and `quantize` (safetensors → GGUF converter that selectively quantizes `flow_lm.transformer.layers.*` weights) requires nothing. `model_helpers.rs` is not an example — it is a shared module each example pulls in with `#[path = "..."] mod`, so `autoexamples = false` and every example is listed explicitly in `Cargo.toml`.
+- `ptts/`: core TTS library, depending on the `xn` tensor/nn crate. The full CLI lives in `src/bin/ptts/main.rs`, behind the optional `cli` feature. Install it with `cargo install --path ptts --locked --features cli`. Examples under `ptts/examples/` include `say` (the shortest library call) and `bench`, which require `hf`; `create_voice`, which requires `audio`; and `quantize`, which requires neither. `export_coreml` exports a checkpoint for Apple. The CLI and examples share `src/bin/ptts/model_helpers.rs` for blocking Hub transport. `autoexamples = false` and `autobins = false` keep every target explicit in `Cargo.toml`.
 - `ptts-pyo3/` — PyO3 bindings exposing `TTS` to Python. Built with maturin in a mixed layout: `python/ptts/` is the package (`__init__.py`, `__init__.pyi` stubs, `py.typed`, `__main__.py`) and the cdylib lands inside it as `ptts._ptts`, so a pure-Rust layout's lack of anywhere to put `py.typed` is not a problem. `tests/` is a pytest suite that needs no weights except where marked `checkpoint`; run it against a built wheel, not the source tree. Has its own `pyproject.toml` and `uv.lock`.
 - `ptts-wasm/` — browser build via `wasm-bindgen` / `wasm-pack`, published to npm as `phonon-tts`. `src/lib.rs` is the raw frame-at-a-time `Model`; `js/` is the package's public API around it (`PhononTTS`, which runs the model in a worker, downloads and caches the files, and speaks by voice name), with its own `package.json`, `README.md` and node tests. `www/index.html` is a demo page built on the package.
 - `ptts-ws-server/` — WebSocket streaming server (`axum` + `kaudio`). Needs a system libopus through `kaudio` → `libopus_sys`, which is why CI installs it on Linux and macOS and skips this crate on Windows.
-- `ptts-openai-server/` — the OpenAI-compatible `POST /v1/audio/speech` (`src/api.rs`) with `GET /v1/models`, `/v1/audio/voices` and `/health`. Its model loading is a copy of `ptts-ws-server`'s, kept separate on purpose. Needs a system libopus like `ptts-ws-server`, and a system libmp3lame for MP3 (`src/mp3.rs`, linked dynamically since LAME is LGPL; `build.rs` finds it); CI skips it on Windows too. Every flag also reads a `PTTS_*` environment variable, which is how its Docker image is configured: `Dockerfile` (built from the repository root; `Dockerfile.dockerignore` keeps `.cargo/config.toml` and local weights out of the context) bakes in Kyutai's ungated `pocket-tts-without-voice-cloning` checkpoint at a pinned revision, and `.github/workflows/docker.yml` publishes it to `ghcr.io/gradium-ai/ptts-openai-server` for amd64 and arm64, each built on a native runner.
+- `ptts-openai-server/`: the OpenAI-compatible `POST /v1/audio/speech` (`src/api.rs`) with `GET /v1/models`, `/v1/audio/voices` and `/health`. Its model loading is a copy of `ptts-ws-server`'s, kept separate on purpose. Needs a system libopus like `ptts-ws-server`, and a system libmp3lame for MP3 (`src/mp3.rs`, linked dynamically since LAME is LGPL; `build.rs` finds it); CI skips it on Windows too. Every flag also reads a `PTTS_*` environment variable, which is how its Docker image is configured: `Dockerfile` (built from the repository root; `Dockerfile.dockerignore` keeps `.cargo/config.toml` and local weights out of the context) carries no weights: supply a mounted model folder or an HF repo through `PTTS_CONFIG`. `.github/workflows/docker.yml` publishes it to `ghcr.io/gradium-ai/ptts-openai-server` for amd64 and arm64, each built on a native runner.
 - `ptts-coreml/` — CoreML backend, Apple only: the flow LM and Mimi emitted from Rust as ML Program graphs (`mil.rs`, `package.rs`, `blob.rs`, `phonon/flow_lm.rs`, `phonon/mimi.rs`), exported once per checkpoint by `ptts/examples/export_coreml.rs` (sizes from the checkpoint's config, so any single-flow-step Phonon checkpoint works), and driven by `phonon/driver.rs`. The flow LM runs on the Neural Engine, which needs fully static shapes, no CoreML `state` and fp16; its KV cache is a host-managed ring in IOSurface buffers. Mimi stays f32 on the CPU, decoded on a worker thread overlapped with the next flow step. The part of the Core ML protobuf schema it writes is hand-written as `prost` messages in `src/proto.rs`, so there is no codegen or `protoc` in the build.
 - `ptts-ffi/` — the C interface (`include/ptts.h`), one engine per platform behind it: on Apple, `src/coreml.rs` over `ptts-coreml`, loading a bundle `export_coreml` wrote; everywhere else, `src/cpu.rs` over `ptts::synth::Synth` on the CPU, loading a checkpoint folder. Both use `ptts` for text preparation, normalization and the tokenizer. On Apple it is what `ios/PhononTTS/`, the Swift package apps integrate (its README is the user guide), wraps, as `PhononCore.xcframework` built by `ios/build-xcframework.sh`. On Android, `android/build.sh` builds it as `libptts_ffi.so` with cargo-ndk, and apps call it from `android/PhononTTS.kt` through JNA; `android/README.md` is that guide. There is no app in the repo for either: measuring on a device needs a local app.
 
@@ -24,9 +24,9 @@ required check called `CI`:
 | Job | What it covers |
 |---|---|
 | `fmt` | `cargo fmt --all -- --check` (rustfmt.toml: `use_small_heuristics = "Max"`, edition 2024) |
-| `clippy` | whole workspace `--all-targets -D warnings`, then `ptts` with `hf,audio`, then `ptts-ffi` for `aarch64-linux-android` |
-| `test` | stable + nightly × Linux/macOS/Windows; default features, then `hf,audio`, then doctests; `metal`, `accelerate` and `kai` type-checked on the macOS leg |
-| `features` | every combination of `hf`/`audio`, plus `vulkan` and `webgpu` |
+| `clippy` | whole workspace `--all-targets -D warnings`, then `ptts` with `cli`, then `ptts-ffi` for `aarch64-linux-android` |
+| `test` | stable + nightly × Linux/macOS/Windows; default features, then `cli`, then doctests; `metal`, `accelerate` and `kai` type-checked on the macOS leg |
+| `features` | every combination of `hf`/`audio`, plus `cli`, `vulkan` and `webgpu` |
 | `docs` | `cargo doc` on nightly with `--cfg docsrs` exactly as docs.rs builds it, then again on stable |
 | `wasm` | `ptts-wasm` for `wasm32-unknown-unknown` with the SIMD flags real builds use, with and without `webgpu`; the `phonon-tts` JS wrapper's node tests; and `make build` with binaryen 124 |
 | `coreml` | macOS only: clippy on `ptts-coreml` and `ptts-ffi` for macOS and iOS, then `ios/build-xcframework.sh` and `swift build` of the `PhononTTS` package |
@@ -50,7 +50,7 @@ Three things worth knowing before editing it:
 
 Cargo features that gate optional functionality:
 
-- `ptts`: `hf` (Hugging Face `tokenizers`, i.e. `ptts::tok`, required by the `say`, `ptts` and `bench` examples), `audio` (`ptts::audio`, decoding and resampling audio files for voice cloning — pulls in `symphonia` and `rubato`, so it is off by default and out of the wasm build; required by `ptts` and `create_voice`), `cuda`, `accelerate`, `kai` (see below). The library never downloads anything, so there is no hub feature: `hf-hub` is a dev-dependency used by the examples.
+- `ptts`: `hf` enables `ptts::tok` for the JSON tokenizer; `audio` enables audio-file decoding and resampling for voice cloning. Both are optional for the library. `cli` enables both plus argument parsing, blocking Hub transport, tracing, and Unix memory reporting for the command. `hf-hub` is an optional dependency enabled by `cli` and a development dependency for the examples. The library itself never downloads. Backend features include `cuda`, `accelerate`, and `kai` (see below).
 - `ptts-pyo3`: `cuda`, `accelerate`, `kai` (each forwards to both `xn/*` and `ptts/*`).
 
 `kai` runs the `q8_0` transformer linears through Arm KleidiAI's SME2 kernels, which `xn`
@@ -61,18 +61,20 @@ weights to one scale per row, which moves the output slightly. So with `kai` on,
 binary gives slightly different audio on an SME2 CPU than on any other: anything that
 compares outputs should set `XN_KAI=0`, which turns it off at run time, or allow a tolerance.
 
-Run the CLI example:
+Run the CLI:
 
 ```
-cargo run --release --example ptts --features hf,audio -- "hello world" -o out.wav
+cargo run --release -p ptts --bin ptts --features cli -- --dir "$MODEL_DIR" --lang en "hello world" -o out.wav
 ```
 
-It downloads weights from the `kyutai/pocket-tts` HuggingFace repo on first run. Which files that means — the repo id, the weight and tokenizer file names, the bundled voice list, the config to assume when a directory ships none — lives in `ptts/examples/model_helpers.rs`, not in the library: it changes with each published checkpoint, and `ptts` only reads the files it is handed. Built-in voice IDs: `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`. `--voice` also accepts a path to a 10s audio file or a voice safetensors: either a precomputed `emb` or the training pipeline's `speaker_wavs` latents, which `ptts::loader::load_voice_emb` runs through the checkpoint's speaker projection. `--repo <id>` downloads from another Hub repo with the same layout (`config.json`, weights, tokenizer, optional `embeddings/*.safetensors` voices and an optional `default-voice.safetensors`, which is picked when no `--voice` is given); `--weights <file>` names the weights file inside the repo or directory so only that one is downloaded (`--weights model.q8.gguf --quant q8` for the pre-quantized weights); `--tokenizer <file>` points at a `tokenizer.json` outside the checkpoint, for a repo that ships only a SentencePiece `tokenizer.model`; `--dir` loads a local checkpoint instead of downloading; `--device auto|cpu|cuda|vulkan|metal` picks the backend; `--lang en|fr|de|es|pt|none` picks the text-normalization language and is **required**.
+Every native entry point requires an explicit model source: `--repo OWNER/MODEL` or `--dir /path/to/model` for the CLI and exporter, `config=` for Python, and `--config` for the servers. Each checkpoint supplies `config.json`, `tokenizer.json`, weights, and optional voice assets. There is no built-in model config or model default. Shared local resolution lives in `ptts/src/checkpoint.rs`; the library does not download. `--weights` selects a weights filename inside the supplied folder or HF repo, for example `--weights model.q8.gguf --quant q8`. `--revision` applies to all Hub files. `--voice` accepts a checkpoint voice name, a voice safetensors file, or a short audio sample. `--tokenizer` supplies a tokenizer JSON from another path. `--device auto|cpu|cuda|vulkan|metal` selects the backend. `--lang en|fr|de|es|pt|none` is required.
 
-`say` is the same thing in fifteen lines, for checking that the library works:
+The Python package also installs a `ptts` command, using `--model` instead of `--dir`/`--repo`. If both commands are installed, `PATH` order selects which one runs. Use `python -m ptts` with the Python environment's interpreter to select its CLI explicitly.
+
+`say` is the short library example, for checking that the library works:
 
 ```
-cargo run --release --example say --features hf -- "hello world"
+cargo run --release --example say --features hf -- "$MODEL_DIR" "hello world"
 ```
 
 Benchmark a local model:
@@ -99,7 +101,7 @@ make test         # node --test js/test/*.test.mjs -- the wrapper's logic, no br
 
 Requires `wasm-pack` 0.12 or later (`cargo install wasm-pack`), node 22.7 or later, and binaryen's `wasm-opt` 124 or later on `PATH`: wasm-pack otherwise downloads binaryen 117, and releases up to 123 abort on this module. The threaded build (`pkg/wasm-threads/`, the `threads` feature) also needs the nightly pinned in the Makefile with `rust-src`, since wasm threads need std rebuilt with atomics: `make threads-toolchain` installs it. `js/worker.js` loads that build only on a cross-origin isolated page, and the single-threaded one otherwise; `js/threads.js` picks the thread count, and `make serve` serves the demo with the isolation headers (`scripts/serve.mjs`). Both builds have the `webgpu` feature: `src/lib.rs` has one engine generic over the device, with only the readback differing, and `js/device.js` keeps the CPU as the default: `device: 'webgpu'` opts into WebGPU, and `'auto'` takes it only when the browser offers a hardware adapter and the weights are q8 GGUF. WebGPU is opt in because it is not faster than the CPU on every device, phones in particular. `scripts/pack.mjs` assembles the package and stamps its version from `workspace.package.version`, so `js/package.json` deliberately has no `version`; it also derives what to copy from that file's `files` list. It deletes the `.gitignore` wasm-pack writes into `pkg/wasm/`: npm reads a subdirectory `.gitignore` as that directory's `.npmignore`, which would silently publish a package without its wasm. `make demo` and `make serve` take `MODEL_DIR`, a model folder: it is linked into `site/model/`, and `scripts/demo-model.mjs` writes `site/model.json` describing its weights and voices, since a static server cannot list a directory for the page. Wasm SIMD flags (`+simd128,+relaxed-simd`) and `getrandom_backend="wasm_js"` come from `.cargo/config.toml`. `relaxed-simd` is required rather than an optimization: `xn`'s quantized kernels call `f32x4_relaxed_madd` unconditionally, so browsers without Relaxed SIMD cannot compile the module at all.
 
-Kyutai's published checkpoint URLs, pinned to HF revisions, are in `js/models.js`. Files are cached by URL, so bump those revisions together with the package version. `.github/workflows/npm-publish.yml` builds the package on PRs that touch it and publishes it on a `v*` tag through npm trusted publishing (OIDC, no token).
+The browser requires an explicit `ModelSpec` with config, tokenizer, weights, and voice URLs. Use revision-pinned HF URLs or versioned local paths because files are cached by URL. `.github/workflows/npm-publish.yml` builds the package on PRs that touch it and publishes it on a `v*` tag through npm trusted publishing (OIDC, no token).
 
 ## Python build
 
@@ -109,8 +111,8 @@ From the repo root:
 maturin develop --manifest-path ptts-pyo3/Cargo.toml          # local install
 maturin build --release --manifest-path ptts-pyo3/Cargo.toml  # produce wheel
 cd ptts-pyo3 && python -m pytest -m 'not checkpoint'          # against an installed wheel
-ptts --lang en "hello world" -o out.wav                       # the console script
-python -m ptts --lang en "hello world" -o out.wav             # the same `main`
+ptts --model "$MODEL_DIR" --lang en "hello world" -o out.wav  # the console script
+python -m ptts --model "$MODEL_DIR" --lang en "hello world" -o out.wav  # the same `main`
 ```
 
 Run the tests from `ptts-pyo3/`, so pytest reads the `testpaths` and `markers` in its
@@ -125,7 +127,7 @@ it as `ptts._ptts`. Renaming or adding anything on the Python surface means edit
 `test_all_covers_everything_the_extension_exports` the re-export half, by diffing
 `dir(ptts._ptts)` against `__all__`. `[project.scripts]` installs the `ptts` command, which is
 what `uvx ptts` and `pipx run ptts` run; `python/ptts/__main__.py` is the whole of it. `--lang`
-is required there as it is on the `ptts` example and `ptts-ws-server`, but checked by hand rather
+is required there as it is on the `ptts` command and `ptts-ws-server`, but checked by hand rather
 than by argparse, so that `--build-info` still works without one.
 
 `pyo3` is built with `abi3-py39`, so one wheel per platform serves every CPython from 3.9 on
@@ -157,10 +159,10 @@ The library implements Phonon: text → tokens → flow-matching language model 
 
 `ptts/src/lib.rs` exposes a single `Tokenizer` trait (`encode` / `decode`) so each binding plugs in its own implementation:
 
-- `say` / `ptts` / `bench` examples, `ptts-pyo3` and the two servers: `ptts::tok::Tok` (the `hf` feature), a Hugging Face `tokenizers` wrapper. The examples find the file beside the weights and pass it to `SynthBuilder::tokenizer_file`.
+- the `ptts` command, `say` / `bench` examples, `ptts-pyo3` and the two servers: `ptts::tok::Tok` (the `hf` feature), a Hugging Face `tokenizers` wrapper. The examples find the file beside the weights and pass it to `SynthBuilder::tokenizer_file`.
 - `ptts-wasm`: the same `ptts::tok::Tok`, built from the `tokenizer.json` the `phonon-tts` worker fetches and handed to `Model::new`; the browser passes text, not token ids.
 
-Every frontend loads a `tokenizer.json` and nothing else, and none is bundled or defaulted to: each checkpoint has its own vocabulary, and loading the wrong one yields plausible audio from the wrong ids, so `Tok::open` refuses to guess. `ptts --tokenizer <path>` and `bench --tokenizer <path>` override where the examples look; otherwise they, `ptts-pyo3` and the two servers all expect `tokenizer.json` in the HF repo or beside the config. A checkpoint that carries only a `tokenizer.model` needs converting once with `scripts/convert-tokenizer.py`, which writes the equivalent json.
+Every frontend loads a `tokenizer.json` and nothing else, and none is bundled or defaulted to: each checkpoint has its own vocabulary, and loading the wrong one yields plausible audio from the wrong ids, so `Tok::open` refuses to guess. `ptts --tokenizer <path>` and `bench --tokenizer <path>` override where the examples look; otherwise they, `ptts-pyo3` and the two servers all expect `tokenizer.json` in the HF repo or beside the config.
 
 Top-level orchestrator is `tts_model::TTSModel<Q>`, generic over a backend-quantization parameter `Q: BackendQ` from `xn`. It owns:
 
@@ -174,13 +176,13 @@ run the flow LM and the Mimi decoder on two threads. `Synth` erases the `Q` para
 dereferences to) so a CLI flag can pick the weight format; the generic `SynthOf<Q>` is
 private. `ptts-wasm` still drives `TTSModel` directly.
 
-Generation is streaming and stateful: callers `init_flow_lm_state(batch, seq_len)`, then `prompt_text*` / `prompt_audio` to seed the state, then step-decode latents and feed them into `MimiDecoderState`. `lsd_decode_steps` controls flow-matching solver steps; `eos_threshold` controls termination. The default `TTSConfig::v202601` configuration is the canonical one consumed by all three frontends.
+Generation is streaming and stateful: callers `init_flow_lm_state(batch, seq_len)`, then `prompt_text*` / `prompt_audio` to seed the state, then step-decode latents and feed them into `MimiDecoderState`. `lsd_decode_steps` controls flow-matching solver steps; `eos_threshold` controls termination. Every frontend reads the supplied checkpoint's own model config.
 
-A config can list `conditioners` (`lut` or `continuous`), which are summed into one vector added to every generated frame's input. Their values are given by name: `--condition NAME=VALUE` on the examples (`ptts`, `bench`, `export_coreml`) and both servers (`PTTS_CONDITION` for the OpenAI one), `conditions=` on `ptts-pyo3`, `conditions` on `PhononTTS.load`. Those not given take their defaults (`num_speakers` 1, `padding_bonus` and `duration_delta` 0); one with no default is an error. A config's baked-in `voices` each carry their own values, which win over those given. `loader::load_conditions` computes the vector for frontends that keep it themselves: the Core ML export fixes it in the bundle, in `host.safetensors` and, for a baked-in voice, in its voice file. The browser build refuses checkpoints with baked-in voices.
+A config can list `conditioners` (`lut` or `continuous`), which are summed into one vector added to every generated frame's input. Their values are given by name: `--condition NAME=VALUE` on the CLI and examples (`bench`, `export_coreml`) and both servers (`PTTS_CONDITION` for the OpenAI one), `conditions=` on `ptts-pyo3`, `conditions` on `PhononTTS.load`. Those not given take their defaults (`num_speakers` 1, `padding_bonus` and `duration_delta` 0); one with no default is an error. A config's baked-in `voices` each carry their own values, which win over those given. `loader::load_conditions` computes the vector for frontends that keep it themselves: the Core ML export fixes it in the bundle, in `host.safetensors` and, for a baked-in voice, in its voice file. The browser build refuses checkpoints with baked-in voices.
 
-Text normalization (`ptts/src/preprocess.rs`) is mandatory to choose and has no default. `preprocess::Normalize` is either `For(lang)` or `Off`, and it is a required third argument to `SynthBuilder::new`, a required `--lang` flag on the `ptts` and `bench` examples and both servers, a required keyword-only `lang=` on `ptts-pyo3`, and a required `lang` argument to the `ptts-wasm` `Model` constructor and to `PhononTTS.load` in `phonon-tts`. The reason it is not defaulted rather than defaulted to English: normalization makes the model noticeably better, but the spoken forms of `@`, `+` and `=` are per-language, so normalizing German as English says "at" where it should say "ät" -- guessing is worse than doing nothing. `Normalize::Off` (`--lang none`, `lang="none"`) hands text to the tokenizer as written.
+Text normalization (`ptts/src/preprocess.rs`) is mandatory to choose and has no default. `preprocess::Normalize` is either `For(lang)` or `Off`, and it is a required third argument to `SynthBuilder::new`, a required `--lang` flag on the `ptts` command, `bench` example, and both servers, a required keyword-only `lang=` on `ptts-pyo3`, and a required `lang` argument to the `ptts-wasm` `Model` constructor and to `PhononTTS.load` in `phonon-tts`. The reason it is not defaulted rather than defaulted to English: normalization makes the model noticeably better, but the spoken forms of `@`, `+` and `=` are per-language, so normalizing German as English says "at" where it should say "ät" -- guessing is worse than doing nothing. `Normalize::Off` (`--lang none`, `lang="none"`) hands text to the tokenizer as written.
 
-`Normalize::apply` is the one implementation, and it has to run before `prepare_text_prompt`, whose leading-space padding of short text it would otherwise collapse. `Synth::normalization` / `Session::normalization` hand it to callers that tokenize by hand (`ptts-ws-server`, `ptts-wasm`) rather than going through `say`/`stream`.
+`Normalize::apply` is the one implementation, and it has to run before `prepare_text_prompt`, whose leading-space padding of short text it would otherwise collapse. `Synth::normalization` / `Session::normalization` hand it to callers that tokenize by hand (`ptts-wasm`) rather than going through `say`/`stream`.
 
 After the character pass, each word goes through the rewrite rules (`ptts/src/preprocess/rewrite.rs`, one module per rule under `rewrite/`): `numbers`, `currency`, `dashed-digits`, `emails`, `urls`, and the opt-in `phones`, `times` and `dates`. The first rule in the `RULES` table that claims a word wins. A row's `default` flag decides whether `Rules::DEFAULT`, which `Normalize::for_lang` and every frontend's `--rewrites default` use, runs it. The readings match the serving stack's, quirks included (`$1` reads "1 dollars"), apart from a few fixes noted where they are made: the top-level domain table, capitalized domains, numbers tried before times, a spoken `+` in phone numbers and "-$500". Change a reading only on purpose. The character pass keeps `@` and `+` in the text because the email and phone rules read them, and spells them out afterwards in the words no rule claimed.
 

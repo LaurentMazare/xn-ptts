@@ -9,12 +9,12 @@
 //! ```no_run
 //! # fn main() -> ptts::Result<()> {
 //! use ptts::synth::Synth;
-//! use ptts::tts_model::TTSConfig;
+//! use ptts::checkpoint::read_config;
 //!
 //! use ptts::preprocess::Lang;
 //!
 //! let tts = Synth::builder(
-//!     TTSConfig::v202601(),
+//!     read_config("model/config.json")?,
 //!     "model/model.safetensors",
 //!     Lang::En,
 //! )
@@ -32,7 +32,7 @@
 //!
 //! ```no_run
 //! # fn main() -> ptts::Result<()> {
-//! # let cfg = ptts::tts_model::TTSConfig::v202601();
+//! # let cfg = ptts::checkpoint::read_config("model/config.json")?;
 //! # let norm = ptts::preprocess::Lang::En;
 //! # let tts = ptts::synth::Synth::builder(cfg, "model/model.safetensors", norm)
 //! #     .tokenizer_file("model/tokenizer.json")
@@ -136,7 +136,8 @@ pub enum Quant {
 }
 
 impl Quant {
-    /// Error if this weight format cannot run on `device`.
+    /// Error if the device backend was not compiled in or this weight format cannot run on it.
+    /// This checks build features without initializing the device.
     ///
     /// [`SynthBuilder::build`] checks this too, but a caller that downloads a
     /// checkpoint before building should check first, so an impossible
@@ -148,6 +149,25 @@ impl Quant {
             return Err(Error::unsupported(format!(
                 "quantization ({}) is CPU-only, but the selected device is {device:?}",
                 self.as_str()
+            )));
+        }
+        let backends = [
+            (DeviceKind::Cuda, "cuda", cfg!(feature = "cuda")),
+            (DeviceKind::Vulkan, "vulkan", cfg!(feature = "vulkan")),
+            (DeviceKind::Metal, "metal", cfg!(feature = "metal")),
+        ];
+        if let Some((_, name, _)) =
+            backends.iter().find(|(kind, _, compiled)| *kind == device && !compiled)
+        {
+            let available: Vec<_> = backends
+                .iter()
+                .filter(|(_, _, compiled)| *compiled)
+                .map(|(_, name, _)| *name)
+                .chain(["cpu"])
+                .collect();
+            return Err(Error::unsupported(format!(
+                "device '{name}' is not available in this build; available devices: {}",
+                available.join(", ")
             )));
         }
         Ok(())
@@ -504,6 +524,10 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
         self.model.device().name()
     }
 
+    fn languages(&self) -> &[String] {
+        self.cfg.languages.as_slice()
+    }
+
     fn voices(&self) -> Vec<String> {
         self.voices.keys().cloned().collect()
     }
@@ -608,6 +632,30 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
         Ok(())
     }
 
+    fn add_voice_from_latents(
+        &mut self,
+        name: &str,
+        latents: &[f32],
+        channels: usize,
+        frames: usize,
+    ) -> Result<()> {
+        self.check_no_baked_voices()?;
+        if latents.len() != channels * frames {
+            return Err(Error::invalid_argument(format!(
+                "latents have {} values, expected {channels} x {frames}",
+                latents.len()
+            )));
+        }
+        let dev = self.model.device().clone();
+        let latents = Tensor::from_vec(latents.to_vec(), (1, channels, frames), &dev)?;
+        let emb =
+            loader::project_latents(&latents, "the voice latents", self.model.speaker_proj())?
+                .to::<Q::T>()?;
+        self.forget_primed(name);
+        self.voices.insert(name.to_string(), Voice { emb, null_emb: None, conditions: None });
+        Ok(())
+    }
+
     fn set_conditions(&mut self, conditions: HashMap<String, String>) -> Result<()> {
         let mut values = conditions.clone();
         if let Some(voice) = self.cfg.voices.first() {
@@ -652,6 +700,19 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
         Ok(Session(Box::new(self.session_at(&resolve(&self.defaults, opts)?, max_seq_len)?)))
     }
 
+    fn session_default(&self, opts: &SpeechOptions) -> Result<Session> {
+        let settings = resolve(&self.defaults, opts)?;
+        let tokens = settings.max_tokens_per_chunk.min(plan::MAX_FIT_TOKENS);
+        let prompt = match self.voice_for(settings.voice.as_deref())? {
+            Some((_, voice)) => voice.emb.dim(1usize)?,
+            None => 0,
+        };
+        let seq_budget = prompt.max(plan::PROMPT_SEQ_HEADROOM)
+            + tokens
+            + plan::frame_budget(tokens, self.cfg.mimi.frame_rate);
+        Ok(Session(Box::new(self.session_at(&settings, seq_budget)?)))
+    }
+
     fn stream_with(&self, text: &str, opts: &SpeechOptions) -> Result<SpeechStream> {
         let settings = resolve(&self.defaults, opts)?;
         let rng = Box::new(NormalRng::new(settings.temperature, settings.seed)?);
@@ -671,6 +732,7 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
             text,
             settings.max_tokens_per_chunk,
             self.normalize,
+            Some(plan::MAX_FIT_TOKENS),
         )?;
         // A one-shot call is a session sized to this text and dropped afterwards,
         // so there is one generation path rather than two. The voice prompt gets its
@@ -697,7 +759,8 @@ fn grow<Q: BackendQ>(prefix: &TTSState<Q>, seq_budget: usize) -> Result<TTSState
     Ok(TTSState { flow_lm_state: crate::flow_lm::FlowLMState { transformer_state, conditions } })
 }
 
-/// Split `text` into chunks and work out the budgets for each.
+/// Split `text` into chunks and work out the budgets for each, cutting any chunk of more than
+/// `fit_to` tokens with [`plan::fit`].
 ///
 /// Free rather than a method because both [`Synth`] and [`Session`] need
 /// it, and it depends only on the tokenizer inside the model and the codec's
@@ -708,6 +771,7 @@ fn plan_chunks<Q: BackendQ>(
     text: &str,
     max_tokens_per_chunk: usize,
     normalize: Normalize,
+    fit_to: Option<usize>,
 ) -> Result<Vec<Chunk>> {
     let tokenizer = match model.flow_lm.conditioner.tokenizer.as_ref() {
         Some(tokenizer) => tokenizer.as_ref(),
@@ -719,7 +783,11 @@ fn plan_chunks<Q: BackendQ>(
             ));
         }
     };
-    plan::chunks(tokenizer, text, normalize, max_tokens_per_chunk, frame_rate)
+    let chunks = plan::chunks(tokenizer, text, normalize, max_tokens_per_chunk, frame_rate)?;
+    match fit_to {
+        Some(max) => plan::fit_or_error(chunks, max, tokenizer, frame_rate),
+        None => Ok(chunks),
+    }
 }
 
 /// The generic session behind [`Session`], whose docs cover its concurrency rules.
@@ -751,12 +819,20 @@ impl<Q: BackendQ> SessionOf<Q> {
         text: &str,
         rng: Box<dyn crate::flow_lm::Rng + Send>,
     ) -> Result<SpeechStream> {
+        // The budget is fixed, so a sentence too long for it is cut rather than refused, and
+        // never left longer than the model speaks well.
+        let room = self.seq_budget.saturating_sub(self.prompt_len);
+        let fit_to = plan::max_tokens_for(room, self.frame_rate).min(plan::MAX_FIT_TOKENS);
+        // With no room for even an empty chunk, cutting cannot help: skip it, so the budget
+        // check reports what the text actually needs.
+        let fit_to = (fit_to > 0).then_some(fit_to);
         let chunks = plan_chunks(
             &self.model,
             self.frame_rate,
             text,
             self.max_tokens_per_chunk,
             self.normalize,
+            fit_to,
         )?;
         self.stream_chunks(chunks, rng)
     }
@@ -807,8 +883,8 @@ impl<Q: BackendQ> SessionOf<Q> {
         let mimi_init = self.model.init_mimi_state(1)?;
         let mut post = Chain::from_modules(self.sample_rate(), &self.post_process);
 
-        let (pcm_tx, pcm_rx) = std::sync::mpsc::channel::<Result<Vec<f32>>>();
-        let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Frame<Q>>();
+        let (pcm_tx, pcm_rx) = std::sync::mpsc::sync_channel::<Result<Vec<f32>>>(PCM_QUEUE);
+        let (latent_tx, latent_rx) = std::sync::mpsc::sync_channel::<Frame<Q>>(LATENT_QUEUE);
         // The decoder says when the first frame's audio is out, and the flow-LM waits for it
         // before its second step. Run side by side, the two compete for the device and the
         // first decode, which is all the time to first audio waits on, comes out slower; held
@@ -840,7 +916,8 @@ impl<Q: BackendQ> SessionOf<Q> {
                 // held back for a batch to fill — the first one included.
                 let mut reset_after = false;
                 let mut batch = vec![first];
-                while let Ok(frame) = latent_rx.try_recv() {
+                while batch.len() < DECODE_BATCH {
+                    let Ok(frame) = latent_rx.try_recv() else { break };
                     match frame {
                         // Past a chunk boundary the codec state resets, so the
                         // batch has to stop here and resume on the next frame.
@@ -1001,6 +1078,11 @@ impl Drop for InFlight {
     }
 }
 
+// Fixed queues propagate slow-consumer backpressure through both generation workers.
+const PCM_QUEUE: usize = 4;
+const LATENT_QUEUE: usize = 16;
+const DECODE_BATCH: usize = LATENT_QUEUE;
+
 /// Messages from the flow-LM thread to the decoder thread.
 enum Frame<Q: BackendQ> {
     Latent(Tensor<Q::T, Q::B>),
@@ -1014,7 +1096,7 @@ fn run_backbone<Q: BackendQ>(
     base_state: TTSState<Q>,
     cfg_base: Option<(f32, TTSState<Q>)>,
     mut rng: Box<dyn crate::flow_lm::Rng + Send>,
-    latent_tx: &std::sync::mpsc::Sender<Frame<Q>>,
+    latent_tx: &std::sync::mpsc::SyncSender<Frame<Q>>,
     first_decoded: std::sync::mpsc::Receiver<()>,
 ) -> Result<()> {
     // Taken after the first frame: only the stream's first audio is worth the wait.
@@ -1070,10 +1152,15 @@ fn run_backbone<Q: BackendQ>(
 /// worth, or several when the decoder finds more than one frame already queued
 /// and decodes them together. The iterator ends when generation finishes; an
 /// `Err` item is terminal.
+///
+/// Generation runs ahead only while its fixed audio and latent buffers have room.
+/// Leaving the stream unread pauses generation once they fill; consuming audio
+/// lets it resume. Iteration and cleanup block, including waiting for the current
+/// model operation on cancellation or error. Use a blocking thread in async code.
 pub struct SpeechStream {
-    /// `Option` so [`Drop`] can release it *before* joining: the channel is
-    /// unbounded, so a worker only notices it should stop once the receiver is
-    /// gone, and fields drop after `Drop::drop` has run.
+    /// `Option` so [`Drop`] can release it before joining: closing this receiver
+    /// wakes a decoder blocked on output, which closes the latent receiver
+    /// and wakes the backbone in turn.
     rx: Option<std::sync::mpsc::Receiver<Result<Vec<f32>>>>,
     sample_rate: u32,
     failed: bool,
@@ -1086,6 +1173,16 @@ impl SpeechStream {
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
+
+    fn join_workers(&mut self) -> bool {
+        let mut died = false;
+        if let Some(workers) = self.workers.take() {
+            for worker in workers {
+                died |= worker.join().is_err();
+            }
+        }
+        died
+    }
 }
 
 /// Joining on drop is what makes a session's in-flight flag exact: dropping the
@@ -1097,11 +1194,7 @@ impl Drop for SpeechStream {
         // Releasing the receiver first is what stops the workers; joining
         // before that would wait for the whole generation.
         self.rx.take();
-        if let Some(workers) = self.workers.take() {
-            for worker in workers {
-                let _ = worker.join();
-            }
-        }
+        self.join_workers();
     }
 }
 
@@ -1115,15 +1208,16 @@ impl Iterator for SpeechStream {
         match self.rx.as_ref()?.recv() {
             Ok(Err(e)) => {
                 self.failed = true;
-                self.workers.take();
+                self.rx.take();
+                self.join_workers();
                 Some(Err(e))
             }
             Ok(ok) => Some(ok),
             // Every sender dropped: generation finished, or a worker died.
             Err(_) => {
                 self.failed = true;
-                let workers = self.workers.take()?;
-                let died = workers.into_iter().any(|h| h.join().is_err());
+                self.workers.as_ref()?;
+                let died = self.join_workers();
                 if died {
                     Some(Err(Error::Tensor(xn::Error::msg(
                         "a generation worker panicked; the audio is incomplete",
@@ -1178,14 +1272,14 @@ impl SynthBuilder {
     /// # fn main() -> ptts::Result<()> {
     /// use ptts::preprocess::Lang;
     /// use ptts::synth::SynthBuilder;
-    /// use ptts::tts_model::TTSConfig;
+    /// use ptts::checkpoint::read_config;
     ///
     /// let tts = SynthBuilder::new(
-    ///     TTSConfig::v202601(),
+    ///     read_config("model/config.json")?,
     ///     "model/model.safetensors",
     ///     Lang::De,
     /// )
-    /// .tokenizer_file("model/tokenizer.model")
+    /// .tokenizer_file("model/tokenizer.json")
     /// .build()?;
     /// # Ok(())
     /// # }
@@ -1363,6 +1457,8 @@ impl SynthBuilder {
         Ok(Synth(Box::new(synth)))
     }
 
+    // Feature-disabled stubs keep dispatch compilable. The shared check rejects these
+    // backends before dispatch; the stubs retain errors as a backstop.
     #[cfg(not(feature = "cuda"))]
     fn build_cuda(self) -> Result<Synth> {
         Err(Error::unsupported("this build has no CUDA support; rebuild with the `cuda` feature"))
@@ -1506,6 +1602,9 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
     /// Registered voice names, sorted.
     fn voices(&self) -> Vec<String>;
 
+    /// The languages the model was trained for.
+    fn languages(&self) -> &[String];
+
     /// The voice a request that names none speaks in: the builder's [`SynthBuilder::voice`],
     /// else `default` (a checkpoint's own `default-voice.safetensors`), else the first by name.
     /// Decided per request, so a voice registered after the build counts. `None` when there
@@ -1548,6 +1647,22 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
         null_emb: Option<&[f32]>,
     ) -> Result<()>;
 
+    /// Register a voice from the speaker encoder's latents already in memory,
+    /// laid out as `channels` rows of `frames`.
+    ///
+    /// This is the `speaker_wavs` tensor of a voice file, `[1, channels, frames]`
+    /// before the checkpoint's speaker projection: what
+    /// [`Self::add_voice_file`] reads from such a file, and the form in which
+    /// voices are stored and exchanged. The projection is applied here, so it
+    /// fails on a checkpoint that has none.
+    fn add_voice_from_latents(
+        &mut self,
+        name: &str,
+        latents: &[f32],
+        channels: usize,
+        frames: usize,
+    ) -> Result<()>;
+
     fn set_conditions(&mut self, conditions: HashMap<String, String>) -> Result<()>;
 
     /// Synthesize `text` and return the whole waveform, as mono `f32` at
@@ -1558,9 +1673,29 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
     fn say_with(&self, text: &str, opts: &SpeechOptions) -> Result<Vec<f32>>;
 
     /// Start generating `text`, yielding PCM as the decoder produces it.
+    ///
+    /// Generation pauses once the bounded buffers fill if the stream is unread.
+    /// Consuming audio lets it resume; dropping the stream stops and joins its workers.
     fn stream(&self, text: &str) -> Result<SpeechStream>;
 
     /// Prime a voice once and keep it, for callers that generate repeatedly.
+    ///
+    /// The budget covers the configured token target, the selected voice prompt and the
+    /// corresponding frame limit. At the default 50-token target and 12.5 Hz, it reserves at
+    /// least 796 KV positions. Longer sentences are cut to fit the session's budget.
+    /// Use [`Self::session`] to choose a fixed budget explicitly.
+    ///
+    /// ```no_run
+    /// # fn main() -> ptts::Result<()> {
+    /// # let tts: ptts::synth::Synth = todo!();
+    /// let session = tts.session_default(&ptts::synth::SpeechOptions::default())?;
+    /// let pcm = session.say("Hello world")?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn session_default(&self, opts: &SpeechOptions) -> Result<Session>;
+
+    /// Prime a voice with an explicit KV budget, for callers that generate repeatedly.
     ///
     /// ```no_run
     /// # fn main() -> ptts::Result<()> {
@@ -1575,17 +1710,18 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
     ///
     /// `max_seq_len` is the KV budget, allocated up front and held until the
     /// session is dropped. At 12.5 Hz a full [`MAX_TOKENS_PER_CHUNK`]-token
-    /// chunk needs 796, so 1024 covers any
-    /// single chunk; longer text is split into chunks of that size rather than
-    /// needing more. Text that would need more is rejected rather than silently
-    /// re-primed.
+    /// chunk needs 796, so 1024 covers the usual target. Further sentences use
+    /// the same cache. A single sentence too long for the budget, or longer than
+    /// [`plan::MAX_FIT_TOKENS`], is cut with [`plan::fit`]; an indivisible chunk
+    /// that still exceeds either limit is rejected.
     fn session(&self, opts: &SpeechOptions, max_seq_len: usize) -> Result<Session>;
 
     /// Start generating `text` with per-request overrides.
     ///
-    /// Generation runs on two background threads — one for the flow-LM, one for
-    /// the Mimi decoder — so decoding overlaps the next backbone step. Dropping
-    /// the returned [`SpeechStream`] stops both.
+    /// Generation runs on two background threads: one for the flow-LM, one for
+    /// the Mimi decoder, so decoding overlaps the next backbone step. Generation
+    /// pauses once the bounded buffers fill if the stream is unread, and resumes
+    /// as audio is consumed. Dropping the returned [`SpeechStream`] stops and joins both.
     fn stream_with(&self, text: &str, opts: &SpeechOptions) -> Result<SpeechStream>;
 
     /// As [`Self::stream_with`], but with an explicit noise source.
@@ -1625,6 +1761,9 @@ pub trait SessionApi: sealed::Sealed + Send + Sync {
     fn say(&self, text: &str) -> Result<Vec<f32>>;
 
     /// Synthesize `text`, yielding PCM as the decoder produces it.
+    ///
+    /// Generation pauses once the bounded buffers fill if the stream is unread.
+    /// Consuming audio lets it resume; dropping the stream stops and joins its workers.
     fn stream(&self, text: &str) -> Result<SpeechStream>;
 
     /// As [`Self::stream`], with an explicit seed for this request.
@@ -1642,6 +1781,8 @@ pub trait SessionApi: sealed::Sealed + Send + Sync {
     fn tokenize(&self, text: &str) -> Result<Vec<u32>>;
 
     /// Synthesize from tokens produced elsewhere, as one chunk.
+    ///
+    /// Generation uses the bounded buffers and cleanup described on [`SpeechStream`].
     ///
     /// `frames_after_eos` is the tail [`crate::tts_model::prepare_text_prompt`] would have
     /// chosen: 3 for a very short prompt, 1 otherwise.
@@ -1808,7 +1949,7 @@ mod tests {
     #[test]
     fn the_builder_keeps_the_policy_it_was_given() {
         for norm in [Normalize::for_lang(Lang::En), Normalize::for_lang(Lang::De), Normalize::OFF] {
-            let b = SynthBuilder::new(TTSConfig::v202601(), "model.safetensors", norm);
+            let b = SynthBuilder::new(crate::test_config(), "model.safetensors", norm);
             assert_eq!(b.normalize, norm);
         }
     }
@@ -1836,6 +1977,67 @@ mod tests {
             flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok(),
             "and the next generation must be able to claim it"
         );
+    }
+
+    #[test]
+    fn dropping_a_stream_unblocks_and_joins_both_workers() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (pcm_tx, pcm_rx) = mpsc::sync_channel(0);
+        let (latent_tx, latent_rx) = mpsc::sync_channel(1);
+        let (full_tx, full_rx) = mpsc::sync_channel(1);
+        let backbone = std::thread::spawn(move || {
+            latent_tx.send(()).unwrap();
+            latent_tx.send(()).unwrap();
+            full_tx.send(()).unwrap();
+            // The decoder is blocked on PCM output and the latent queue is full.
+            assert!(latent_tx.send(()).is_err());
+        });
+        let decoder = std::thread::spawn(move || {
+            while latent_rx.recv().is_ok() {
+                if pcm_tx.send(Ok(vec![0.1])).is_err() {
+                    return;
+                }
+            }
+        });
+        full_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let stream = SpeechStream {
+            rx: Some(pcm_rx),
+            sample_rate: 24000,
+            failed: false,
+            workers: Some([backbone, decoder]),
+        };
+        let (done_tx, done_rx) = mpsc::sync_channel(1);
+        let dropper = std::thread::spawn(move || {
+            drop(stream);
+            done_tx.send(()).unwrap();
+        });
+        done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        dropper.join().unwrap();
+    }
+
+    #[test]
+    fn a_terminal_stream_error_closes_output_and_joins_workers() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stopped = stopped.clone();
+        let worker = std::thread::spawn(move || {
+            tx.send(Err(Error::invalid_argument("failed"))).unwrap();
+            while tx.send(Ok(vec![0.1])).is_ok() {}
+            worker_stopped.store(true, Ordering::Release);
+        });
+        let other = std::thread::spawn(|| {});
+        let mut stream = SpeechStream {
+            rx: Some(rx),
+            sample_rate: 24000,
+            failed: false,
+            workers: Some([worker, other]),
+        };
+        assert!(stream.next().unwrap().is_err());
+        assert!(stopped.load(Ordering::Acquire));
+        assert!(stream.next().is_none());
     }
 
     #[test]

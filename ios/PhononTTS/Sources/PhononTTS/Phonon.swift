@@ -183,7 +183,8 @@ public final class Phonon: @unchecked Sendable {
         }
     }
 
-    /// Speak `text` as a stream of sample chunks. Ending the iteration early stops generation.
+    /// Speak `text` as a stream of sample chunks. Cancel the consuming task to stop generation.
+    /// Breaking out of the loop alone does not reliably terminate the stream's producer.
     public func stream(_ text: String) -> AsyncThrowingStream<[Float], Error> {
         AsyncThrowingStream { continuation in
             let task = Task {

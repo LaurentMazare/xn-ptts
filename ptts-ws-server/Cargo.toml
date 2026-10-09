@@ -30,6 +30,10 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 xn = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite = "0.29"
+
 [features]
 default = []
 cuda = ["xn/cuda", "ptts/cuda"]

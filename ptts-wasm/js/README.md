@@ -1,6 +1,6 @@
 # phonon-tts
 
-Text-to-speech that runs in the browser, on the user's device. No server, no API key. It streams 24 kHz speech from a [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) architecture checkpoint, compiled to WebAssembly from the [Phonon](https://github.com/gradium-ai/xn-ptts) Rust runtime.
+Text-to-speech that runs in the browser, on the user's device. No server, no API key. It streams speech from an explicitly supplied Phonon checkpoint, compiled to WebAssembly from the [Rust runtime](https://github.com/gradium-ai/xn-ptts).
 
 ```bash
 npm install phonon-tts
@@ -46,7 +46,7 @@ for await (const pcm of tts.stream('A longer piece of text. It is split at sente
 }
 ```
 
-Text of any length works. It is split into sentence-aligned chunks and spoken one after another.
+Long text is grouped into sentence-aligned chunks and spoken one after another. The usual target is 50 text tokens per chunk; a longer single sentence is split at up to 200 tokens. An indivisible piece over 200 tokens returns an input error before generation.
 
 To stop, break out of the loop, call `stream.cancel()`, or pass an `AbortSignal`:
 
@@ -56,7 +56,11 @@ const speech = tts.stream(text, { signal: controller.signal });
 stopButton.onclick = () => controller.abort();
 ```
 
-`speech.done` resolves with timing stats (frames, time to first audio, per-frame time) once generation ends.
+Cancellation discards unread stream chunks. Stop any audio already scheduled in your player separately, for example by closing its `AudioContext`. Wait for `speech.done` to finish cancellation before reusing playback resources; the next request on the same model is queued automatically.
+
+`speech.done` resolves with timing stats (frames, time to first audio, per-frame time) once generation ends. `stats.cancelled` reports whether the worker stopped before generation finished; it can be false if cancellation arrived after the worker finished.
+
+**Migration note:** `cancel()` now discards unread chunks even when generation has already finished. To keep all generated audio, drain the stream without cancelling it.
 
 ## API
 
@@ -108,7 +112,7 @@ await PhononTTS.load({
   model: {
     weights: { q8: '/models/fr/model.q8.gguf', f32: '/models/fr/model.safetensors' },
     tokenizer: '/models/fr/tokenizer.json',
-    config: '/models/fr/config.json',  // omit for the original Pocket TTS architecture
+    config: '/models/fr/config.json',  // required for every checkpoint
     voices: { anna: '/models/fr/embeddings/anna.safetensors' },
     defaultVoice: 'anna',
   },
@@ -117,13 +121,7 @@ await PhononTTS.load({
 
 `defaultVoice` is the voice used when a request names none; it defaults to the first of `voices`. Only the weights for the `quant` you load have to be listed.
 
-To try the package without a checkpoint of your own, pass `POCKET_TTS_MODEL`, which points at Kyutai's published Pocket TTS checkpoint on Hugging Face (about 146 MB in `q8`, 240 MB in `f32`) and its voices `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine` and `azelma`:
-
-```js
-import { PhononTTS, POCKET_TTS_MODEL } from 'phonon-tts';
-
-const tts = await PhononTTS.load({ lang: 'en', model: POCKET_TTS_MODEL });
-```
+Every model needs its own `config.json` and `tokenizer.json`. Supply their URLs in `ModelSpec`; the package has no model or config fallback. Pocket TTS checkpoints work through this same interface when they supply those files and compatible weights.
 
 ## How it runs
 
@@ -159,4 +157,4 @@ This build speaks with ready-made voices only. Cloning a voice from an audio sam
 
 ## Licence
 
-The package is MIT OR Apache-2.0. Model weights are not part of it and come with their own licence; for `POCKET_TTS_MODEL`, see its [model card](https://huggingface.co/kyutai/pocket-tts).
+The package is MIT OR Apache-2.0. Model weights are not part of it and come with their own license.

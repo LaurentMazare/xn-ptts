@@ -16,7 +16,11 @@ use ptts::synth::{DeviceKind, Quant, SpeechOptions, Synth, SynthBuilder};
 /// before the weights are read, so the config's contents do not matter, and
 /// neither does which language it would have normalized as.
 fn builder(weights: impl Into<std::path::PathBuf>) -> SynthBuilder {
-    Synth::builder(ptts::tts_model::TTSConfig::v202601(), weights, Normalize::for_lang(Lang::En))
+    Synth::builder(
+        serde_json::from_str(include_str!("fixtures/config.json")).unwrap(),
+        weights,
+        Normalize::for_lang(Lang::En),
+    )
 }
 
 #[test]
@@ -134,6 +138,46 @@ fn quantization_on_a_gpu_is_rejected_before_the_weights_are_touched() {
     let err = err.to_string();
     assert!(err.contains("CPU-only"), "{err}");
     assert!(err.contains("q4_0"), "the error should name the format: {err}");
+}
+
+#[test]
+fn unavailable_f32_backends_fail_before_reading_model_files() {
+    for (device, name, compiled) in [
+        (DeviceKind::Cuda, "cuda", cfg!(feature = "cuda")),
+        (DeviceKind::Vulkan, "vulkan", cfg!(feature = "vulkan")),
+        (DeviceKind::Metal, "metal", cfg!(feature = "metal")),
+    ] {
+        if compiled {
+            continue;
+        }
+        let err = builder("/definitely/not/a/model/weights.safetensors")
+            .device(device)
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
+        assert!(err.to_string().contains(name), "{err}");
+        assert!(err.to_string().contains("not available in this build"), "{err}");
+        let message = err.to_string();
+        let available = message.split("available devices: ").nth(1).unwrap();
+        assert!(available.split(", ").any(|d| d == "cpu"), "{message}");
+        assert!(!available.split(", ").any(|d| d == name), "{message}");
+    }
+}
+
+#[test]
+fn preflight_accepts_compiled_backends_without_initializing_them() {
+    Quant::F32.check_device(DeviceKind::Auto).unwrap();
+    Quant::Q80.check_device(DeviceKind::Cpu).unwrap();
+    for (device, compiled) in [
+        (DeviceKind::Cpu, true),
+        (DeviceKind::Cuda, cfg!(feature = "cuda")),
+        (DeviceKind::Vulkan, cfg!(feature = "vulkan")),
+        (DeviceKind::Metal, cfg!(feature = "metal")),
+    ] {
+        if compiled {
+            Quant::F32.check_device(device).unwrap();
+        }
+    }
 }
 
 #[test]

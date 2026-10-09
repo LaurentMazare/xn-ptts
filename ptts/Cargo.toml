@@ -3,6 +3,8 @@ name = "ptts"
 version.workspace = true
 edition = "2024"
 autoexamples = false
+autobins = false
+readme = "README.md"
 description.workspace = true
 repository.workspace = true
 keywords.workspace = true
@@ -10,6 +12,10 @@ categories.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+hf-hub = { workspace = true, optional = true }
+tracing-chrome = { workspace = true, optional = true }
 xn = { workspace = true }
 ebur128 = { workspace = true }
 rand = { workspace = true, features = ["std_rng"] }
@@ -24,6 +30,9 @@ tokenizers = { workspace = true, optional = true }
 safetensors = { workspace = true }
 thiserror = { workspace = true }
 half = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true, optional = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -48,6 +57,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
+# Installable command; the library stays free of download and CLI dependencies by default.
+cli = ["hf", "audio", "dep:anyhow", "dep:clap", "dep:hf-hub", "dep:tracing-chrome", "dep:libc"]
 cuda = ["xn/cuda", "dep:half"]
 vulkan = ["xn/vulkan"]
 metal = ["xn/metal", "dep:half"]
@@ -64,9 +75,10 @@ audio = ["dep:symphonia", "dep:rubato"]
 name = "say"
 required-features = ["hf"]
 
-[[example]]
+[[bin]]
 name = "ptts"
-required-features = ["hf", "audio"]
+path = "src/bin/ptts/main.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "bench"

@@ -8,7 +8,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use ptts::synth::{SpeechOptions, SpeechStream};
+use ptts::synth::SpeechOptions;
 
 /// OpenAI's limit on `input`.
 const MAX_INPUT_CHARS: usize = 4096;
@@ -114,6 +114,10 @@ pub async fn speech(State(app): State<AppState>, body: Bytes) -> Response {
             Ok(checked) => checked,
             Err((param, message)) => return error(StatusCode::BAD_REQUEST, param, message),
         };
+    let permit = match app.requests.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return busy(),
+    };
     let mut opts = SpeechOptions::default().seed(next_seed(app.seed_base));
     if let Some(voice) = voice {
         opts = opts.voice(voice);
@@ -126,6 +130,12 @@ pub async fn speech(State(app): State<AppState>, body: Bytes) -> Response {
     let frame = app.frame_size as usize;
     let sample_rate = app.sample_rate;
     tokio::task::spawn_blocking(move || {
+        // Keep the slot until encoding ends and SpeechStream joins its workers,
+        // including when the client disconnects or model startup fails.
+        let _permit = permit;
+        if started_tx.is_closed() || tx.is_closed() {
+            return;
+        }
         let stream = match app.synth.stream_with(&input, &opts) {
             Ok(stream) => stream,
             Err(e) => {
@@ -133,7 +143,10 @@ pub async fn speech(State(app): State<AppState>, body: Bytes) -> Response {
                 return;
             }
         };
-        let _ = started_tx.send(Ok(()));
+        if started_tx.send(Ok(())).is_err() {
+            // The handler was cancelled during setup. Dropping the stream joins its workers.
+            return;
+        }
         if let Err(e) = encode(stream, format, frame, sample_rate, &tx) {
             tracing::warn!(error = %e, "speech request failed after it started");
             let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
@@ -162,7 +175,7 @@ pub async fn speech(State(app): State<AppState>, body: Bytes) -> Response {
 /// Encode `stream` frame by frame onto `tx`. Returns early, without error, once the client has
 /// gone: dropping `stream` stops the generation workers.
 fn encode(
-    stream: SpeechStream,
+    stream: impl Iterator<Item = ptts::Result<Vec<f32>>>,
     format: Format,
     frame: usize,
     sample_rate: u32,
@@ -174,7 +187,9 @@ fn encode(
         return Ok(());
     }
     // A chunk can carry several frames, and the Opus encoder wants one at a time.
-    for chunk in stream {
+    let mut stream = stream;
+    while !tx.is_closed() {
+        let Some(chunk) = stream.next() else { break };
         for pcm in chunk?.chunks(frame) {
             if !send(encoder.encode(pcm)?) {
                 return Ok(());
@@ -217,6 +232,16 @@ fn error(status: StatusCode, param: Option<&str>, message: impl Into<String>) ->
     json(status, serde_json::json!({ "error": error }))
 }
 
+fn busy() -> Response {
+    json(
+        StatusCode::TOO_MANY_REQUESTS,
+        serde_json::json!({ "error": {
+            "message": "the server is busy; retry after an active speech request finishes",
+            "type": "server_error", "param": null, "code": "server_busy",
+        }}),
+    )
+}
+
 fn json(status: StatusCode, value: serde_json::Value) -> Response {
     (status, [(header::CONTENT_TYPE, "application/json")], value.to_string()).into_response()
 }
@@ -235,6 +260,149 @@ mod tests {
 
     fn rejected(body: &str) -> Option<&'static str> {
         check(body.as_bytes(), &voices(&["Freya", "Toby"]), PCM_RATE).unwrap_err().0
+    }
+
+    #[tokio::test]
+    async fn busy_errors_have_the_openai_shape() {
+        let response = busy();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "server_busy");
+        assert_eq!(body["error"]["type"], "server_error");
+        assert!(body["error"]["message"].as_str().unwrap().contains("retry"));
+        assert!(body["error"]["param"].is_null());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PTTS_TEST_MODEL pointing to a q8 checkpoint"]
+    async fn admission_rejects_overload_and_recovers_after_disconnect_and_failure() {
+        use ptts::synth::{DeviceKind, Quant};
+        use std::future::Future;
+        let path = std::path::PathBuf::from(
+            std::env::var("PTTS_TEST_MODEL").expect("set PTTS_TEST_MODEL"),
+        );
+        let app = crate::model::load_ptts(
+            &path,
+            None,
+            None,
+            DeviceKind::Cpu,
+            Quant::Q80,
+            0.3,
+            7,
+            "en".parse().unwrap(),
+            &[],
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )
+        .await
+        .unwrap();
+        let request = |input: &str| {
+            Bytes::from(serde_json::json!({ "input": input, "response_format": "pcm" }).to_string())
+        };
+        let permit = app.requests.clone().try_acquire_owned().unwrap();
+        assert_eq!(
+            speech(State(app.clone()), request("Hello.")).await.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            speech(State(app.clone()), Bytes::from_static(b"invalid")).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(health().await.status(), StatusCode::OK);
+        assert_eq!(models(State(app.clone())).await.status(), StatusCode::OK);
+        assert_eq!(super::voices(State(app.clone())).await.status(), StatusCode::OK);
+        drop(permit);
+
+        // Poll only through task startup, then drop the request before response headers.
+        let mut pending = Box::pin(speech(State(app.clone()), request("Hello before headers.")));
+        std::future::poll_fn(|cx| {
+            assert!(pending.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(app.requests.available_permits(), 0);
+        drop(pending);
+        let permit = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            app.requests.clone().acquire_owned(),
+        )
+        .await
+        .expect("request cancelled before headers leaked its slot")
+        .unwrap();
+        drop(permit);
+
+        // Hold an unread response so the producer fills its bounded output channel.
+        let response =
+            speech(State(app.clone()), request(&"Long speech keeps this slot busy. ".repeat(100)))
+                .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            speech(State(app.clone()), request("Hello.")).await.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        drop(response);
+        let permit = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            app.requests.clone().acquire_owned(),
+        )
+        .await
+        .expect("generation did not stop after dropping the response")
+        .unwrap();
+        drop(permit);
+
+        // Normalization removes an emoji-only input after admission, during startup.
+        assert_eq!(
+            speech(State(app.clone()), request("😀")).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        let permit = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            app.requests.clone().acquire_owned(),
+        )
+        .await
+        .expect("failed startup leaked its slot")
+        .unwrap();
+        drop(permit);
+        let response = speech(State(app.clone()), request("Hello from Phonon.")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let audio = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024).await.unwrap();
+        assert!(!audio.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_slow_http_reader_pauses_encoding_and_drop_releases_the_stream() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        struct EndlessAudio(Arc<AtomicUsize>, Arc<AtomicBool>, Arc<tokio::sync::Notify>);
+        impl Iterator for EndlessAudio {
+            type Item = ptts::Result<Vec<f32>>;
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 16 {
+                    self.2.notify_one();
+                }
+                Some(Ok(vec![0.1; 480]))
+            }
+        }
+        impl Drop for EndlessAudio {
+            fn drop(&mut self) {
+                self.1.store(true, Ordering::SeqCst);
+            }
+        }
+        let produced = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let full = Arc::new(tokio::sync::Notify::new());
+        let stream = EndlessAudio(produced.clone(), dropped.clone(), full.clone());
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let producer =
+            tokio::task::spawn_blocking(move || encode(stream, Format::Pcm, 480, PCM_RATE, &tx));
+        tokio::time::timeout(Duration::from_secs(2), full.notified()).await.unwrap();
+        // Sixteen queued frames plus the one blocked on sending.
+        assert_eq!(produced.load(Ordering::SeqCst), 17);
+        drop(rx);
+        tokio::time::timeout(Duration::from_secs(2), producer).await.unwrap().unwrap().unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[test]

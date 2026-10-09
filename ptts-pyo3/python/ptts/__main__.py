@@ -39,11 +39,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "-m",
         "--model",
-        help="Hugging Face repo id or path to a local config.json (default: the published one)",
+        help="required: Hugging Face repo ID or local model directory/config.json",
     )
     p.add_argument(
         "-d", "--device", help=f"one of {', '.join(['auto', *available_devices()])} (default: auto)"
     )
+    p.add_argument("--revision", help="Hugging Face branch, tag, or commit")
     p.add_argument("-q", "--quant", help=f"weight format: {', '.join(available_quants())}")
     p.add_argument("-t", "--temperature", type=float, help="sampling temperature")
     p.add_argument("-s", "--seed", type=int, help="sampling seed, for a reproducible run")
@@ -78,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
         # differ per language, so there is nothing safe to guess on the caller's behalf.
         parser.error("--lang is required: one of en, fr, de, es, pt, or none to skip it")
 
+    if args.model is None:
+        parser.error("--model is required: a local model directory or Hugging Face repo ID")
+
     if args.threads is not None:
         # After the arguments are checked, before the model loads: this sizes a global pool
         # that is built once.
@@ -86,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         set_num_threads(args.threads)
 
     kwargs: dict[str, object] = {"lang": args.lang}
-    for name in ("config", "device", "quant", "voice", "seed", "temperature", "rewrites"):
+    for name in ("config", "device", "quant", "voice", "seed", "temperature", "rewrites", "revision"):
         value = getattr(args, {"config": "model"}.get(name, name))
         if value is not None:
             kwargs[name] = value

@@ -9,7 +9,7 @@
 //! up in one call. `--breakdown` instead runs both on this thread, one frame at a time, which
 //! is slower overall but times each stage on its own.
 
-#[path = "model_helpers.rs"]
+#[path = "../src/bin/ptts/model_helpers.rs"]
 mod model_helpers;
 
 use std::time::{Duration, Instant};
@@ -298,11 +298,18 @@ impl Bench<'_> {
 
         // Tokenize up front: the loop needs the tokens anyway, and the KV cache is sized from
         // them. The chunks are the ones `ptts` makes.
+        let tokenizer = model.flow_lm.conditioner.tokenizer.as_deref().context("no tokenizer")?;
         let chunks = ptts::plan::chunks(
-            model.flow_lm.conditioner.tokenizer.as_deref().context("no tokenizer")?,
+            tokenizer,
             &args.input,
             self.1,
             MAX_TOKENS_PER_CHUNK,
+            cfg.mimi.frame_rate,
+        )?;
+        let chunks = ptts::plan::fit_or_error(
+            chunks,
+            ptts::plan::MAX_FIT_TOKENS,
+            tokenizer,
             cfg.mimi.frame_rate,
         )?;
 

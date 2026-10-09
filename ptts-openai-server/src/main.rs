@@ -20,10 +20,17 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8880", env = "PTTS_ADDR")]
     addr: String,
 
-    /// The checkpoint: a local folder, a `config.json` in one, or a Hugging Face repo id.
-    /// Kyutai's Pocket TTS checkpoint from the Hub when not given.
-    #[arg(long, env = "PTTS_CONFIG")]
-    config: Option<std::path::PathBuf>,
+    /// Maximum simultaneous speech generations. Excess requests receive HTTP 429.
+    #[arg(long, default_value = "1", env = "PTTS_MAX_CONCURRENT_REQUESTS", value_parser = parse_request_limit)]
+    max_concurrent_requests: std::num::NonZeroUsize,
+
+    /// Required local model directory, config.json, or Hugging Face repo ID.
+    #[arg(long, env = "PTTS_CONFIG", required = true)]
+    config: std::path::PathBuf,
+
+    /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.
+    #[arg(long, env = "PTTS_REVISION")]
+    revision: Option<String>,
 
     /// Optional directory of additional voice safetensors to load. Each
     /// `*.safetensors` file is loaded as a voice keyed by its file stem; load
@@ -71,10 +78,18 @@ struct Args {
     conditions: Vec<String>,
 }
 
+fn parse_request_limit(value: &str) -> Result<std::num::NonZeroUsize, String> {
+    let limit: std::num::NonZeroUsize = value.parse().map_err(|e| format!("{e}"))?;
+    if limit.get() > tokio::sync::Semaphore::MAX_PERMITS {
+        return Err(format!("limit must be at most {}", tokio::sync::Semaphore::MAX_PERMITS));
+    }
+    Ok(limit)
+}
+
 fn init_tracing() {
     // `info` for everything but the Hub download stack: `hf_hub` transfers through the Xet
     // backend, which reports every retry policy and range probe at `info`. Keep in sync with
-    // `LOG_DIRECTIVES` in `ptts/examples/model_helpers.rs`.
+    // `LOG_DIRECTIVES` in `ptts/src/bin/ptts/model_helpers.rs`.
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(
             "info,xet=warn,xet_client=warn,xet_data=warn,xet_runtime=warn,xet_core_structures=warn",
@@ -121,7 +136,7 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         None => Quant::F32,
         Some(name) => name.parse::<Quant>()?,
     };
-    // Both checks happen before `load_ptts` downloads anything: `SynthBuilder`
+    // Device and weight-format checks run before downloading: `SynthBuilder`
     // would catch them, but only after the checkpoint is on disk.
     quant.check_device(device)?;
     let normalize = args.lang.parse::<Normalize>()?.with_rules(args.rewrites.parse::<Rules>()?);
@@ -132,19 +147,9 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         let (name, value) = condition.split_once('=').context("--condition takes NAME=VALUE")?;
         conditions.push((name.to_string(), value.to_string()));
     }
-    let unavailable = match device {
-        DeviceKind::Cuda if !cfg!(feature = "cuda") => Some("cuda"),
-        DeviceKind::Vulkan if !cfg!(feature = "vulkan") => Some("vulkan"),
-        DeviceKind::Metal if !cfg!(feature = "metal") => Some("metal"),
-        _ => None,
-    };
-    if let Some(name) = unavailable {
-        anyhow::bail!(
-            "--device {name} requested, but this binary was built without --features {name}"
-        );
-    }
     model::load_ptts(
-        args.config.as_ref(),
+        &args.config,
+        args.revision.as_deref(),
         args.voice_dir.as_ref(),
         device,
         quant,
@@ -152,6 +157,42 @@ async fn build_app_state(args: &Args) -> Result<model::AppState> {
         args.seed,
         normalize,
         &conditions,
+        args.max_concurrent_requests,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_limit_is_positive_and_defaults_to_one() {
+        assert!(parse_request_limit(&usize::MAX.to_string()).is_err());
+        let args = Args::try_parse_from(["server", "--config", "model", "--lang", "none"]).unwrap();
+        assert_eq!(args.max_concurrent_requests.get(), 1);
+        let args = Args::try_parse_from([
+            "server",
+            "--config",
+            "model",
+            "--lang",
+            "none",
+            "--max-concurrent-requests",
+            "3",
+        ])
+        .unwrap();
+        assert_eq!(args.max_concurrent_requests.get(), 3);
+        assert!(
+            Args::try_parse_from([
+                "server",
+                "--config",
+                "model",
+                "--lang",
+                "none",
+                "--max-concurrent-requests",
+                "0",
+            ])
+            .is_err()
+        );
+    }
 }

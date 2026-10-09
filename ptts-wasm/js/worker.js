@@ -119,13 +119,13 @@ async function handleInit(id, options) {
   const [weights, tokenizer, config] = await Promise.all([
     fetchBytes(weightsUrl, { cache, onProgress: progress('weights') }),
     fetchBytes(spec.tokenizer, { cache, onProgress: progress('tokenizer') }),
-    spec.config ? fetchBytes(spec.config, { cache, onProgress: progress('config') }) : null,
+    fetchBytes(spec.config, { cache, onProgress: progress('config') }),
   ]);
   const load = (device) =>
     wasm.Model.load(
       weights,
       tokenizer,
-      config ?? undefined,
+      config,
       quant,
       options.lang,
       options.rewrites,

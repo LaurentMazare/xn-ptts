@@ -13,12 +13,12 @@
 //! host keeps. `--max-tokens` is the longest sentence the prefill graph takes; longer text is
 //! split into sentences at run time. Mimi stays f32 and runs on the CPU.
 
-#[path = "model_helpers.rs"]
+#[path = "../src/bin/ptts/model_helpers.rs"]
 mod model_helpers;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use model_helpers::{Checkpoint, Source};
+use model_helpers::Source;
 use ptts_coreml::Weights;
 use ptts_coreml::package::write_mlpackage_with_weights;
 use ptts_coreml::phonon::{flow_lm as fl, mimi};
@@ -32,14 +32,21 @@ struct Args {
     /// Output directory.
     out: PathBuf,
     /// Hugging Face repo to download the checkpoint from.
-    #[arg(long, default_value = model_helpers::REPO_ID)]
-    repo: String,
+    #[arg(long, required_unless_present = "dir", conflicts_with = "dir")]
+    repo: Option<String>,
+
+    /// Hugging Face branch, tag, or commit. Use a commit to reproduce a release.
+    #[arg(long, conflicts_with = "dir")]
+    revision: Option<String>,
     /// A local checkpoint directory instead of the Hub.
     #[arg(long)]
     dir: Option<PathBuf>,
     /// Weights file inside the repo or directory, when it has several.
     #[arg(long)]
     weights: Option<String>,
+    /// Source weight format to select, e.g. f32 or q8. The exported graph sets its own precision.
+    #[arg(long, default_value = "f32")]
+    quant: String,
     /// A directory of voice `.safetensors` files, instead of the checkpoint's own.
     #[arg(long)]
     voices: Option<PathBuf>,
@@ -70,9 +77,12 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(model_helpers::LOG_DIRECTIVES).init();
     let source = match args.dir.as_deref() {
         Some(dir) => Source::Dir(dir),
-        None => Source::Hub(&args.repo),
+        None => Source::Hub {
+            repo: args.repo.as_deref().context("--repo or --dir is required")?,
+            revision: args.revision.as_deref(),
+        },
     };
-    let ck = Checkpoint::locate(source, args.weights.as_deref())?;
+    let ck = model_helpers::locate(source, args.weights.as_deref(), args.quant.parse()?)?;
     let cfg = &ck.config;
     let f = &cfg.flow_lm;
     let dims = fl::Dims {

@@ -1,20 +1,37 @@
-# PhononTTS
+# ptts for Swift
 
 Phonon text to speech for your own iOS or macOS app. The model runs on the device, with its
 transformer on the Apple Neural Engine, and audio streams as it is generated: on an iPhone 16 Pro
 speech starts in under 40 ms and is produced 12 times faster than it plays.
 
 ```swift
+import Foundation
 import PhononTTS
 
-let models = try PhononModels.install(bundled: Bundle.main.url(forResource: "Models", withExtension: nil)!)
+guard let bundled = Bundle.main.url(forResource: "Models", withExtension: nil) else {
+    throw PhononError(description: "Add the exported model folder to your app as a folder reference named Models.")
+}
+let models = try PhononModels.install(bundled: bundled)
 let tts = try await Phonon.load(models: models, language: .english)
-try await PhononPlayer().play(tts.stream("Hello! This is running entirely on the phone."))
+let player = try PhononPlayer()
+try await player.play(tts.stream("Hello! This is running entirely on the phone."))
 ```
 
 It needs iOS 18 or macOS 15 on Apple silicon, Xcode 16, about 430 MB of disk for the models and
 about 95 MB of memory while speaking. The simulator works, but without a Neural Engine it is
 several times slower than a device.
+
+Keep `tts` and `player` in your app or view state while speech is playing. `play` returns when generation finishes; releasing the player stops any audio still scheduled.
+
+## Prepared release package
+
+The Swift package is named `ptts`; its module remains `PhononTTS`. Existing consumers selecting `.product(name: "PhononTTS", package: ...)` must select `ptts` as the product name; their `import PhononTTS` stays the same. The release workflow produces `ptts-swift-<version>.zip`, a package with a versioned framework URL and its exact checksum, plus `PhononCore.xcframework.zip`. Neither contains model weights.
+
+Once those assets are published on the matching [GitHub Release](https://github.com/gradium-ai/xn-ptts/releases), download and extract the Swift package ZIP and add that folder to Xcode as a local package. Select the `ptts` library product. Swift Package Manager downloads the matching compiled core automatically. Rust and the repository checkout are not needed.
+
+You still need a prepared Core ML model bundle supplied with the selected checkpoint. If you already received one from us, use it directly with the release package and skip the model export below. No public HF repo or token is needed. If you received only a raw checkpoint, export it first. You can download a hosted Core ML bundle with `PhononModels.download(from:progress:)` or bundle it with the app as described below. Prepared public model bundles will be supplied when the model is released.
+
+Before publication, source development uses the local framework built by `ios/build-xcframework.sh`. For the eventual repository-based Swift package, commit the generated release manifest at the package root after its framework asset is available. Verify its URL and checksum from a clean consumer before advertising that installation path.
 
 ## 1. Build the two pieces that are not in the source
 
@@ -34,7 +51,7 @@ given take their defaults.
 ## 2. Add the package and the models
 
 In Xcode, choose *File, Add Package Dependencies, Add Local*, select `ios/PhononTTS`, and add the
-`PhononTTS` library to your app target. Then add the `phonon-coreml` folder to the target as a
+`ptts` library (module `PhononTTS`) to your app target. Then add the `phonon-coreml` folder to the target as a
 folder reference (a blue folder, not a group) named `Models`.
 
 Core ML compiles each model beside itself, so the models have to be copied out of the read-only
@@ -61,9 +78,31 @@ models for the device, about 10 s on an iPhone 16 Pro; later loads take about 0.
 | `PhononPlayer` | Plays chunks as they arrive. `enqueue(_:)` and `stop()` work from any thread. |
 
 Audio is mono Float32 at 24 kHz. Every method can be called from any thread or task, and an
-instance speaks one utterance at a time. Cancelling the task that called `speak`, or ending a
-`stream`, stops generation at the next chunk. Long text is split into sentences and spoken with
-no gap.
+instance speaks one utterance at a time. Cancelling the task that called `speak` or consumes a
+`stream` stops generation at the next chunk. Breaking out of a stream loop alone does not reliably
+stop its producer; cancel the consuming task when interrupting speech. Long text is split into
+sentences and spoken with no gap.
+
+### Stop and speak again
+
+Keep the playback task so your Stop button can cancel it:
+
+```swift
+let playback = Task {
+    try await player.play(tts.stream("A longer piece of text."))
+}
+```
+
+In the Stop button handler, stop both generation and audio already scheduled:
+
+```swift
+playback.cancel()
+player.stop()
+```
+
+Use the same `tts` and `player` for the next request. The model serializes calls, so the next
+utterance waits for the cancelled generation to finish its current operation. `player.stop()`
+only clears scheduled playback; it does not cancel the task producing more audio.
 
 `language` is required: numbers and symbols are spelled out before speaking, and how depends on
 the language. `.none` speaks the text as written. `computeUnit: .cpu` is a slower fallback

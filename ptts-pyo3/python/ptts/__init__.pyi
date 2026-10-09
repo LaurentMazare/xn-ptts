@@ -28,8 +28,10 @@ __all__ = [
 class TTS:
     """A loaded Phonon model.
 
-    `config` is a Hugging Face repo id, a path to a local `config.json`, or `None` for the
-    published checkpoint. Weights are downloaded on first use and cached.
+    `config` must name a local directory/config.json or a Hugging Face repo ID.
+    There is no default model. Local paths never download anything; Hub files are
+    downloaded on first use and cached. `revision` selects a branch, tag, or commit
+    for every Hub file and is only accepted with a Hub source.
 
     `lang` is required and keyword-only: text is normalized before it is tokenized, and the
     spoken forms of `@`, `+` and `=` differ per language, so there is nothing safe to default
@@ -54,6 +56,7 @@ class TTS:
         lang: str | None,
         rewrites: str | None = None,
         conditions: dict[str, str | float] | None = None,
+        revision: str | None = None,
     ) -> None: ...
     @property
     def sample_rate(self) -> int:
@@ -114,7 +117,11 @@ class TTS:
         seed: int | None = None,
         cfg_coef: float | None = None,
     ) -> AudioStream:
-        """Synthesize `text`, yielding float32 chunks as the decoder produces them."""
+        """Synthesize `text`, yielding float32 chunks as the decoder produces them.
+
+        Generation pauses once its bounded buffers fill if the stream is unread, and
+        resumes as chunks are consumed. Closing or dropping it stops its workers.
+        """
 
     def add_voice(self, name: str, path: str | PathLike[str]) -> None:
         """Register a voice from a precomputed embedding file."""
@@ -148,8 +155,9 @@ class TTS:
 class AudioStream(Iterator[NDArray[np.float32]]):
     """An in-progress generation. Iterate it for float32 chunks.
 
-    Usable as a context manager; leaving the block stops the generation and releases the
-    worker threads.
+    Unread streams pause generation once their bounded buffers fill. Consuming chunks
+    lets generation resume. Leaving a context manager block stops generation and waits
+    for the worker threads to finish.
     """
 
     @property

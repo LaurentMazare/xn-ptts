@@ -4,13 +4,32 @@ A speech server for Phonon compatible with OpenAI's text-to-speech API: `POST /v
 
 ## Docker
 
+Set `MODEL_DIR` to a local folder holding the checkpoint's config, tokenizer, weights, and voices:
+
 ```bash
-docker run -p 8880:8880 ghcr.io/gradium-ai/ptts-openai-server
+docker run -p 8880:8880 -v "$MODEL_DIR:/models:ro" \
+  -e PTTS_CONFIG=/models -e PTTS_LANG=en -e PTTS_QUANT=q8 \
+  ghcr.io/gradium-ai/ptts-openai-server
 ```
 
-That is all: the image has Kyutai's Pocket TTS checkpoint (CC-BY-4.0) baked in, with its eight voices (`alba`, `azelma`, `cosette`, `eponine`, `fantine`, `javert`, `jean`, `marius`; `default` is `alba`), and runs it at q8 on the CPU. It is built for `linux/amd64` (an x86-64 CPU with AVX2, from about 2013 on) and `linux/arm64`.
+The image contains the server and no model weights. It is built for `linux/amd64` (an x86 CPU with AVX2) and `linux/arm64`. Every model supplies its own `config.json` and `tokenizer.json`.
 
-Every flag below has an environment variable, so the image is configured with `-e`: `-e PTTS_LANG=fr`, `-e PTTS_QUANT=f32`, or your own voices with `-v ./voices:/voices:ro -e PTTS_VOICE_DIR=/voices`. A checkpoint of your own goes the same way, mounted and named by `PTTS_CONFIG`. [compose.yaml](compose.yaml) does the same with Docker Compose:
+To download from HF instead, set `PTTS_CONFIG=OWNER/MODEL` and `PTTS_REVISION` to the desired revision. Set `HF_TOKEN` for a private repo. The image uses `/home/phonon/.cache/huggingface` as its writable `HF_HOME`. The Hub Compose file mounts a named volume there, so downloads survive container replacement.
+
+Replace `OWNER/MODEL` and `COMMIT_SHA` with the repo and revision you want to run.
+
+```bash
+export PTTS_CONFIG=OWNER/MODEL PTTS_LANG=en
+export PTTS_REVISION=COMMIT_SHA
+# For a private repo, also set HF_TOKEN in your environment.
+docker compose -f ptts-openai-server/compose.hub.yaml up
+```
+
+The Hub Compose file requires an image release that includes this writable cache directory; earlier images may create a cache mount owned by root. `PTTS_REVISION` defaults to `main`, so the cache retains files but does not freeze the checkpoint version. Set a commit revision for a fixed checkpoint.
+
+The cache remains after `docker compose down`; `down --volumes` deletes it. Use `PTTS_IMAGE=ghcr.io/gradium-ai/ptts-openai-server:<version>` to select a release in either Compose file. First startup downloads and loads the checkpoint; follow progress with `docker compose -f ptts-openai-server/compose.hub.yaml logs -f`.
+
+Every flag below has an environment variable, so the image is configured with `-e`. Additional voices can be mounted with `-v ./voices:/voices:ro -e PTTS_VOICE_DIR=/voices`. [compose.yaml](compose.yaml) mounts the folder named by `MODEL_DIR`:
 
 ```bash
 docker compose -f ptts-openai-server/compose.yaml up
@@ -29,9 +48,11 @@ brew install opus lame pkg-config                            # macOS
 cargo run --release -p ptts-openai-server -- --config "$MODEL_DIR" --quant q8 --lang en
 ```
 
-`--config` names a checkpoint folder (or a `config.json` in one) or a Hugging Face repo id. Without it, Kyutai's checkpoint is downloaded from the Hub.
+`--config` names a checkpoint folder (or a `config.json` in one) or a Hugging Face repo id. It is required; no model is selected automatically.
 
-It listens on `0.0.0.0:8880` (`--addr` to change it). There is no authentication and no limit on concurrent requests, and every request can ask for up to 4096 characters of speech, so anyone who can reach the port can keep the CPU busy. On a machine others can reach, bind to `--addr 127.0.0.1:8880` or put it behind a proxy that checks access. `--lang` is required: it picks how numbers and symbols are spelled out. `--device auto` uses the GPU backend the binary was built with, if any; quantized weights such as `--quant q8` run on the CPU only. A checkpoint whose config lists conditioners, such as `padding_bonus`, takes their values with `--condition padding_bonus=0.5` (repeatable, or `PTTS_CONDITION=padding_bonus=0.5,num_speakers=2` in the environment); those not given take their defaults. `--help` lists the rest.
+It listens on `0.0.0.0:8880` (`--addr` to change it). There is no authentication, and each request can ask for up to 4096 characters of speech. On a machine others can reach, bind to `--addr 127.0.0.1:8880` or put it behind a proxy that checks access. `--lang` is required: it picks how numbers and symbols are spelled out. `--device auto` uses the GPU backend the binary was built with, if any; quantized weights such as `--quant q8` run on the CPU only. A checkpoint whose config lists conditioners, such as `padding_bonus`, takes their values with `--condition padding_bonus=0.5` (repeatable, or `PTTS_CONDITION=padding_bonus=0.5,num_speakers=2` in the environment); those not given take their defaults. `--help` lists the rest.
+
+By default, one speech generation runs at a time. `--max-concurrent-requests N` (or `PTTS_MAX_CONCURRENT_REQUESTS=N`) sets a positive limit. Excess speech requests immediately receive HTTP 429 with OpenAI error code `server_busy`; retry when an active generation finishes. Slots are released after generation and worker cleanup, including after a disconnect or failure. Health, model, and voice endpoints remain available while generation is busy.
 
 ## The OpenAI-compatible API
 
@@ -59,7 +80,7 @@ client.audio.speech.create(model="tts-1", voice="default", input="Hello.").write
 | `speed` | Only `1.0`: the model has no rate control yet, so other values are a 400. |
 | `model`, `instructions`, `stream_format` | Accepted and ignored. The reply is always the audio bytes, streamed as they are generated. |
 
-Errors use OpenAI's shape, `{"error": {"message", "type", "param", "code"}}`, so client SDKs report them as usual. `GET /v1/models` names the loaded checkpoint and `GET /health` answers `{"status": "ok"}`. There is no authentication: an `Authorization` header is ignored. A failure after the audio has started can only cut the response short. A streamed `wav` has no length in its header, which a few strict parsers reject; `mp3` or `pcm` suit those.
+Errors use OpenAI's shape, `{"error": {"message", "type", "param", "code"}}`, so client SDKs report them as usual. `GET /v1/models` names the loaded checkpoint and `GET /health` answers `{"status": "ok"}`. There is no authentication: an `Authorization` header is ignored. A failure after the audio has started can only cut the response short. Audio buffering is bounded through the model workers and HTTP response. A slow reader pauses generation; closing the response cancels generation and releases its workers. A streamed `wav` has no length in its header, which a few strict parsers reject; `mp3` or `pcm` suit those.
 
 ## Clients
 
