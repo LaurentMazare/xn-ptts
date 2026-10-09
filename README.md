@@ -30,6 +30,7 @@ A no-install browser demo and audio samples will accompany the public model rele
 | Add speech to a script or backend | [Python](#python) | A Python wheel and a checkpoint. |
 | Run speech in a web app | [Browser](#browser) | `phonon-tts` and model files served with your app. |
 | Add speech to an iPhone or Mac app | [Swift](#swift) | The `ptts` Swift package and a prepared Core ML bundle. |
+| Add speech to an Android app | [Android](#android) | The CPU native library, Kotlin wrapper, and a checkpoint. Source build with Rust and the Android NDK. |
 | Connect an existing app or self-host | [Docker and OpenAI-compatible API](#docker-and-openai-compatible-api) | Docker and a local checkpoint or HF repo. |
 | Embed the runtime in Rust | [Rust](#rust) | The `ptts` crate and a checkpoint folder. |
 
@@ -55,6 +56,7 @@ Packages and native downloads are available as a runtime preview. Follow the [ru
 | Python `ptts` | [PyPI](https://pypi.org/project/ptts/) | Wheels for supported platforms; CPython 3.9+. [Python guide](ptts-pyo3/README.md). |
 | Browser `phonon-tts` | [npm](https://www.npmjs.com/package/phonon-tts) | Worker, single-thread and threaded Wasm builds, and TypeScript declarations. [Browser guide](ptts-wasm/js/README.md). |
 | Swift `ptts` | [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) | `ptts-swift-<version>.zip` and its matching compiled framework. [Swift guide](ios/PhononTTS/README.md). |
+| Android native library | [Build guide](android/README.md#1-build-the-library) | `libptts_ffi.so` and a Kotlin wrapper. Source build; no published Gradle package. |
 | `ptts-openai-server` | `ghcr.io/gradium-ai/ptts-openai-server:<version>` | CPU image for amd64 and arm64; model weights downloaded or mounted separately. [Server guide](ptts-openai-server/README.md). |
 | Rust `ptts` | [crates.io](https://crates.io/crates/ptts) | Library API; add the `cli` feature to install the command. [Rust guide](ptts/README.md). |
 
@@ -214,6 +216,20 @@ try await player.play(tts.stream("Hello from Phonon."))
 
 Keep `tts` and `player` in your app's state while audio plays. You can also download models on first run. Requires iOS 18+ or macOS 15+ on Apple silicon. The public Core ML model bundle is still being prepared. [Swift guide and Stop example →](ios/PhononTTS/README.md)
 
+### Android
+
+Android apps can use Phonon's CPU runtime through the [Kotlin wrapper](android/PhononTTS.kt) or C API. This integration currently requires a source build with Rust and the Android NDK:
+
+```sh
+cargo install cargo-ndk
+export ANDROID_NDK_HOME=/path/to/ndk
+./android/build.sh
+```
+
+From the repository root, this builds `android/jniLibs/arm64-v8a/libptts_ffi.so` for phones and `android/jniLibs/x86_64/libptts_ffi.so` for x86 emulators. Copy `android/jniLibs` into your app's `src/main/`, then add the Kotlin wrapper and its JNA dependency as described in the [Android guide](android/README.md).
+
+Supply a checkpoint folder with its own `config.json`, `tokenizer.json`, weights, and voices. Load it with `PhononTTS(modelDir, "en")` on a background thread and reuse the model; `speak` streams mono 24 kHz PCM to your audio player. The guide includes an `AudioTrack` example, CPU requirements, and cancellation through the audio callback. [Android integration guide →](android/README.md)
+
 ### Docker and OpenAI-compatible API
 
 Choose an image version from [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) and replace `<release-version>` below, without the leading `v`. Public GHCR access is being finalized; until then use an image you can access or the [source setup](docs/development.md#docker). The Docker commands below use Bash or another POSIX shell. Mount your model folder and start the speech server:
@@ -274,6 +290,7 @@ Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chu
 | Python installation, voices, streaming, and wheels | [Python](ptts-pyo3/README.md) |
 | Browser playback, download progress, caching, threads, and WebGPU | [Browser](ptts-wasm/js/README.md) |
 | Apple installation, model bundles, playback, and cancellation | [Swift](ios/PhononTTS/README.md) |
+| Android native library, Kotlin, NDK, and streaming playback | [Android](android/README.md) |
 | Docker, OpenAI-compatible clients, and deployment | [HTTP server](ptts-openai-server/README.md) |
 | Streaming text and audio over one connection | [WebSocket server](ptts-ws-server/README.md) |
 | Rust library and the `say` example | [Rust](ptts/README.md) |
@@ -282,7 +299,7 @@ Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chu
 
 ### Platform notes
 
-Native desktop packages cover the targets listed in the [CLI guide](docs/cli.md). Apple apps use Core ML; browser apps use Wasm on CPU by default. Browser WebGPU is opt in. The npm package targets browsers, not native Node.js inference.
+Native desktop packages cover the targets listed in the [CLI guide](docs/cli.md). Apple apps use Core ML; Android native apps use the CPU library; browser apps use Wasm on CPU by default. Browser WebGPU is opt in. The npm package targets browsers, not native Node.js inference.
 
 Device suitability, model size, memory use, and speech quality depend on the checkpoint. Performance measurements and public samples will accompany the release model.
 
