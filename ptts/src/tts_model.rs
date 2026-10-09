@@ -67,6 +67,8 @@ pub struct TTSConfig {
     pub fuser: Option<FuserConfig>,
     #[serde(default)]
     pub voices: Vec<VoiceConfig>,
+    #[serde(default)]
+    pub languages: Vec<String>,
 }
 
 impl TTSConfig {
