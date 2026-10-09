@@ -129,3 +129,7 @@ node --test ptts-wasm/js/test/*.test.mjs
 Do not use `--all-features`: CUDA requires its own SDK. The servers require libopus, and the HTTP server also uses LAME; their guides list the system packages. Release workflows set explicit CPU baselines rather than the checkout's `target-cpu=native` flags.
 
 Installed wheel tests run without weights by default. Supply `PTTS_TEST_MODEL` and, for a Hub model, `PTTS_TEST_REVISION` to include the marked checkpoint tests. Keep private model files and credentials out of public artifacts and shared caches.
+
+## Updating the Homebrew formula
+
+The native release workflow generates `ptts.rb` from the four Mac and Linux archives it uploads. After publishing a release, copy that generated file into [`Formula/ptts.rb` in Gradium's tap](https://github.com/gradium-ai/homebrew-tap/blob/main/Formula/ptts.rb) and merge the change there. Check `ruby -c Formula/ptts.rb` and verify each SHA-256 against its published archive before merging. Tap users receive the new version through `brew update` and `brew upgrade`.

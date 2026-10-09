@@ -51,7 +51,7 @@ Packages and native downloads are available as a runtime preview. Follow the [ru
 
 | Package | Get it | Details |
 |---|---|---|
-| Desktop `ptts` command | [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) | Linux x64/ARM64, Mac Apple silicon/Intel, and Windows x64 archives, with checksums. [Download guide and Homebrew](docs/cli.md). |
+| Desktop `ptts` command | [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) or [Homebrew tap](https://github.com/gradium-ai/homebrew-tap) | Linux x64/ARM64, Mac Apple silicon/Intel, and Windows x64 archives, with checksums. [Download guide and Homebrew](docs/cli.md). |
 | Python `ptts` | [PyPI](https://pypi.org/project/ptts/) | Wheels for supported platforms; CPython 3.9+. [Python guide](ptts-pyo3/README.md). |
 | Browser `phonon-tts` | [npm](https://www.npmjs.com/package/phonon-tts) | Worker, single-thread and threaded Wasm builds, and TypeScript declarations. [Browser guide](ptts-wasm/js/README.md). |
 | Swift `ptts` | [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) | `ptts-swift-<version>.zip` and its matching compiled framework. [Swift guide](ios/PhononTTS/README.md). |
@@ -103,7 +103,13 @@ uvx ptts --model "$MODEL_DIR" --lang en --quant q8 "Hello from Phonon." -o speec
 
 `uvx` manages the Python environment and dependencies.
 
-For the desktop command, extract the archive and put `ptts` on your `PATH`, then generate a WAV. No Python or Rust installation is needed:
+On Mac or Linux, install the prebuilt desktop command from Gradium's Homebrew tap. It currently installs the `0.4.0-rc.1` runtime preview:
+
+```sh
+brew install gradium-ai/tap/ptts
+```
+
+You can also extract a [desktop archive](docs/cli.md) and put `ptts` on your `PATH`. Neither path needs Python or Rust. Generate a WAV with a supplied checkpoint:
 
 ```sh
 ptts --dir "$MODEL_DIR" --lang en --quant q8 "Hello from Phonon." -o speech.wav
