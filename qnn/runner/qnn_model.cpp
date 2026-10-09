@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <stdexcept>
 
 #include "HTP/QnnHtpCommon.h"
@@ -99,70 +100,74 @@ const TensorInfo& Graph::output(const std::string& n) const {
 
 QnnModel::QnnModel(const std::string& backend_lib, const std::string& system_lib,
                    const std::vector<std::pair<std::string, std::string>>& model_files) {
-  backend_lib_ = open_lib(backend_lib);
-  system_lib_ = open_lib(system_lib);
+  try {
+    backend_lib_ = open_lib(backend_lib);
+    system_lib_ = open_lib(system_lib);
 
-  using GetProviders = Qnn_ErrorHandle_t (*)(const QnnInterface_t***, uint32_t*);
-  auto get_providers = reinterpret_cast<GetProviders>(dlsym(backend_lib_, "QnnInterface_getProviders"));
-  if (!get_providers) throw std::runtime_error("no QnnInterface_getProviders in " + backend_lib);
-  const QnnInterface_t** providers = nullptr;
-  uint32_t n = 0;
-  check(get_providers(&providers, &n), "QnnInterface_getProviders");
-  bool found = false;
-  for (uint32_t i = 0; i < n; i++) {
-    if (providers[i]->apiVersion.coreApiVersion.major == QNN_API_VERSION_MAJOR &&
-        providers[i]->apiVersion.coreApiVersion.minor >= QNN_API_VERSION_MINOR) {
-      provider_ = providers[i];
-      qnn_ = providers[i]->QNN_INTERFACE_VER_NAME;
-      is_htp_ = providers[i]->backendId == QNN_BACKEND_ID_HTP;
-      found = true;
-      break;
+    using GetProviders = Qnn_ErrorHandle_t (*)(const QnnInterface_t***, uint32_t*);
+    auto get_providers = reinterpret_cast<GetProviders>(dlsym(backend_lib_, "QnnInterface_getProviders"));
+    if (!get_providers) throw std::runtime_error("no QnnInterface_getProviders in " + backend_lib);
+    const QnnInterface_t** providers = nullptr;
+    uint32_t n = 0;
+    check(get_providers(&providers, &n), "QnnInterface_getProviders");
+    bool found = false;
+    for (uint32_t i = 0; i < n; i++) {
+      if (providers[i]->apiVersion.coreApiVersion.major == QNN_API_VERSION_MAJOR &&
+          providers[i]->apiVersion.coreApiVersion.minor >= QNN_API_VERSION_MINOR) {
+        provider_ = providers[i];
+        qnn_ = providers[i]->QNN_INTERFACE_VER_NAME;
+        is_htp_ = providers[i]->backendId == QNN_BACKEND_ID_HTP;
+        found = true;
+        break;
+      }
     }
-  }
-  if (!found) throw std::runtime_error("no compatible QNN interface in " + backend_lib);
+    if (!found) throw std::runtime_error("no compatible QNN interface in " + backend_lib);
 
-  using GetSysProviders = Qnn_ErrorHandle_t (*)(const QnnSystemInterface_t***, uint32_t*);
-  auto get_sys = reinterpret_cast<GetSysProviders>(dlsym(system_lib_, "QnnSystemInterface_getProviders"));
-  if (!get_sys) throw std::runtime_error("no QnnSystemInterface_getProviders in " + system_lib);
-  const QnnSystemInterface_t** sys_providers = nullptr;
-  check(get_sys(&sys_providers, &n), "QnnSystemInterface_getProviders");
-  found = false;
-  for (uint32_t i = 0; i < n; i++) {
-    if (sys_providers[i]->systemApiVersion.major == QNN_SYSTEM_API_VERSION_MAJOR &&
-        sys_providers[i]->systemApiVersion.minor >= QNN_SYSTEM_API_VERSION_MINOR) {
-      sys_ = sys_providers[i]->QNN_SYSTEM_INTERFACE_VER_NAME;
-      found = true;
-      break;
+    using GetSysProviders = Qnn_ErrorHandle_t (*)(const QnnSystemInterface_t***, uint32_t*);
+    auto get_sys = reinterpret_cast<GetSysProviders>(dlsym(system_lib_, "QnnSystemInterface_getProviders"));
+    if (!get_sys) throw std::runtime_error("no QnnSystemInterface_getProviders in " + system_lib);
+    const QnnSystemInterface_t** sys_providers = nullptr;
+    check(get_sys(&sys_providers, &n), "QnnSystemInterface_getProviders");
+    found = false;
+    for (uint32_t i = 0; i < n; i++) {
+      if (sys_providers[i]->systemApiVersion.major == QNN_SYSTEM_API_VERSION_MAJOR &&
+          sys_providers[i]->systemApiVersion.minor >= QNN_SYSTEM_API_VERSION_MINOR) {
+        sys_ = sys_providers[i]->QNN_SYSTEM_INTERFACE_VER_NAME;
+        found = true;
+        break;
+      }
     }
-  }
-  if (!found) throw std::runtime_error("no compatible QNN system interface in " + system_lib);
+    if (!found) throw std::runtime_error("no compatible QNN system interface in " + system_lib);
 
-  check(qnn_.logCreate(log_callback, log_level(), &log_), "logCreate");
-  check(qnn_.backendCreate(log_, nullptr, &backend_), "backendCreate");
-  if (qnn_.deviceCreate) {
-    Qnn_ErrorHandle_t s = qnn_.deviceCreate(log_, nullptr, &device_);
-    if (s != QNN_SUCCESS && s != QNN_DEVICE_ERROR_UNSUPPORTED_FEATURE) check(s, "deviceCreate");
-  }
-  if (is_htp_) {
-    if (model_files.size() != 1) throw std::runtime_error("HTP takes one context binary");
-    load_context_binary(model_files[0].second);
-    // Shared memory for zero-copy buffers; without it alloc() falls back to ordinary memory.
-    cdsprpc_ = dlopen("libcdsprpc.so", RTLD_NOW | RTLD_LOCAL);
-    if (cdsprpc_) {
-      rpcmem_alloc_ = reinterpret_cast<decltype(rpcmem_alloc_)>(dlsym(cdsprpc_, "rpcmem_alloc"));
-      rpcmem_free_ = reinterpret_cast<decltype(rpcmem_free_)>(dlsym(cdsprpc_, "rpcmem_free"));
-      rpcmem_to_fd_ = reinterpret_cast<decltype(rpcmem_to_fd_)>(dlsym(cdsprpc_, "rpcmem_to_fd"));
-      if (!rpcmem_alloc_ || !rpcmem_free_ || !rpcmem_to_fd_) rpcmem_alloc_ = nullptr;
+    check(qnn_.logCreate(log_callback, log_level(), &log_), "logCreate");
+    check(qnn_.backendCreate(log_, nullptr, &backend_), "backendCreate");
+    if (qnn_.deviceCreate) {
+      Qnn_ErrorHandle_t s = qnn_.deviceCreate(log_, nullptr, &device_);
+      if (s != QNN_SUCCESS && s != QNN_DEVICE_ERROR_UNSUPPORTED_FEATURE) check(s, "deviceCreate");
     }
-  } else {
-    load_dlcs(model_files);
-  }
-  const char* profile = std::getenv("PHONON_QNN_PROFILE");
-  if (profile && std::string(profile) == "1" && qnn_.profileCreate)
-    check(qnn_.profileCreate(backend_, QNN_PROFILE_LEVEL_BASIC, &profile_), "profileCreate");
+    if (is_htp_) {
+      if (model_files.size() != 1) throw std::runtime_error("HTP takes one context binary");
+      load_context_binary(model_files[0].second);
+      // Shared memory for zero-copy buffers; without it alloc() falls back to ordinary memory.
+      cdsprpc_ = dlopen("libcdsprpc.so", RTLD_NOW | RTLD_LOCAL);
+      if (cdsprpc_) {
+        rpcmem_alloc_ = reinterpret_cast<decltype(rpcmem_alloc_)>(dlsym(cdsprpc_, "rpcmem_alloc"));
+        rpcmem_free_ = reinterpret_cast<decltype(rpcmem_free_)>(dlsym(cdsprpc_, "rpcmem_free"));
+        rpcmem_to_fd_ = reinterpret_cast<decltype(rpcmem_to_fd_)>(dlsym(cdsprpc_, "rpcmem_to_fd"));
+        if (!rpcmem_alloc_ || !rpcmem_free_ || !rpcmem_to_fd_) rpcmem_alloc_ = nullptr;
+      }
+    } else {
+      load_dlcs(model_files);
+    }
+    const char* profile = std::getenv("PHONON_QNN_PROFILE");
+    if (profile && std::string(profile) == "1" && qnn_.profileCreate)
+      check(qnn_.profileCreate(backend_, QNN_PROFILE_LEVEL_BASIC, &profile_), "profileCreate");
+  } catch (...) { cleanup(); throw; }
 }
 
-QnnModel::~QnnModel() {
+QnnModel::~QnnModel() { cleanup(); }
+
+void QnnModel::cleanup() noexcept {
   set_performance_mode(false);
   for (auto& [ptr, shared] : shared_) {
     qnn_.memDeRegister(&shared.handle, 1);
@@ -213,6 +218,8 @@ void QnnModel::load_context_binary(const std::string& path) {
   std::vector<char> blob = read_file(path);
   QnnSystemContext_Handle_t sys_ctx = nullptr;
   check(sys_.systemContextCreate(&sys_ctx), "systemContextCreate");
+  auto release = [&](void* ctx) { sys_.systemContextFree(ctx); };
+  std::unique_ptr<void, decltype(release)> guard(sys_ctx, release);
   const QnnSystemContext_BinaryInfo_t* info = nullptr;
   Qnn_ContextBinarySize_t info_size = 0;
   check(sys_.systemContextGetBinaryInfo(sys_ctx, blob.data(), blob.size(), &info, &info_size),
@@ -243,7 +250,6 @@ void QnnModel::load_context_binary(const std::string& path) {
     const auto& g = graphs[i].graphInfoV1;
     add_graph(g.graphName, g.graphName, g.numGraphInputs, g.graphInputs, g.numGraphOutputs, g.graphOutputs);
   }
-  sys_.systemContextFree(sys_ctx);
 }
 
 void QnnModel::load_dlcs(const std::vector<std::pair<std::string, std::string>>& files) {

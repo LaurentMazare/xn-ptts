@@ -49,6 +49,7 @@ def context_binary() -> Path:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="bundle")
+    ap.add_argument("--soc-model", required=True, help="compiled target, e.g. SM8750; must match package.py target")
     args = ap.parse_args()
     out = Path(args.out)
     for d in ("voices", "cpu", "lib/android-arm64", "lib/linux-arm64"):
@@ -97,7 +98,7 @@ def main():
             "qairt_build": "2.50.0.260828",
             "arch_bit": 64,
             "precision": "fp16",
-            "context_binaries": {jobs["device"]: {"file": "phonon.bin", "ai_hub_model": jobs.get("model")}},
+            "context_binaries": {jobs["device"]: {"file": "phonon.bin", "soc_models": [args.soc_model.upper()], "ai_hub_model": jobs.get("model")}},
             "dlcs": {"prefill": "cpu/prefill.dlc", "step": "cpu/step.dlc"},
             "dlc_io": "float32: the CPU backend cannot run fp16 casts; a runner converts from its fp16 buffers",
         },

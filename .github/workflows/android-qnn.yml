@@ -1,0 +1,26 @@
+name: Android QNN
+on:
+  pull_request:
+    paths: ['qnn/**', 'ptts/**', 'Cargo.toml', '.github/workflows/android-qnn.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android platform
+        run: sdkmanager 'platforms;android-36'
+      - name: Kotlin lifecycle and cancellation
+        working-directory: qnn/android
+        run: ./gradlew :ptts:testDebugUnitTest -PpttsUnitTestsOnly=true --console=plain
+      - name: Compiled model selection
+        run: |
+          c++ -std=c++17 -Iqnn/runner qnn/runner/tests/bundle.cpp -o "$RUNNER_TEMP/qnn-bundle-test"
+          "$RUNNER_TEMP/qnn-bundle-test"

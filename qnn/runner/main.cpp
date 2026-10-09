@@ -1,7 +1,7 @@
 // phonon: text to a WAV file with a Phonon bundle's graphs on QNN.
 //
 //   phonon --bundle DIR --text "Hello world." [--voice NAME] [--out out.wav]
-//              [--backend htp|cpu|gpu] [--lib-dir DIR] [--seed N] [--temperature T]
+//              --lang en|fr|de|es|pt|none [--soc-model SM...] [--backend htp|cpu|gpu] [--lib-dir DIR] [--seed N] [--temperature T]
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -39,7 +39,7 @@ void write_wav(const std::string& path, const std::vector<float>& audio, int sam
 
 int usage() {
   std::cerr << "usage: phonon --bundle DIR --text TEXT [--voice NAME] [--out FILE.wav]\n"
-               "              [--backend htp|cpu|gpu] [--lib-dir DIR] [--seed N] [--temperature T]\n";
+               "              --lang en|fr|de|es|pt|none [--soc-model SM...] [--backend htp|cpu|gpu] [--lib-dir DIR] [--seed N] [--temperature T]\n";
   return 2;
 }
 
@@ -59,6 +59,8 @@ int main(int argc, char** argv) {
       else if (a == "--text") text = next();
       else if (a == "--voice") voice = next();
       else if (a == "--out") out = next();
+      else if (a == "--lang") opt.lang = next();
+      else if (a == "--soc-model") opt.soc_model = next();
       else if (a == "--backend") opt.backend = next();
       else if (a == "--lib-dir") opt.lib_dir = next();
       else if (a == "--seed") opt.seed = std::stoull(next());
@@ -69,7 +71,7 @@ int main(int argc, char** argv) {
       return usage();
     }
   }
-  if (opt.bundle_dir.empty() || text.empty()) return usage();
+  if (opt.bundle_dir.empty() || text.empty() || opt.lang.empty()) return usage();
 
   try {
     phonon::Phonon tts(opt);

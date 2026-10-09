@@ -70,6 +70,7 @@ class QnnModel {
   bool profiling() const { return profile_ != nullptr; }
 
  private:
+  void cleanup() noexcept;
   void load_context_binary(const std::string& path);
   void load_dlcs(const std::vector<std::pair<std::string, std::string>>& files);
   void add_graph(const std::string& name, const char* qnn_name, uint32_t n_in, const Qnn_Tensor_t* in,

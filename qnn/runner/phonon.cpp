@@ -1,4 +1,5 @@
 #include "phonon.hpp"
+#include "bundle.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -40,6 +41,7 @@ std::string lib(const Options& o, const std::string& name) {
 }  // namespace
 
 Phonon::Phonon(const Options& o) : rng_(o.seed) {
+  if (o.lang.empty()) throw std::runtime_error("set an explicit normalization language (or none)");
   const std::string dir = o.bundle_dir + "/";
   std::ifstream mf(dir + "metadata.json");
   if (!mf) throw std::runtime_error("no metadata.json in " + o.bundle_dir);
@@ -73,25 +75,28 @@ Phonon::Phonon(const Options& o) : rng_(o.seed) {
     voices_.push_back(std::move(voice));
   }
 
-  // ptts's text front end ships in the bundle, one build per platform; --lib-dir is the fallback.
   const auto& text = meta.at("text");
+  std::string library = o.text_library;
+  if (library.empty()) {
+    // The standalone CLI can load the text frontend from its supplied bundle.
 #if defined(__ANDROID__)
-  const char* platform = "android-arm64";
+    const char* platform = "android-arm64";
 #else
-  const char* platform = "linux-arm64";
+    const char* platform = "linux-arm64";
 #endif
-  const auto& lib_entry = text.contains("library") ? text.at("library") : nlohmann::json("libptts_text.so");
-  std::string library = lib_entry.is_object() ? std::string(lib_entry.at(platform)) : std::string(lib_entry);
-  std::ifstream in_bundle(dir + library);
-  text_ = std::make_unique<PttsText>(in_bundle ? dir + library : lib(o, library),
-                                     dir + std::string(text.at("tokenizer")), text.value("lang", "en"));
+    const auto& entry = text.contains("library") ? text.at("library") : nlohmann::json("libptts_text.so");
+    std::string name = entry.is_object() ? std::string(entry.at(platform)) : std::string(entry);
+    std::ifstream in_bundle(dir + name);
+    library = in_bundle ? dir + name : lib(o, name);
+  }
+  text_ = std::make_unique<PttsText>(library, dir + std::string(text.at("tokenizer")), o.lang);
 
   const auto& rt = meta.at("runtime");
   std::vector<std::pair<std::string, std::string>> files;
   std::string backend_lib;
   if (o.backend == "htp") {
     backend_lib = "libQnnHtp.so";
-    files.push_back({"", dir + std::string(rt.at("context_binaries").begin().value().at("file"))});
+    files.push_back({"", dir + std::string(select_context_binary(rt.at("context_binaries"), o.soc_model))});
   } else if (o.backend == "cpu" || o.backend == "gpu") {
     backend_lib = o.backend == "cpu" ? "libQnnCpu.so" : "libQnnGpu.so";
     for (const auto& [graph, file] : rt.at("dlcs").items()) files.push_back({graph, dir + std::string(file)});
@@ -150,8 +155,8 @@ std::string Phonon::default_voice() const {
 }
 
 std::vector<float> Phonon::synthesize(const std::string& text, const std::string& voice_name,
-                                         const std::function<void(const float*, size_t)>& on_audio,
-                                         Stats* stats_out) {
+                                         const std::function<bool(const float*, size_t)>& on_audio,
+                                         Stats* stats_out, const std::function<bool()>& should_stop, bool collect_audio) {
   const Voice* voice = nullptr;
   for (const auto& v : voices_)
     if (v.name == voice_name) voice = &v;
@@ -161,11 +166,16 @@ std::vector<float> Phonon::synthesize(const std::string& text, const std::string
   std::vector<float> out;
   auto t0 = Clock::now();
   model_->set_performance_mode(true);
+  struct ResetPerformance {
+    QnnModel* model;
+    ~ResetPerformance() { model->set_performance_mode(false); }
+  } reset{model_.get()};
   for (const auto& chunk : text_->split(text, max_tokens_, frame_rate_)) {
-    generate_chunk(chunk, *voice, on_audio, out, stats, t0);
+    if (should_stop && should_stop()) { stats.cancelled = true; break; }
+    generate_chunk(chunk, *voice, on_audio, out, stats, t0, should_stop, collect_audio);
     stats.chunks++;
+    if (stats.cancelled) break;
   }
-  model_->set_performance_mode(false);
   stats.total_ms = ms_since(t0);
   if (model_->profiling()) {
     for (const auto& [graph, t] : model_->timing()) {
@@ -178,8 +188,8 @@ std::vector<float> Phonon::synthesize(const std::string& text, const std::string
 }
 
 void Phonon::generate_chunk(const Chunk& chunk, const Voice& voice,
-                               const std::function<void(const float*, size_t)>& on_audio, std::vector<float>& out,
-                               Stats& stats, Clock::time_point start) {
+                               const std::function<bool(const float*, size_t)>& on_audio, std::vector<float>& out,
+                               Stats& stats, Clock::time_point start, const std::function<bool()>& should_stop, bool collect_audio) {
   const std::vector<int>& ids = chunk.ids;
   const int n = ids.size();
   if (n == 0) return;
@@ -212,6 +222,7 @@ void Phonon::generate_chunk(const Chunk& chunk, const Voice& voice,
   {
     auto t = Clock::now();
     for (int first = 0; first < n; first += prefill_tokens_) {
+      if (should_stop && should_stop()) { stats.cancelled = true; return; }
       const int count = std::min(prefill_tokens_, n - first);
       std::fill(buf_.tokens, buf_.tokens + prefill_tokens_, 0);
       std::copy(ids.begin() + first, ids.begin() + first + count, buf_.tokens);
@@ -233,7 +244,9 @@ void Phonon::generate_chunk(const Chunk& chunk, const Voice& voice,
   std::normal_distribution<float> normal(0.0f, noise_std_);
 
   int eos_frame = -1;
+  std::vector<float> pcm(buf_.audio_count);
   for (int frame = 0; frame < max_frames; frame++) {
+    if (should_stop && should_stop()) { stats.cancelled = true; return; }
     auto t = Clock::now();
     for (size_t k = 0; k < buf_.noise_count; k++) buf_.noise[k] = f16(normal(rng_));
     *buf_.pos = pos;
@@ -256,11 +269,12 @@ void Phonon::generate_chunk(const Chunk& chunk, const Voice& voice,
     if (eos_frame < 0 && frame >= min_frames_before_eos_ && float(*buf_.eos) > eos_threshold_) eos_frame = frame;
     if (eos_frame >= 0 && frame >= eos_frame + frames_after_eos) break;
 
-    size_t first = out.size();
-    for (size_t k = 0; k < buf_.audio_count; k++) out.push_back(float(buf_.audio[k]));
+    for (size_t k = 0; k < buf_.audio_count; k++) pcm[k] = float(buf_.audio[k]);
+    if (collect_audio) out.insert(out.end(), pcm.begin(), pcm.end());
+    stats.samples += pcm.size();
     stats.frames++;
     if (stats.first_audio_ms < 0) stats.first_audio_ms = ms_since(start);
-    if (on_audio) on_audio(out.data() + first, buf_.audio_count);
+    if (on_audio && !on_audio(pcm.data(), pcm.size())) { stats.cancelled = true; return; }
   }
 }
 

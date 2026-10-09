@@ -19,11 +19,16 @@ struct Options {
   std::string bundle_dir;
   std::string backend = "htp";  // htp (context binary on the NPU), cpu or gpu (DLCs)
   std::string lib_dir;          // where libQnn*.so live; empty: the loader's search path
+  std::string lang;             // explicit normalization language, or "none"
+  std::string soc_model;        // Android Build.SOC_MODEL, matched against bundle soc_models
+  std::string text_library;     // packaged native library; never execute code from a model download
   uint64_t seed = 0;
   float temperature = -1;  // < 0: the bundle's
 };
 
 struct Stats {
+  bool cancelled = false;
+  size_t samples = 0;
   int chunks = 0;
   int frames = 0;
   double prefill_ms = 0;
@@ -46,8 +51,10 @@ class Phonon {
 
   // Calls on_audio with each 80 ms frame as it is generated. Returns the whole utterance.
   std::vector<float> synthesize(const std::string& text, const std::string& voice,
-                                const std::function<void(const float*, size_t)>& on_audio = nullptr,
-                                Stats* stats = nullptr);
+                                const std::function<bool(const float*, size_t)>& on_audio = nullptr,
+                                Stats* stats = nullptr,
+                                const std::function<bool()>& should_stop = nullptr,
+                                bool collect_audio = true);
 
  private:
   struct Voice {
@@ -57,8 +64,9 @@ class Phonon {
   };
 
   void generate_chunk(const Chunk& chunk, const Voice& voice,
-                      const std::function<void(const float*, size_t)>& on_audio, std::vector<float>& out,
-                      Stats& stats, std::chrono::steady_clock::time_point start);
+                      const std::function<bool(const float*, size_t)>& on_audio, std::vector<float>& out,
+                      Stats& stats, std::chrono::steady_clock::time_point start,
+                      const std::function<bool()>& should_stop, bool collect_audio);
 
   // Every graph buffer, allocated once from the model (shared with the NPU on the
   // HTP) and reused. What step feeds back to itself has two copies that swap.
