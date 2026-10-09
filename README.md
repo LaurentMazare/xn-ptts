@@ -2,7 +2,7 @@
 
 **Streaming speech, on your device.**
 
-Phonon is Gradium's text-to-speech runtime for apps, browsers, and local servers. Start playback as speech is generated, choose a voice, stop it, and speak again. The runtime is written in Rust and runs without PyTorch.
+Phonon gives apps a natural voice wherever people use them, from phones and laptops to browsers and local services. It is built for offline assistants, accessibility tools, and interactive experiences that need speech without a cloud round trip. The runtime is written in Rust and needs no PyTorch.
 
 [![Rust CI](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/rust-ci.yml)
 [![Python wheels](https://github.com/gradium-ai/xn-ptts/actions/workflows/maturin-pub.yml/badge.svg?branch=main)](https://github.com/gradium-ai/xn-ptts/actions/workflows/maturin-pub.yml)
@@ -16,11 +16,15 @@ Phonon is Gradium's text-to-speech runtime for apps, browsers, and local servers
 [![Published npm version](https://img.shields.io/npm/v/phonon-tts?label=npm)](https://www.npmjs.com/package/phonon-tts)
 [![Native downloads](https://img.shields.io/github/v/release/gradium-ai/xn-ptts?include_prereleases&label=native%20downloads)](https://github.com/gradium-ai/xn-ptts/releases)
 
-[Choose an integration](#choose-an-integration) · [Packages and downloads](#packages-and-downloads) · [Quickstart](#quickstart) · [Guides](#guides)
+[What you get](#what-you-get) · [Choose an integration](#choose-an-integration) · [Packages and downloads](#packages-and-downloads) · [Quickstart](#quickstart) · [Guides](#guides)
 
 > **Runtime preview available:** Python, Rust, browser packages, and native downloads are published. See the [runtime preview release](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1) for installation instructions. The unversioned registry commands below target the upcoming stable release and currently select older packages. Supply a checkpoint separately; the public Phonon model and hosted demo are still being prepared. Docker public access is being finalized.
 
 A no-install browser demo and audio samples will accompany the public model release. The browser runs synthesis on your device; a model download is needed on first use.
+
+## What you get
+
+Once model files are available, Phonon generates speech locally. Playback can begin before the full utterance is ready, stop when a user interrupts, and start again from the loaded model. Choose from the voices in your checkpoint; Rust and Python can also create a voice from an audio sample when the checkpoint supports cloning. Spoken languages and voice options depend on the checkpoint.
 
 ## Choose an integration
 
@@ -34,16 +38,6 @@ A no-install browser demo and audio samples will accompany the public model rele
 | Embed the runtime in Rust | [Rust](#rust) | The `ptts` crate and a checkpoint folder. |
 
 Phonon is the product and model identity. The Rust, Python, and Swift packages are named **`ptts`**; the browser npm package is **`phonon-tts`**. This repository remains `xn-ptts`. Swift apps use `import PhononTTS`.
-
-## What you get
-
-- **Streaming audio:** start consuming speech before the whole utterance is generated.
-- **Local execution:** run from model files on your device, or serve speech from your own machine.
-- **Reusable models:** load once, select a voice, and handle multiple requests.
-- **Interruptible speech:** cancel generation and reuse the model. Playback examples show how to stop audio too.
-- **Familiar integrations:** NumPy audio in Python, WebAssembly in the browser, Core ML on Apple devices, and an OpenAI-compatible speech endpoint.
-
-Voice availability, spoken languages, and voice cloning depend on the checkpoint. The browser uses prepared voice files; creating voices from audio requires a runtime with the encoder.
 
 ## Packages and downloads
 
