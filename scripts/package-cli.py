@@ -56,7 +56,7 @@ def main():
             with tarfile.open(archive, "w:gz") as output:
                 output.add(folder, arcname=name)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    archive.with_name(f"{archive.name}.sha256").write_text(f"{digest}  {archive.name}\n")
+    archive.with_name(f"{archive.name}.sha256").write_bytes(f"{digest}  {archive.name}\n".encode("ascii"))
     print(archive)
 
 
