@@ -524,6 +524,10 @@ impl<Q: BackendQ> SynthApi for SynthOf<Q> {
         self.model.device().name()
     }
 
+    fn languages(&self) -> &[String] {
+        self.cfg.languages.as_slice()
+    }
+
     fn voices(&self) -> Vec<String> {
         self.voices.keys().cloned().collect()
     }
@@ -1597,6 +1601,9 @@ pub trait SynthApi: sealed::Sealed + Send + Sync {
 
     /// Registered voice names, sorted.
     fn voices(&self) -> Vec<String>;
+
+    /// The languages the model was trained for.
+    fn languages(&self) -> &[String];
 
     /// The voice a request that names none speaks in: the builder's [`SynthBuilder::voice`],
     /// else `default` (a checkpoint's own `default-voice.safetensors`), else the first by name.
