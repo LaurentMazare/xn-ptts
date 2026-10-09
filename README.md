@@ -76,16 +76,10 @@ model/
 
 Voice files may instead live in `voices/` or `embeddings/`. Use the files and voice names your checkpoint supplies; do not substitute another model's tokenizer or config. Swift uses a separately exported Core ML bundle.
 
-For the native examples, set the folder once:
+For the shell examples below, set the folder once:
 
 ```sh
-# Linux / macOS
 export MODEL_DIR=/absolute/path/to/model
-```
-
-```powershell
-# Windows PowerShell
-$env:MODEL_DIR = "C:\path\to\model"
 ```
 
 Native integrations can also acquire a checkpoint from Hugging Face. Use its repo ID and a fixed revision when you want a repeatable model version. Private repos require `HF_TOKEN` or a saved HF login. Local folders require no Hub access.
@@ -98,13 +92,16 @@ These examples use the published runtime preview and a supplied checkpoint. Inst
 
 ### Command line
 
+<details>
+<summary>Show command line quickstart</summary>
+
 After the stable release, [uv](https://docs.astral.sh/uv/) can run the Python command in an isolated environment. For the current preview, use the command in the [release instructions](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1):
 
 ```sh
 uvx ptts --model "$MODEL_DIR" --lang en --quant q8 "Hello from Phonon." -o speech.wav
 ```
 
-`uvx` manages the Python environment and dependencies. On PowerShell, use `--model "$env:MODEL_DIR"`.
+`uvx` manages the Python environment and dependencies.
 
 For the desktop command, extract the archive and put `ptts` on your `PATH`, then generate a WAV. No Python or Rust installation is needed:
 
@@ -112,7 +109,7 @@ For the desktop command, extract the archive and put `ptts` on your `PATH`, then
 ptts --dir "$MODEL_DIR" --lang en --quant q8 "Hello from Phonon." -o speech.wav
 ```
 
-On PowerShell, use `--dir "$env:MODEL_DIR"`. The output is a mono 24 kHz WAV. Open it in your audio player.
+The output is a mono 24 kHz WAV. Open it in your audio player.
 
 If you prefer Cargo, install the command with `cargo install ptts --locked --features cli` after the matching stable release is published.
 
@@ -125,7 +122,12 @@ ptts --repo OWNER/MODEL --revision COMMIT_SHA --lang en --quant q8 \
 
 Use `--voice NAME` to choose a voice; omitting it uses the checkpoint's default selection. Run `ptts --help` for the remaining options. [CLI guide →](docs/cli.md)
 
+</details>
+
 ### Python
+
+<details>
+<summary>Show Python quickstart</summary>
 
 For the stable release, install the Python package into your environment. Current preview users should follow the [release instructions](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1):
 
@@ -163,7 +165,12 @@ python -m ptts --model "$MODEL_DIR" --lang en --quant q8 \
 
 Rust and Python both install a command named `ptts`, with different flags. `python -m ptts` explicitly selects Python. [Python guide →](ptts-pyo3/README.md)
 
+</details>
+
 ### Browser
+
+<details>
+<summary>Show browser quickstart</summary>
 
 For the stable release, install the browser package into your web app. Current preview users should follow the [release instructions](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1):
 
@@ -193,7 +200,12 @@ Use the returned `Blob` for a download link or your audio player. `tts.stream(te
 
 The first load downloads and caches the files. `onProgress` reports download progress. Serve over HTTPS or localhost for caching, and use a browser with WebAssembly Relaxed SIMD. CPU is the default. Threading and WebGPU setup are covered in the [browser guide →](ptts-wasm/js/README.md).
 
+</details>
+
 ### Swift
+
+<details>
+<summary>Show Swift quickstart</summary>
 
 Extract `ptts-swift-<version>.zip`, add the folder to Xcode as a local package, and select the **`ptts`** library product. Swift Package Manager downloads the matching compiled framework. This path needs no Rust build.
 
@@ -214,7 +226,12 @@ try await player.play(tts.stream("Hello from Phonon."))
 
 Keep `tts` and `player` in your app's state while audio plays. You can also download models on first run. Requires iOS 18+ or macOS 15+ on Apple silicon. The public Core ML model bundle is still being prepared. [Swift guide and Stop example →](ios/PhononTTS/README.md)
 
+</details>
+
 ### Docker and OpenAI-compatible API
+
+<details>
+<summary>Show Docker and API quickstart</summary>
 
 Choose an image version from [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) and replace `<release-version>` below, without the leading `v`. Public GHCR access is being finalized; until then use an image you can access or the [source setup](docs/development.md#docker). The Docker commands below use Bash or another POSIX shell. Mount your model folder and start the speech server:
 
@@ -238,7 +255,12 @@ For applications with an OpenAI-compatible TTS setting, use `http://localhost:88
 
 For HF acquisition and a cache that survives container replacement, use the [Hub Compose file](ptts-openai-server/compose.hub.yaml). Supply the repo, revision, and normalization language explicitly. The image contains no model weights. Deployment and access controls are in the [server guide →](ptts-openai-server/README.md).
 
+</details>
+
 ### Rust
+
+<details>
+<summary>Show Rust quickstart</summary>
 
 Add `ptts` with tokenizer support to your Rust project. This command targets the upcoming stable release; preview installation is in the [release instructions](https://github.com/gradium-ai/xn-ptts/releases/tag/v0.4.0-rc.1), and source development can use a [path dependency](docs/development.md#rust):
 
@@ -265,6 +287,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chunks for your own playback. The library reads local files; Hub acquisition belongs to the caller. [Rust API and small example →](ptts/README.md)
+
+</details>
 
 ## Guides
 
