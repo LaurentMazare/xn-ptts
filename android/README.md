@@ -1,5 +1,9 @@
 # Phonon on Android
 
+For supported Snapdragon NPUs, the [QNN AAR preview](https://github.com/gradium-ai/xn-ptts/pull/154) provides a
+Kotlin API and compiled model support on Android 12+ ARM64. Build it from the preview source;
+the Maven package is not published yet. This guide covers the CPU library.
+
 Phonon runs on Android on the CPU as a C library: `libptts_ffi.so` and its header,
 [`ptts.h`](../ptts-ffi/include/ptts.h). Anything that can call C can use it: Kotlin and Java, C++
 through the NDK, Flutter, Unity, .NET and others. The iOS package exports the same calls, so one
@@ -36,7 +40,7 @@ The library loads a checkpoint folder:
 |---|---|
 | `tokenizer.json` | The checkpoint's tokenizer. |
 | `model.q8.gguf` or `model.safetensors` | The weights: q8_0 GGUF, or f32 safetensors. GGUF is used when both are there. |
-| `config.json` | Optional. Without it, the default config is used. |
+| `config.json` | Required. The checkpoint's own model configuration; there is no fallback config. |
 | `voices/<name>.safetensors` or `embeddings/<name>.safetensors` | The voices, each named after its file. |
 | `default-voice.safetensors` | Optional. Listed as the voice `default`, and spoken when no voice is set. |
 
@@ -62,8 +66,8 @@ Every binding follows the same rules:
 - **Calls block.** Make them off the main thread, and from one thread at a time.
 - **The audio is 24 kHz mono `float` in [-1, 1].** The callback runs on the thread that called
   `ptts_speak`, with one or more frames at a time. Return `false` from it to stop early. It must not
-  call back into the same handle. Generation runs on its own threads, so a callback that waits for
-  playback does not slow it down.
+  call back into the same handle. Generation runs on its own threads with bounded buffers. A callback that waits for
+  playback pauses generation once those buffers fill.
 - **`lang` is required.** `en`, `fr`, `de`, `es` and `pt` normalize numbers and symbols for that
   language, and `none` reads the text as written.
 - **Set the thread count** with the `RAYON_NUM_THREADS` environment variable before the first

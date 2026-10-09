@@ -29,7 +29,7 @@ The Swift package is named `ptts`; its module remains `PhononTTS`. Existing cons
 
 Once those assets are published on the matching [GitHub Release](https://github.com/gradium-ai/xn-ptts/releases), download and extract the Swift package ZIP and add that folder to Xcode as a local package. Select the `ptts` library product. Swift Package Manager downloads the matching compiled core automatically. Rust and the repository checkout are not needed.
 
-You still need a prepared Core ML model bundle supplied with the selected checkpoint. You can download it with `Phonon.download` or bundle it with the app as described below. Prepared public model bundles will be supplied when the model is released; custom checkpoints can use the exporter.
+You still need a prepared Core ML model bundle supplied with the selected checkpoint. If you already received one from us, use it directly with the release package and skip the model export below. No public HF repo or token is needed. If you received only a raw checkpoint, export it first. You can download a hosted Core ML bundle with `PhononModels.download(from:progress:)` or bundle it with the app as described below. Prepared public model bundles will be supplied when the model is released.
 
 Before publication, source development uses the local framework built by `ios/build-xcframework.sh`. For the eventual repository-based Swift package, commit the generated release manifest at the package root after its framework asset is available. Verify its URL and checksum from a clean consumer before advertising that installation path.
 

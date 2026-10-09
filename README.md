@@ -15,6 +15,8 @@ Phonon brings natural text-to-speech to phones, laptops, browsers, and local ser
 [![Published Python version](https://img.shields.io/pypi/v/ptts?label=PyPI)](https://pypi.org/project/ptts/)
 [![Published npm version](https://img.shields.io/npm/v/phonon-tts?label=npm)](https://www.npmjs.com/package/phonon-tts)
 [![Native downloads](https://img.shields.io/github/v/release/gradium-ai/xn-ptts?include_prereleases&label=native%20downloads)](https://github.com/gradium-ai/xn-ptts/releases)
+[![Swift package](https://img.shields.io/badge/Swift-download-orange)](#swift)
+[![Android QNN package](https://img.shields.io/badge/Android-QNN%20source%20preview-blue)](#android)
 
 [What you get](#what-you-get) · [Choose an integration](#choose-an-integration) · [Packages and downloads](#packages-and-downloads) · [Quickstart](#quickstart) · [Guides](#guides)
 
@@ -26,7 +28,7 @@ The browser runs synthesis on your device; it downloads model files on first use
 
 - **Small enough to ship:** Choose a 40M or 90M parameter model. Both can ship inside a mobile app or load in a browser tab.
 - **Five languages in one model:** Speak English, French, German, Spanish, and Portuguese, with more languages planned.
-- **Fast across devices:** A custom inference stack runs in browsers and on phones, laptops, and embedded hardware, with support for mobile NPUs and GPUs. Multiple backends deliver faster inference than Kokoro and llama.cpp-based runtimes on the same hardware.
+- **Fast across devices:** A custom inference stack runs in browsers and on phones, laptops, and embedded hardware, with Core ML on Apple devices, a QNN preview for supported Snapdragon NPUs, and GPU support. Multiple backends deliver faster inference than Kokoro and llama.cpp-based runtimes on the same hardware.
 - **Voices ready to use or make your own:** Choose from ready-to-use voices, or explore voice design and cloning in [Gradium Studio](https://studio.gradium.ai/).
 - **Control the delivery:** Adjust speaking speed and start playing streamed audio before the full utterance is ready.
 
@@ -42,10 +44,11 @@ The browser runs synthesis on your device; it downloads model files on first use
 | Add speech to a script or backend | [Python](#python) | A Python wheel and a checkpoint. |
 | Run speech in a web app | [Browser](#browser) | `phonon-tts` and model files served with your app. |
 | Add speech to an iPhone or Mac app | [Swift](#swift) | The `ptts` Swift package and a prepared Core ML bundle. |
+| Add speech to an Android app | [Android](#android) | A Kotlin AAR preview for supported Snapdragon NPUs, or the CPU native library. Source build and model files required. |
 | Connect an existing app or self-host | [Docker and OpenAI-compatible API](#docker-and-openai-compatible-api) | Docker and a local checkpoint or HF repo. |
 | Embed the runtime in Rust | [Rust](#rust) | The `ptts` crate and a checkpoint folder. |
 
-Phonon is the product and model identity. The Rust, Python, and Swift packages are named **`ptts`**; the browser npm package is **`phonon-tts`**. This repository remains `xn-ptts`. Swift apps use `import PhononTTS`.
+Phonon is the product and model identity. The Rust, Python, Swift, and planned Android Maven packages are named **`ptts`**; the browser npm package is **`phonon-tts`**. This repository remains `xn-ptts`. Swift apps use `import PhononTTS`.
 
 ## Packages and downloads
 
@@ -57,6 +60,8 @@ Packages and native downloads are available as a runtime preview. Follow the [ru
 | Python `ptts` | [PyPI](https://pypi.org/project/ptts/) | Wheels for supported platforms; CPython 3.9+. [Python guide](ptts-pyo3/README.md). |
 | Browser `phonon-tts` | [npm](https://www.npmjs.com/package/phonon-tts) | Worker, single-thread and threaded Wasm builds, and TypeScript declarations. [Browser guide](ptts-wasm/js/README.md). |
 | Swift `ptts` | [GitHub Releases](https://github.com/gradium-ai/xn-ptts/releases) | `ptts-swift-<version>.zip` and its matching compiled framework. [Swift guide](ios/PhononTTS/README.md). |
+| Android `ptts` (QNN preview) | [Source and build guide in PR #154](https://github.com/gradium-ai/xn-ptts/pull/154) | Kotlin API and AAR for supported Snapdragon NPUs. Not published to Maven Central yet. |
+| Android CPU library | [Build guide](android/README.md#1-build-the-library) | `libptts_ffi.so` and a Kotlin wrapper, built from source with Rust and the Android NDK. |
 | `ptts-openai-server` | `ghcr.io/gradium-ai/ptts-openai-server:<version>` | CPU image for amd64 and arm64; model weights downloaded or mounted separately. [Server guide](ptts-openai-server/README.md). |
 | Rust `ptts` | [crates.io](https://crates.io/crates/ptts) | Library API; add the `cli` feature to install the command. [Rust guide](ptts/README.md). |
 
@@ -76,7 +81,15 @@ model/
   default-voice.safetensors
 ```
 
-Voice files may instead live in `voices/` or `embeddings/`. Use the files and voice names your checkpoint supplies; do not substitute another model's tokenizer or config. Swift uses a separately exported Core ML bundle.
+Voice files may instead live in `voices/` or `embeddings/`. Use the files and voice names your checkpoint supplies; do not substitute another model's tokenizer or config. The examples use q8 weights. For f32 weights, omit `--quant q8` or `quant="q8"`, use `Quant::F32` in Rust, and set `quant: 'f32'` with `weights: { f32: '/model/model.safetensors' }` in the browser.
+
+**Already received a model from us?** Extract it locally and use the matching integration below. You do not need a public Hugging Face repo or an HF token for local files. Runtime packages contain no model weights.
+
+| Files you received | Use them with |
+|---|---|
+| A checkpoint with `config.json`, `tokenizer.json`, weights and voices | Command line, Python, Rust, browser, servers or Android CPU. Use a runtime version compatible with your checkpoint. |
+| A prepared Core ML bundle | Swift. Add it to your app as `Models`, or host it for the Swift download API. A raw checkpoint needs [exporting first](ios/PhononTTS/README.md#1-build-the-two-pieces-that-are-not-in-the-source). |
+| A QNN bundle with `metadata.json` and compiled context binaries | Android NPU. It must match the phone's SoC and the package's QNN runtime. Older bundles may need their target metadata updated; see the [preview guide](https://github.com/gradium-ai/xn-ptts/pull/154). A raw checkpoint needs exporting and compiling first. |
 
 For the shell examples below, set the folder once:
 
@@ -84,7 +97,7 @@ For the shell examples below, set the folder once:
 export MODEL_DIR=/absolute/path/to/model
 ```
 
-Native integrations can also acquire a checkpoint from Hugging Face. Use its repo ID and a fixed revision when you want a repeatable model version. Private repos require `HF_TOKEN` or a saved HF login. Local folders require no Hub access.
+The command line and Python can also acquire a checkpoint from Hugging Face. Use its repo ID and a fixed revision when you want a repeatable model version. Private repos require `HF_TOKEN` or a saved HF login. Local folders require no Hub access.
 
 `lang` is required and selects **text normalization**, such as how numbers and symbols are spoken. Choose `en`, `fr`, `de`, `es`, `pt`, or `none` to pass text through unchanged. This setting does not establish which languages a checkpoint can speak.
 
@@ -236,6 +249,41 @@ Keep `tts` and `player` in your app's state while audio plays. You can also down
 
 </details>
 
+### Android
+
+<details>
+<summary>Show Android integration options</summary>
+
+**Snapdragon NPU:** The [QNN Android preview](https://github.com/gradium-ai/xn-ptts/pull/154) provides a Kotlin API and an AAR around the optimized QNN engine. It requires Android 12+, ARM64, working QNN HTP support and a model bundle compiled for the phone's SoC. Build the AAR from the preview's source using its build guide. The planned Maven package is `ai.gradium:ptts`; it is not published yet.
+
+Load a supplied compiled model folder on a worker thread and stream audio to your player:
+
+```kotlin
+import ai.gradium.phonon.PhononTTS
+
+val tts = PhononTTS.load(context, modelDirectory, lang = "en")
+val sampleRate = tts.sampleRate
+tts.speak("Hello from Phonon.") { pcm ->
+    audioSink.write(pcm) // Mono float PCM at sampleRate.
+    true // Return false to stop; tts.stop() also works from another thread.
+}
+// Reuse tts. Stop and wait for speech to finish before calling tts.close().
+```
+
+The preview guide covers native library extraction, model bundles and the runnable Speak/Stop example.
+
+**CPU:** The existing [Android guide](android/README.md) provides a Kotlin wrapper and C API. From the repository root:
+
+```sh
+cargo install cargo-ndk
+export ANDROID_NDK_HOME=/path/to/ndk
+./android/build.sh
+```
+
+Copy `android/jniLibs` into your app's `src/main/`, then add the Kotlin wrapper and JNA dependency as described in the guide. Supply a checkpoint with its own config, tokenizer, weights and voices. Load `PhononTTS(modelDir, "en")` on a worker thread and reuse it. The guide includes AudioTrack playback, CPU requirements and callback cancellation.
+
+</details>
+
 ### Docker and OpenAI-compatible API
 
 <details>
@@ -306,6 +354,8 @@ Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chu
 | Python installation, voices, streaming, and wheels | [Python](ptts-pyo3/README.md) |
 | Browser playback, download progress, caching, threads, and WebGPU | [Browser](ptts-wasm/js/README.md) |
 | Apple installation, model bundles, playback, and cancellation | [Swift](ios/PhononTTS/README.md) |
+| Android CPU library, Kotlin, NDK, and playback | [Android](android/README.md) |
+| Android Snapdragon NPU AAR, Kotlin API, and compiled bundles | [QNN preview in PR #154](https://github.com/gradium-ai/xn-ptts/pull/154) |
 | Docker, OpenAI-compatible clients, and deployment | [HTTP server](ptts-openai-server/README.md) |
 | Streaming text and audio over one connection | [WebSocket server](ptts-ws-server/README.md) |
 | Rust library and the `say` example | [Rust](ptts/README.md) |
@@ -313,7 +363,7 @@ Build with `--release` and reuse the model. `tts.stream(text)?` yields audio chu
 
 ### Platform notes
 
-Native desktop packages cover the targets listed in the [CLI guide](docs/cli.md). Apple apps use Core ML; browser apps use Wasm on CPU by default. Browser WebGPU is opt in. The npm package targets browsers, not native Node.js inference.
+Native desktop packages cover the targets listed in the [CLI guide](docs/cli.md). Apple apps use Core ML. Android apps can use the CPU library or the QNN AAR preview on supported Snapdragon NPUs. QNN requires a matching compiled bundle and has no automatic CPU fallback. Browser apps use Wasm on CPU by default. Browser WebGPU is opt in. The npm package targets browsers, not native Node.js inference.
 
 Performance and memory use depend on the checkpoint and device.
 
