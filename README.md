@@ -15,6 +15,8 @@ Phonon brings natural text-to-speech to phones, laptops, browsers, and local ser
 [![Published Python version](https://img.shields.io/pypi/v/ptts?label=PyPI)](https://pypi.org/project/ptts/)
 [![Published npm version](https://img.shields.io/npm/v/phonon-tts?label=npm)](https://www.npmjs.com/package/phonon-tts)
 [![Native downloads](https://img.shields.io/github/v/release/gradium-ai/xn-ptts?include_prereleases&label=native%20downloads)](https://github.com/gradium-ai/xn-ptts/releases)
+[![Swift package](https://img.shields.io/badge/Swift-download-orange)](#swift)
+[![Android QNN package](https://img.shields.io/badge/Android-QNN%20source%20preview-blue)](#android)
 
 [What you get](#what-you-get) · [Choose an integration](#choose-an-integration) · [Packages and downloads](#packages-and-downloads) · [Quickstart](#quickstart) · [Guides](#guides)
 
@@ -79,7 +81,15 @@ model/
   default-voice.safetensors
 ```
 
-Voice files may instead live in `voices/` or `embeddings/`. Use the files and voice names your checkpoint supplies; do not substitute another model's tokenizer or config. Swift uses a separately exported Core ML bundle. Android QNN uses a compiled bundle for the phone's SoC; the Android CPU library uses the checkpoint folder above.
+Voice files may instead live in `voices/` or `embeddings/`. Use the files and voice names your checkpoint supplies; do not substitute another model's tokenizer or config. The examples use q8 weights. For f32 weights, omit `--quant q8` or `quant="q8"`, use `Quant::F32` in Rust, and set `quant: 'f32'` with `weights: { f32: '/model/model.safetensors' }` in the browser.
+
+**Already received a model from us?** Extract it locally and use the matching integration below. You do not need a public Hugging Face repo or an HF token for local files. Runtime packages contain no model weights.
+
+| Files you received | Use them with |
+|---|---|
+| A checkpoint with `config.json`, `tokenizer.json`, weights and voices | Command line, Python, Rust, browser, servers or Android CPU. Use a runtime version compatible with your checkpoint. |
+| A prepared Core ML bundle | Swift. Add it to your app as `Models`, or host it for the Swift download API. A raw checkpoint needs [exporting first](ios/PhononTTS/README.md#1-build-the-two-pieces-that-are-not-in-the-source). |
+| A QNN bundle with `metadata.json` and compiled context binaries | Android NPU. It must match the phone's SoC and the package's QNN runtime. Older bundles may need their target metadata updated; see the [preview guide](https://github.com/gradium-ai/xn-ptts/pull/154). A raw checkpoint needs exporting and compiling first. |
 
 For the shell examples below, set the folder once:
 
