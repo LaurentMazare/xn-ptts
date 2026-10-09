@@ -1,6 +1,6 @@
 #pragma once
 
-#include "third_party/json.hpp"
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cctype>
 #include <filesystem>

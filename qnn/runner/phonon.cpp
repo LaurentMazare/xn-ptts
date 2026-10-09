@@ -9,7 +9,7 @@
 #include <fstream>
 #include <stdexcept>
 
-#include "third_party/json.hpp"
+#include <nlohmann/json.hpp>
 
 namespace phonon {
 namespace {

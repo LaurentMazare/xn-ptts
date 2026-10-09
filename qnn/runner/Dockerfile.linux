@@ -2,5 +2,5 @@
 # without a Snapdragon device. Ubuntu 20.04 matches the QAIRT aarch64-ubuntu-gcc9.4 libraries.
 FROM --platform=linux/arm64 ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends g++ make cmake && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends g++ make cmake ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /work

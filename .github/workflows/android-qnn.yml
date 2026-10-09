@@ -28,5 +28,6 @@ jobs:
         run: ./gradlew :ptts:testDebugUnitTest -PpttsUnitTestsOnly=true --console=plain
       - name: Compiled model selection
         run: |
-          c++ -std=c++17 -Iqnn/runner qnn/runner/tests/bundle.cpp -o "$RUNNER_TEMP/qnn-bundle-test"
-          "$RUNNER_TEMP/qnn-bundle-test"
+          cmake -S qnn/runner/tests -B "$RUNNER_TEMP/qnn-bundle-tests"
+          cmake --build "$RUNNER_TEMP/qnn-bundle-tests"
+          ctest --test-dir "$RUNNER_TEMP/qnn-bundle-tests" --output-on-failure

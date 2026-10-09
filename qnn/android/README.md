@@ -13,6 +13,9 @@ Maintainers need JDK 17 or newer, Android SDK platform 36, NDK 29.0.14206865, CM
 Rust, cargo-ndk and the QAIRT 2.50.0 SDK headers. Consumers will only need the Maven package.
 The matching Qualcomm runtime comes from `com.qualcomm.qti:qnn-runtime:2.50.0` on Maven Central;
 do not copy a different version into the app.
+CMake downloads the tested nlohmann/json 3.11.3 release and verifies its SHA-256 when configuring
+a new source build. The JSON code is compiled into the native library; AAR consumers need no separate
+JSON dependency. Its MIT license is included in the AAR.
 
 ```sh
 export ANDROID_HOME=/path/to/android-sdk

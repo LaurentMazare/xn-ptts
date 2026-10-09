@@ -1,2 +1,1 @@
-runner/third_party/** linguist-vendored=true
 text-ffi/Cargo.lock linguist-generated=true

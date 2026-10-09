@@ -17,10 +17,11 @@ endif()
 # The QNN backends start threads inside this process; on glibc before 2.34 that
 # needs libpthread linked into the executable.
 find_package(Threads REQUIRED)
+include(cmake/Json.cmake)
 
 add_library(phonon STATIC ptts_text.cpp qnn_model.cpp phonon.cpp)
 target_include_directories(phonon PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${QAIRT_ROOT}/include/QNN)
-target_link_libraries(phonon PUBLIC ${CMAKE_DL_LIBS} Threads::Threads)
+target_link_libraries(phonon PUBLIC ${CMAKE_DL_LIBS} Threads::Threads nlohmann_json::nlohmann_json)
 
 add_executable(phonon_cli main.cpp)
 set_target_properties(phonon_cli PROPERTIES OUTPUT_NAME phonon)
