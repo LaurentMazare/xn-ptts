@@ -261,6 +261,63 @@ impl Lang {
         }
     }
 
+    fn power(self, n: &str) -> String {
+        match (self, n) {
+            (Lang::En, "2") => "squared".into(),
+            (Lang::En, "3") => "cubed".into(),
+            (Lang::En, n) => format!("to the power of {n}"),
+            (Lang::Fr, "2") => "au carré".into(),
+            (Lang::Fr, "3") => "au cube".into(),
+            (Lang::Fr, n) => format!("puissance {n}"),
+            (Lang::De, n) => format!("hoch {n}"),
+            (Lang::Es, "2") => "al cuadrado".into(),
+            (Lang::Es, "3") => "al cubo".into(),
+            (Lang::Es, n) => format!("elevado a {n}"),
+            (Lang::Pt, "2") => "ao quadrado".into(),
+            (Lang::Pt, "3") => "ao cubo".into(),
+            (Lang::Pt, n) => format!("elevado a {n}"),
+        }
+    }
+
+    fn greek(self, c: char) -> Option<String> {
+        const NAMES: [&str; 24] = [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
+            "lambda", "mu", "nu", "xi", "omicron", "pi", "rho", "sigma", "tau", "upsilon", "phi",
+            "chi", "psi", "omega",
+        ];
+        let i = match c {
+            'α'..='ρ' => c as usize - 'α' as usize,
+            'ς' => 17,
+            'σ'..='ω' => c as usize - 'α' as usize - 1,
+            'Α'..='Ρ' => c as usize - 'Α' as usize,
+            'Σ'..='Ω' => c as usize - 'Α' as usize - 1,
+            _ => return None,
+        };
+        let name = NAMES[i];
+        Some(match self {
+            Lang::De => name[..1].to_uppercase() + &name[1..],
+            Lang::En | Lang::Fr | Lang::Es | Lang::Pt => name.to_string(),
+        })
+    }
+
+    /// The letter `c` folds to, when the tokenizer of the checkpoints for this language has no
+    /// piece for it. A new language must check its own letters against this table.
+    fn fold(self, c: char) -> Option<char> {
+        let folds = match self {
+            Lang::En | Lang::Fr | Lang::De | Lang::Es | Lang::Pt => FOLDS,
+        };
+        if (c as u32) < 0xCC {
+            return None;
+        }
+        let mut it = folds.chars();
+        while let (Some(a), Some(b)) = (it.next(), it.next()) {
+            if a == c {
+                return Some(b);
+            }
+        }
+        None
+    }
+
     pub fn decimal_separator(self) -> &'static str {
         match self {
             Lang::En => "point",
@@ -427,6 +484,47 @@ impl StringAppender {
     }
 }
 
+/// Letters with a diacritic the tokenizer has no piece for, which it would otherwise hand the
+/// model as raw bytes, paired with the letter they fold to.
+const FOLDS: &str = "ÌIÒOÝYìiòoýyÿyĀAāaĂAăaĄAąaĆCćcĈCĉcĊCċcČCčcĎDďdĒEēeĔEĕeĖEėeĘEęeĚEěeĜGĝgĞGğgĠGġgĢGģgĤHĥhĨIĩiĪIīiĬIĭiĮIįiİIĴJĵjĶKķkĹLĺlĻLļlĽLľlŃNńnŅNņnŇNňnŌOōoŎOŏoŐOőoŔRŕrŖRŗrŘRřrŚSśsŜSŝsŞSşsŠSšsŢTţtŤTťtŨUũuŪUūuŬUŭuŮUůuŰUűuŲUųuŴWŵwŶYŷyŸYŹZźzŻZżzŽZžzƠOơoƯUưuǍAǎaǏIǐiǑOǒoǓUǔuǕUǖuǗUǘuǙUǚuǛUǜuǞAǟaǠAǡaǦGǧgǨKǩkǪOǫoǬOǭoǰjǴGǵgǸNǹnǺAǻaȀAȁaȂAȃaȄEȅeȆEȇeȈIȉiȊIȋiȌOȍoȎOȏoȐRȑrȒRȓrȔUȕuȖUȗuȘSșsȚTțtȞHȟhȦAȧaȨEȩeȪOȫoȬOȭoȮOȯoȰOȱoȲYȳyḀAḁaḂBḃbḄBḅbḆBḇbḈCḉcḊDḋdḌDḍdḎDḏdḐDḑdḒDḓdḔEḕeḖEḗeḘEḙeḚEḛeḜEḝeḞFḟfḠGḡgḢHḣhḤHḥhḦHḧhḨHḩhḪHḫhḬIḭiḮIḯiḰKḱkḲKḳkḴKḵkḶLḷlḸLḹlḺLḻlḼLḽlḾMḿmṀMṁmṂMṃmṄNṅnṆNṇnṈNṉnṊNṋnṌOṍoṎOṏoṐOṑoṒOṓoṔPṕpṖPṗpṘRṙrṚRṛrṜRṝrṞRṟrṠSṡsṢSṣsṤSṥsṦSṧsṨSṩsṪTṫtṬTṭtṮTṯtṰTṱtṲUṳuṴUṵuṶUṷuṸUṹuṺUṻuṼVṽvṾVṿvẀWẁwẂWẃwẄWẅwẆWẇwẈWẉwẊXẋxẌXẍxẎYẏyẐZẑzẒZẓzẔZẕzẖhẗtẘwẙyẠAạaẢAảaẤAấaẦAầaẨAẩaẪAẫaẬAậaẮAắaẰAằaẲAẳaẴAẵaẶAặaẸEẹeẺEẻeẼEẽeẾEếeỀEềeỂEểeỄEễeỆEệeỈIỉiỊIịiỌOọoỎOỏoỐOốoỒOồoỔOổoỖOỗoỘOộoỚOớoỜOờoỞOởoỠOỡoỢOợoỤUụuỦUủuỨUứuỪUừuỬUửuỮUữuỰUựuỲYỳyỴYỵyỶYỷyỸYỹy";
+
+fn subscript(c: char) -> Option<char> {
+    Some(match c {
+        '₀'..='₉' => char::from(b'0' + (c as u32 - '₀' as u32) as u8),
+        '₊' => '+',
+        '₋' => '-',
+        'ₐ' => 'a',
+        'ₑ' => 'e',
+        'ₒ' => 'o',
+        'ₓ' => 'x',
+        'ₕ' => 'h',
+        'ₖ' => 'k',
+        'ₗ' => 'l',
+        'ₘ' => 'm',
+        'ₙ' => 'n',
+        'ₚ' => 'p',
+        'ₛ' => 's',
+        'ₜ' => 't',
+        'ᵢ' => 'i',
+        'ⱼ' => 'j',
+        _ => return None,
+    })
+}
+
+fn superscript(c: char) -> Option<char> {
+    Some(match c {
+        '⁰' => '0',
+        '¹' => '1',
+        '²' => '2',
+        '³' => '3',
+        '⁴'..='⁹' => char::from(b'4' + (c as u32 - '⁴' as u32) as u8),
+        '⁻' => '-',
+        '⁺' => '+',
+        'ⁿ' => 'n',
+        _ => return None,
+    })
+}
+
 fn is_emoji(c: char) -> bool {
     let c = c as u32;
     matches!(c,
@@ -540,6 +638,21 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
                     res.push_str(scale);
                 }
             }
+            c if lang.fold(c).is_some() => res.push(lang.fold(c).unwrap_or(c)),
+            c if subscript(c).is_some() => res.push(subscript(c).unwrap_or(c)),
+            c if superscript(c).is_some() => {
+                let mut n: String = superscript(c).into_iter().collect();
+                while let Some(d) = chars.peek().and_then(|&c| superscript(c)) {
+                    n.push(d);
+                    chars.next();
+                }
+                if prev.is_some_and(|p: char| p.is_alphanumeric() || p == ')') {
+                    res.push_spoken(&lang.power(&n));
+                } else {
+                    res.push_str(&n);
+                }
+            }
+            c if lang.greek(c).is_some() => res.push_spoken(&lang.greek(c).unwrap_or_default()),
             c if lang.symbol(c).is_some() => res.push_spoken(lang.symbol(c).unwrap_or_default()),
             '±' => res.push_spoken(lang.plus_minus()),
             'π' => res.push_spoken(lang.pi()),
@@ -776,6 +889,10 @@ mod tests {
                 "1920 times 1 thousand 80, 6 divided by 2, x less than or equal to 3, y greater than or equal to 4, a is not equal to b, pi approximately 3 point 14",
             ),
             ("√2, ∞, 5‰ and ∑", "square root of 2, infinity, 5 per mille and sigma"),
+            ("x² + y³ = 10⁻⁶", "x squared plus y cubed equals 10 to the power of minus 6"),
+            ("C₈H₁₈ and ¹³C", "C8H18 and 13C"),
+            ("ΔH, α and ω", "delta H, alpha and omega"),
+            ("bǎohù zìjǐ in İstanbul, città", "baohù ziji in Istanbul, città"),
         ];
         for (input, expected) in en {
             assert_eq!(normalize_text(input, Lang::En, Rules::DEFAULT), expected, "{input:?}");

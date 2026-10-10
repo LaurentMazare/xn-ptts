@@ -30,7 +30,15 @@ pub(super) fn numbers(word: &str, lang: Lang) -> Option<String> {
 fn range(body: &str, lang: Lang) -> Option<String> {
     let (from, to) = body.split_once('-')?;
     let small = |s: &str| (2..=3).contains(&s.len()) && all_digits(s) && !s.starts_with('0');
-    if !small(from) || !small(to) || from.parse::<u32>().ok()? >= to.parse::<u32>().ok()? {
+    let year =
+        |s: &str| s.len() == 4 && all_digits(s) && (s.starts_with("1") || s.starts_with("20"));
+    let ok = match (from.len(), to.len()) {
+        _ if small(from) && small(to) => from.parse::<u32>().ok()? < to.parse::<u32>().ok()?,
+        (4, 4) => year(from) && year(to) && from < to,
+        (4, 2) => year(from) && all_digits(to) && &from[2..] < to,
+        _ => false,
+    };
+    if !ok {
         return None;
     }
     let word = match lang {
@@ -254,6 +262,9 @@ mod tests {
             ("3-5", None),
             ("12:30", None),
             ("10-15", Some("10 to 15")),
+            ("1445-1450", Some("1445 to 1450")),
+            ("2024-25", Some("2024 to 25")),
+            ("1999-1998", None),
             ("3.5%", None),
             ("1234567890123", None),
             ("hello", None),
