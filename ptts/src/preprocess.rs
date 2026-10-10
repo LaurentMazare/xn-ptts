@@ -708,8 +708,14 @@ fn strip_closing_quote(text: &str) -> &str {
 
 /// Spell out the `@` and `+` of a word no rule claimed, as the character pass spells `=`, and
 /// give the pieces they leave their own turn at the rules: "1500+20" reads "1 thousand 500 plus
-/// 20", as it would had the character pass spelled the `+`.
+/// 20", as it would had the character pass spelled the `+`. A slash between words ("and/or") is
+/// read as a pause rather than as "slash".
 fn spell_symbols(word: &str, lang: Lang, rules: Rules) -> String {
+    if let Some(text) = split_slash(word) {
+        let words =
+            text.split(' ').map(|w| rewrite_word(w, lang, rules).unwrap_or_else(|| w.into()));
+        return words.collect::<Vec<_>>().join(" ");
+    }
     if !word.contains(['@', '+']) {
         return word.to_string();
     }
@@ -724,6 +730,25 @@ fn spell_symbols(word: &str, lang: Lang, rules: Rules) -> String {
     let text = res.into_string();
     let words = text.split(' ').map(|w| rewrite_word(w, lang, rules).unwrap_or_else(|| w.into()));
     words.collect::<Vec<_>>().join(" ")
+}
+
+/// Units that are written with a slash between letters ("mg/kg", "kJ/mol"), which keep it.
+const SLASH_UNITS: &[&str] = &[
+    "km", "kg", "mg", "ml", "mL", "dL", "mol", "kJ", "kW", "kWh", "Hz", "min", "hr", "hrs", "sec",
+    "ft", "lb", "lbs", "oz", "mi", "mph", "kph", "yd", "cm", "mm", "yr", "wk", "mo", "kcal", "rpm",
+];
+
+/// `word` with each slash replaced by a space, when every part it separates is a word of two
+/// letters or more and not a unit; `None` otherwise, which leaves "c/o", "km/h", "mg/kg", dates
+/// and fractions alone.
+fn split_slash(word: &str) -> Option<String> {
+    let body = word.trim_end_matches(|c: char| c.is_ascii_punctuation() && c != '/');
+    let parts: Vec<&str> = body.split('/').collect();
+    let wordlike = |p: &&str| {
+        p.chars().count() >= 2 && p.chars().all(char::is_alphabetic) && !SLASH_UNITS.contains(p)
+    };
+    (parts.len() > 1 && parts.iter().all(wordlike))
+        .then(|| format!("{}{}", parts.join(" "), &word[body.len()..]))
 }
 
 #[cfg(test)]
@@ -892,6 +917,8 @@ mod tests {
             ("x² + y³ = 10⁻⁶", "x squared plus y cubed equals 10 to the power of minus 6"),
             ("C₈H₁₈ and ¹³C", "C8H18 and 13C"),
             ("ΔH, α and ω", "delta H, alpha and omega"),
+            ("and/or, to/from, reality/the deity.", "and or, to from, reality the deity."),
+            ("40 km/h, 5 mg/kg, c/o, 3/4, 05/04/2025", "40 km/h, 5 mg/kg, c/o, 3/4, 05/04/2025"),
             ("bǎohù zìjǐ in İstanbul, città", "baohù ziji in Istanbul, città"),
         ];
         for (input, expected) in en {
