@@ -581,7 +581,16 @@ pub fn normalize_text(input: &str, lang: Lang, rules: Rules) -> String {
         prev = Some(c);
     }
     let text = res.into_string();
-    rewrite::rewrite_text(&text, lang, rules, |w| spell_symbols(w, lang, rules))
+    let text = rewrite::rewrite_text(&text, lang, rules, |w| spell_symbols(w, lang, rules));
+    strip_closing_quote(&text).to_string()
+}
+
+fn strip_closing_quote(text: &str) -> &str {
+    let trimmed = text.trim_end_matches('"');
+    match trimmed.strip_suffix('\'') {
+        Some(rest) if rest.ends_with(['.', '!', '?', ',', ';']) => rest,
+        _ => trimmed,
+    }
 }
 
 /// Spell out the `@` and `+` of a word no rule claimed, as the character pass spells `=`, and
@@ -614,7 +623,7 @@ mod tests {
             ("Hello, world!", "Hello, world!"),
             ("", ""),
             ("“hello” world it's", "\"hello\" world it's"),
-            ("«hello» ‹world›", "\"hello\" \"world\""),
+            ("«hello» ‹world›", "\"hello\" \"world"),
             ("a‐b‑c‒d―e", "a-b-c-d-e"),
             ("a–b—c", "a b c"),
             ("foo (bar) [baz] {qux} *quux*", "foo, bar, baz qux quux"),
@@ -748,6 +757,9 @@ mod tests {
             ("I ❤️ NY, dial *67, it's 4.5%.", "I love NY, dial star 67, it's 4.5%."),
             ("Press 1, then #.", "Press 1, then #."),
             ("That was sooo good.", "That was so good."),
+            ("He said, \"go home!\"", "He said, \"go home!"),
+            ("It's the boys'", "It's the boys'"),
+            ("'Stop it.'", "'Stop it."),
             ("It's -40° outside.", "It's minus 40 degrees outside."),
             (
                 "Water boils at 100°C, or 212 °F.",
